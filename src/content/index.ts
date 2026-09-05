@@ -11,9 +11,14 @@ import { startTracking } from "./track.ts";
  * 否则读进度只在 session 开始/结束时更新，读到一半打开 popup 会看到旧数字。
  */
 let provideState: () => PageState = () => ({ tracked: false, reason: "初始化中" });
+/** popup 的「本页启用划词翻译」。追踪器还没就绪时点到就是空操作——那时 popup 也拿不到按钮。 */
+let translateHere: () => void = () => undefined;
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if ((msg as { type?: string } | null)?.type !== "page:state") return false;
+  const type = (msg as { type?: string } | null)?.type;
+  if (type === "page:translate-here") translateHere();
+  else if (type !== "page:state") return false;
+  // 两种询问都回一份现算的状态：开启之后 popup 要立刻把按钮换成「已开启」
   sendResponse(provideState());
   return false; // 同步应答，无需保持通道
 });
@@ -26,6 +31,7 @@ async function main(): Promise<void> {
   }
   const ctl = await startTracking({ url: location.href, focus: "window" });
   provideState = () => ctl.state();
+  translateHere = () => ctl.translateHere();
 }
 
 void main().catch((err: unknown) => {

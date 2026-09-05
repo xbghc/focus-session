@@ -218,6 +218,13 @@ export interface PageState {
   tracked: boolean;
   /** 未追踪时说明原因（排除域名 / 非文章页）。 */
   reason?: string;
+  /**
+   * 没识别为文章的页面上，划词翻译的临时开关。
+   * "available"：可以从 popup 为本页开启；"on"：已经开着，只对本次加载有效。
+   * 追踪中的文章页本来就挂着监听；被排除的域名、总开关关着时都不给这个字段——
+   * popup 不该画一个点不动的按钮。
+   */
+  translateHere?: "available" | "on";
   articleId?: string;
   title?: string;
   totalWords?: number;
@@ -300,7 +307,10 @@ export type PopupToBg =
   | { type: "llm:log" }
   | { type: "llm:log-clear" };
 
-export type PopupToContent = { type: "page:state" };
+export type PopupToContent =
+  | { type: "page:state" }
+  /** 「本页启用划词翻译」：只对本次加载有效。应答和 page:state 一样是更新后的 PageState。 */
+  | { type: "page:translate-here" };
 
 export type AnyMessage = ContentToBg | PopupToBg | PopupToContent;
 

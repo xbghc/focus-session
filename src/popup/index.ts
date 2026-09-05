@@ -5,6 +5,7 @@ import type {
   Overview,
   PageState,
   ParagraphRecord,
+  PopupToContent,
   Session,
   SpeedSummary,
 } from "../types.ts";
@@ -44,16 +45,18 @@ function kv(rows: Array<[string, string]>): HTMLElement {
 
 let liveTimer: ReturnType<typeof setInterval> | null = null;
 
-async function fetchPageState(): Promise<PageState | null> {
+/** 问当前标签页的 content script 一句。chrome:// 页、PDF、扩展商店等注入不了脚本，回 null。 */
+async function askPage<T>(msg: PopupToContent): Promise<T | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return null;
   try {
-    return (await chrome.tabs.sendMessage(tab.id, { type: "page:state" })) as PageState;
+    return (await chrome.tabs.sendMessage(tab.id, msg)) as T;
   } catch {
-    // chrome:// 页、PDF、扩展商店等注入不了 content script
     return null;
   }
 }
+
+const fetchPageState = (): Promise<PageState | null> => askPage<PageState>({ type: "page:state" });
 
 function renderCurrent(st: PageState | null): void {
   const root = panels.current;
@@ -68,7 +71,9 @@ function renderCurrent(st: PageState | null): void {
     return;
   }
   if (!st.tracked) {
-    root.append(empty(st.reason ?? "未追踪"));
+    const box = el("div", { class: "empty" }, [el("div", {}, [st.reason ?? "未追踪"])]);
+    if (st.translateHere) box.append(translateHereNode(st.translateHere));
+    root.append(box);
     return;
   }
 
@@ -132,6 +137,24 @@ function renderCurrent(st: PageState | null): void {
       .join("　");
     root.append(el("div", { class: "muted small" }, [legend]));
   }
+}
+
+/**
+ * 非文章页上的划词翻译入口。
+ *
+ * 这类页面默认不挂选区监听（在网页应用里选中文本不该悄悄联网），这里点一下才挂，
+ * 而且只对当前这次加载生效——刷新就回到默认。应答里带着更新后的状态，直接重画。
+ */
+function translateHereNode(state: NonNullable<PageState["translateHere"]>): HTMLElement {
+  if (state === "on") return el("div", { class: "small translate-on" }, ["划词翻译已在本页开启，刷新后失效"]);
+  const btn = el("button", { type: "button", class: "btn" }, ["本页启用划词翻译"]);
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    // 应答就是更新后的状态；拿不到（页面刚好跳走了）就再问一遍
+    void askPage<PageState>({ type: "page:translate-here" })
+      .then(async (st) => renderCurrent(st ?? (await fetchPageState())));
+  });
+  return btn;
 }
 
 /**

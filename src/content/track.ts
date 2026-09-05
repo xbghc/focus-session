@@ -79,12 +79,18 @@ export interface TrackController {
   setVisible(visible: boolean): void;
   /** 结束追踪：结算最后一段、判一次读完、拆掉所有监听。重复调用无害。 */
   stop(reason?: EndReason): void;
+  /**
+   * 没识别为文章的页面上，临时挂起划词翻译，只对本次加载有效（popup 的「本页启用划词翻译」）。
+   * 追踪中的文章页本来就挂着，调它没有效果；被排除的域名上也不会挂。
+   */
+  translateHere(): void;
 }
 
 const idle = (reason: string): TrackController => ({
   state: () => ({ tracked: false, reason }),
   setVisible: () => undefined,
   stop: () => undefined,
+  translateHere: () => undefined,
 });
 
 export async function startTracking(opts: TrackOptions): Promise<TrackController> {
@@ -121,7 +127,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   const article = opts.extract ? opts.extract() : await extractWithRetry();
   if (!article) {
     stopWatchingInput();
-    return idle("未识别为文章页");
+    return translateOnly(pageUrl, host, settings);
   }
 
   const articleId = normalizeUrl(pageUrl);
@@ -477,17 +483,8 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   let excludedNow: string | null = null;
 
   /* ---- 划词翻译 ----
-   * 只有走到这里才会挂载：非文章页、被排除的域名都在前面 return 掉了。 */
-  const translator = new SelectionTranslator({
-    articleId,
-    url: pageUrl,
-    articleTitle: title,
-    settings: () => settings,
-    contextOf: paragraphContext,
-    translate: streamTranslate,
-    warm: () => send({ type: "sw:ping" }),
-    openOptions: () => void chrome.runtime.sendMessage({ type: "options:open" }),
-  });
+   * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。 */
+  const translator = makeTranslator(articleId, pageUrl, title, () => settings);
   let translatorOn = false;
   const syncTranslator = (): void => {
     const want = settings.translateEnabled;
@@ -523,6 +520,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     state: () => (excludedNow ? { tracked: false, reason: excludedNow } : state()),
     setVisible: (v) => machine.setVisible(v),
     stop: (reason = "unload") => finish(reason)(),
+    translateHere: () => undefined, // 文章页本来就挂着，跟着总开关走
   };
 
   /** 滚到锚点段落，并把落点微调到离开时的那个偏移。 */
@@ -623,6 +621,77 @@ function streamTranslate(
     });
     port.postMessage({ type: "start", req } satisfies TranslatePortIn);
   });
+}
+
+/** 划词翻译器的接线。文章页和临时开启的非文章页用同一份，别让两边的依赖悄悄分叉。 */
+function makeTranslator(articleId: string, url: string, title: string, settings: () => Settings): SelectionTranslator {
+  return new SelectionTranslator({
+    articleId,
+    url,
+    articleTitle: title,
+    settings,
+    contextOf: paragraphContext,
+    translate: streamTranslate,
+    warm: () => send({ type: "sw:ping" }),
+    openOptions: () => void chrome.runtime.sendMessage({ type: "options:open" }),
+  });
+}
+
+/**
+ * 没识别为文章的页面：不追踪，但划词翻译可以从 popup 临时开起来。
+ *
+ * 翻译器本就不依赖正文抽取——文章 id 只是归一化的 URL，语境段落沿 DOM 往上找，
+ * 后台落库也不看有没有这篇的阅读记录。所以这条路径上它照样能用，只是**默认不挂**：
+ * 在邮件、聊天这类网页应用里选中一段文字，不该悄悄发给 MiniMax。
+ * 用户在 popup 里点一下才挂，且只对本次加载有效，刷新即回到默认。
+ *
+ * 总开关和排除域名照样管着它：关掉就摘监听；开关回来时，用户这次的选择还在。
+ */
+function translateOnly(pageUrl: string, host: string, initial: Settings): TrackController {
+  let settings = initial;
+  /** 用户点过「本页启用划词翻译」。 */
+  let wanted = false;
+  let excluded = false;
+  let translator: SelectionTranslator | null = null;
+  let on = false;
+
+  const sync = (): void => {
+    const want = wanted && settings.translateEnabled && !excluded;
+    if (want === on) return;
+    on = want;
+    if (!want) {
+      translator?.stop();
+      return;
+    }
+    // 到开启这一刻才建：单页应用常常在加载之后才改标题，这时取到的才是当前这一页的
+    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings);
+    translator.start();
+  };
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes["settings"]) return;
+    settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
+    excluded = isExcluded(host, settings.excludedDomains);
+    sync();
+  });
+
+  return {
+    state: () => {
+      const st: PageState = { tracked: false, reason: excluded ? `${host} 在排除列表中` : "未识别为文章页" };
+      // 被排除、或总开关关着：不给字段，popup 就不会画一个点不动的按钮
+      if (!excluded && settings.translateEnabled) st.translateHere = on ? "on" : "available";
+      return st;
+    },
+    setVisible: () => undefined,
+    stop: () => {
+      wanted = false;
+      sync();
+    },
+    translateHere: () => {
+      wanted = true;
+      sync();
+    },
+  };
 }
 
 async function extractWithRetry(): Promise<ReturnType<typeof extractArticle>> {

@@ -104,6 +104,15 @@ h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
 .timeline .gap { flex: 0 1 auto; min-width: 2px; }
 
 .empty { color: var(--muted); text-align: center; padding: 26px 10px; }
+/* 非文章页上的临时划词翻译入口，跟在「未识别为文章页」那行下面 */
+.empty .btn {
+  display: inline-block; margin-top: 12px; padding: 5px 12px;
+  border: 1px solid var(--accent); border-radius: 4px; background: none;
+  color: var(--accent); font: inherit; font-size: 12px; cursor: pointer;
+}
+.empty .btn:hover { background: var(--line-soft); }
+.empty .btn:disabled { opacity: 0.5; cursor: default; }
+.empty .translate-on { margin-top: 12px; }
 
 .item { border-bottom: 1px solid var(--line); padding: 8px 0; }
 .item:last-child { border-bottom: 0; }
