@@ -1,6 +1,6 @@
 {
   "name": "focus-session",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "浏览器扩展 + 安卓 App：记录每篇文章的阅读专注片段与进度，并用 MiniMax 划词翻译 + FSRS 间隔重复复习；两端靠导出/导入文件合并数据",
   "type": "module",
