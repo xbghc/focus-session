@@ -1,0 +1,75 @@
+name: CI
+
+# 每次推到 main、每个 PR：网页部分跑 npm run check（类型检查、测试、扩展与 App 的构建），
+# 安卓部分另起一台 runner 打 debug APK。两样产物都挂在 Artifacts 里。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: 类型检查 · 测试 · 构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 测试靠 node --experimental-strip-types 跑 TypeScript，要 22.6+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run check
+
+      - name: 保存扩展产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist
+          path: dist
+          if-no-files-found: error
+
+  android:
+    name: 安卓 APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle 的 preBuild 会跑 npm run build:app，所以这里也要 node
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+
+      # 缓存 Gradle 分发包与依赖，并校验 wrapper jar
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --console=plain
+
+      - name: 保存 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

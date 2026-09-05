@@ -1,5 +1,7 @@
 # Focus Session
 
+[![CI](https://github.com/xbghc/focus-session/actions/workflows/ci.yml/badge.svg)](https://github.com/xbghc/focus-session/actions/workflows/ci.yml)
+
 浏览器扩展，外加一个用同一份代码做的安卓 App（见[安卓 App](#安卓-app)）。两件事合一：
 
 1. **阅读追踪** —— 记录你在每篇文章上的注意力片段：每次连续专注了多久、实际读了多少内容、
@@ -562,6 +564,33 @@ cd android && ./gradlew assembleDebug   # APK；preBuild 会自己跑一遍 buil
 `options`（设置）。App 的入口在 `src/app/`：`index`（首页 = dashboard）、`read`（阅读器）、
 `options`（= 扩展的设置页）；每个入口的第一个 import 都是 `boot.ts`，装 chrome 垫片和宿主桥。
 两边共用的本体：`background/handle.ts`（消息处理）、`content/track.ts`（页内追踪）。
+
+### 持续集成与发布
+
+`.github/workflows/ci.yml`：每次推到 main 或开 PR 都跑 `npm run check`（类型检查、全部测试、扩展与 App
+的网页构建），再在另一台 runner 上装 JDK 17 + Android SDK 打一个 debug APK。扩展的 `dist/` 和 APK
+都挂在那次运行的 Artifacts 里，随手能下。
+
+`.github/workflows/release.yml`：打一个 `v*` 标签就发版：
+
+```bash
+npm version patch      # 改 package.json 的版本号并打标签；App 的 versionName / versionCode 跟着它算
+git push --follow-tags
+```
+
+工作流先核对标签和 package.json 的版本号一致（不一致就停），跑完整检查，把扩展打成
+`focus-session-extension-vX.Y.Z.zip`、把 APK 一起挂到 GitHub Release 上。
+
+APK 默认是 **debug 签名**的：runner 每次生成的 debug 密钥都不一样，手机上装第二个版本得先卸载
+第一个。想让它能直接覆盖升级，生成一个签名密钥放进仓库的 Secrets（Settings → Secrets and variables → Actions）：
+
+```bash
+keytool -genkeypair -v -keystore focus-session.jks -alias focus-session -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
+```
+
+四个 Secret：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
+都在时 Release 工作流改出正式签名的 `focus-session-vX.Y.Z.apk`。密钥文件本身别进仓库，丢了就没法再给老安装升级。
 
 ## 已验证 / 未验证
 
