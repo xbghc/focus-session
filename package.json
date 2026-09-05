@@ -1,0 +1,29 @@
+{
+  "name": "focus-session",
+  "version": "0.3.0",
+  "private": true,
+  "description": "浏览器扩展 + 安卓 App：记录每篇文章的阅读专注片段与进度，并用 MiniMax 划词翻译 + FSRS 间隔重复复习；两端靠导出/导入文件合并数据",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test \"test/*.test.ts\"",
+    "check": "npm run typecheck && npm test && npm run build && npm run build:app",
+    "build:app": "node build.mjs --app",
+    "watch:app": "node build.mjs --app --watch"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "ts-fsrs": "^5.4.2"
+  },
+  "devDependencies": {
+    "@fontsource/source-serif-4": "^5.3.0",
+    "@types/chrome": "^0.0.268",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.25.12",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.5.0"
+  }
+}

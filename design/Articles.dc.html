@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Noto+Serif+SC:wght@400;500;600&display=swap">
+  <style>
+    body {
+      margin: 0;
+      font-family: "Source Serif 4", "Noto Serif SC", Georgia, "Songti SC", serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: #a4551f; text-decoration: none; }
+    a:hover { color: #7d3f16; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1120px; height: 760px; background: #faf7f2; color: #1f1b16; display: flex; flex-direction: column; overflow: hidden">
+
+  <!-- ── 页眉 ───────────────────────────────────────────── -->
+  <div style="display: flex; align-items: baseline; gap: 28px; padding: 26px 100px 18px; border-bottom: 1px solid #e3ddd2">
+    <div style="font-size: 19px; font-weight: 600; letter-spacing: 0.01em">Focus Session</div>
+    <div style="display: flex; gap: 22px; flex-grow: 1; font-size: 15px">
+      <div style="color: #1f1b16; font-weight: 600; border-bottom: 2px solid #a4551f; padding-bottom: 3px">文章</div>
+      <div style="display: flex; align-items: baseline; gap: 7px; color: #6f6558">
+        <span>复习</span>
+        <span style="font-size: 12px; color: #a4551f; font-variant-numeric: tabular-nums">7</span>
+      </div>
+      <div style="color: #6f6558">生词本</div>
+    </div>
+    <div style="font-size: 13px; color: #6f6558">设置</div>
+  </div>
+
+  <!-- ── 工具栏：筛选是文字链，不是控件堆 ──────────────────── -->
+  <div style="display: flex; align-items: center; gap: 20px; padding: 20px 100px 14px">
+    <div style="width: 260px; border-bottom: 1px solid #ddd5c8; padding-bottom: 5px; font-size: 14px; color: #9a8f7f">搜索标题或域名…</div>
+    <div style="display: flex; gap: 16px; font-size: 13.5px; flex-grow: 1">
+      <div style="color: #1f1b16; border-bottom: 1px solid #a4551f; padding-bottom: 2px">全部</div>
+      <div style="color: #6f6558">已读完</div>
+      <div style="color: #6f6558">未读完</div>
+    </div>
+    <div style="font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 12px; color: #8a7f70; font-variant-numeric: tabular-nums">共 34 篇，读完 12 篇</div>
+  </div>
+
+  <!-- ── 列表 ───────────────────────────────────────────── -->
+  <div style="display: flex; flex-direction: column; padding: 0 100px">
+
+    <!-- 已读完 -->
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #eee7dc">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">The Hidden Cost of Abstraction</div>
+        <div style="display: flex; align-items: center; gap: 6px">
+          <div style="width: 6px; height: 6px; border-radius: 50%; background: #a4551f"></div>
+          <div style="font-size: 13px; color: #a4551f">读完</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>example.com</div><div>1,840 字</div><div>23 分钟</div><div>4 段专注</div><div>9 月 2 日</div>
+      </div>
+    </div>
+
+    <!-- 进行中 -->
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #eee7dc">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">The Law of Leaky Abstractions</div>
+        <div style="font-size: 13px; color: #8a7f70; font-variant-numeric: tabular-nums">68%</div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>joelonsoftware.com</div><div>2,610 字</div><div>18 分钟</div><div>3 段专注</div><div>9 月 3 日</div>
+      </div>
+      <div style="height: 2px; background: #eee7dc; margin-top: 3px">
+        <div style="width: 68%; height: 100%; background: #c99a72"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #eee7dc">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">What Color is Your Function?</div>
+        <div style="display: flex; align-items: center; gap: 6px">
+          <div style="width: 6px; height: 6px; border-radius: 50%; background: #a4551f"></div>
+          <div style="font-size: 13px; color: #a4551f">读完</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>journal.stuffwithstuff.com</div><div>3,120 字</div><div>31 分钟</div><div>6 段专注</div><div>8 月 30 日</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #eee7dc">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">Teach Yourself Programming in Ten Years</div>
+        <div style="font-size: 13px; color: #8a7f70; font-variant-numeric: tabular-nums">34%</div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>norvig.com</div><div>1,450 字</div><div>7 分钟</div><div>2 段专注</div><div>8 月 28 日</div>
+      </div>
+      <div style="height: 2px; background: #eee7dc; margin-top: 3px">
+        <div style="width: 34%; height: 100%; background: #c99a72"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #eee7dc">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">Reflections on Trusting Trust</div>
+        <div style="display: flex; align-items: center; gap: 6px">
+          <div style="width: 6px; height: 6px; border-radius: 50%; background: #a4551f"></div>
+          <div style="font-size: 13px; color: #a4551f">读完</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>cs.cmu.edu</div><div>1,120 字</div><div>14 分钟</div><div>2 段专注</div><div>8 月 26 日</div>
+      </div>
+    </div>
+
+    <!-- 读了但没读到末尾——这个状态值得在设计里可见 -->
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 16px 0">
+      <div style="display: flex; align-items: baseline; gap: 11px">
+        <div style="font-size: 16.5px; flex-grow: 1">Parse, don't validate</div>
+        <div style="font-size: 13px; color: #8a7f70; font-variant-numeric: tabular-nums">91%</div>
+      </div>
+      <div style="display: flex; gap: 14px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #8a7f70; font-variant-numeric: tabular-nums">
+        <div>lexi-lambda.github.io</div><div>4,300 字</div><div>38 分钟</div><div>7 段专注</div><div>8 月 24 日</div>
+        <div style="color: #a4551f">未读到末尾</div>
+      </div>
+      <div style="height: 2px; background: #eee7dc; margin-top: 3px">
+        <div style="width: 91%; height: 100%; background: #c99a72"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

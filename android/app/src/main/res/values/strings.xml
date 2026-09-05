@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Focus Session</string>
+    <string name="saved_to">已保存到 下载/FocusSession/%1$s</string>
+    <string name="saved_to_app_dir">已保存到 %1$s（旧系统写不进公共下载目录，用「分享」发出去）</string>
+    <string name="save_failed">保存失败：%1$s</string>
+    <string name="share_title">分享导出文件</string>
+</resources>

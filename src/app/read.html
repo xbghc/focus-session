@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>阅读</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="reader">
+    <header class="rbar">
+      <button id="back" class="iconbtn" aria-label="返回">‹</button>
+      <div class="rinfo">
+        <div id="rtitle" class="rtitle">正在抓取…</div>
+        <div id="rmeta" class="rmeta"></div>
+      </div>
+      <button id="words" class="iconbtn words" aria-label="本文生词">词<span id="words-n" class="n"></span></button>
+    </header>
+
+    <main id="article" class="article"><p class="status">正在抓取正文…</p></main>
+
+    <!-- 本文生词：从底部拉起的一张单子，和扩展的侧边栏是同一份内容 -->
+    <section id="sheet" class="sheet" hidden>
+      <div class="sheet-head">
+        <span>本文生词</span>
+        <span class="grow"></span>
+        <button id="refetch" class="mini">重新抓取正文</button>
+        <button id="sheet-close" class="mini">收起</button>
+      </div>
+      <div id="sheet-list"></div>
+    </section>
+
+    <script src="read.js"></script>
+  </body>
+</html>

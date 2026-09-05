@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 src/popup/popup.css 的纸墨配色同一组数字 -->
+    <color name="paper">#FAF7F2</color>
+    <color name="ink">#1C1917</color>
+    <color name="ochre">#A4551F</color>
+    <color name="card">#FFFDFA</color>
+</resources>

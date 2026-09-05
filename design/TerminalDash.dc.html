@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body {
+      margin: 0;
+      font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+    }
+    a { color: #d7c98a; text-decoration: none; }
+    a:hover { color: #efe3ad; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1120px; height: 760px; background: #14161a; color: #c8ccd4; display: flex; flex-direction: column; overflow: hidden; font-size: 13px; line-height: 1.6">
+
+  <!-- ── 状态行：像 tmux 的 status bar ─────────────────────── -->
+  <div style="display: flex; align-items: center; gap: 0; background: #1c1f25; border-bottom: 1px solid #2a2e36">
+    <div style="background: #d7c98a; color: #14161a; padding: 6px 13px; font-weight: 600; letter-spacing: 0.02em">REVIEW</div>
+    <div style="padding: 6px 13px; color: #6d7480">articles</div>
+    <div style="padding: 6px 13px; color: #6d7480">words</div>
+    <div style="flex-grow: 1"></div>
+    <div style="padding: 6px 16px; color: #6d7480">due <span style="color: #d7c98a">7</span>/23</div>
+  </div>
+
+  <!-- ── 队列概览：纯文本表格 ──────────────────────────────── -->
+  <div style="padding: 20px 34px 0; display: flex; flex-direction: column; gap: 3px">
+    <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; color: #6d7480; font-size: 12px">
+      <div>due</div><div>total</div><div>new</div><div>learning</div><div>review</div><div>next-6d</div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; font-variant-numeric: tabular-nums; font-size: 22px; color: #e4e8ef">
+      <div style="color: #d7c98a">7</div><div>23</div><div>4</div><div>6</div><div>13</div><div>18</div>
+    </div>
+  </div>
+
+  <!-- ── forecast：ASCII 直方图 ───────────────────────────── -->
+  <div style="padding: 18px 34px 0; display: flex; flex-direction: column; gap: 4px; color: #6d7480; font-size: 12px">
+    <div style="display: flex; gap: 14px">
+      <div style="width: 46px; color: #6d7480">today</div>
+      <div style="color: #8f9aa8">███████</div>
+      <div style="font-variant-numeric: tabular-nums">7</div>
+    </div>
+    <div style="display: flex; gap: 14px">
+      <div style="width: 46px">+1d</div>
+      <div style="color: #4d5560">███</div>
+      <div style="font-variant-numeric: tabular-nums">3</div>
+    </div>
+    <div style="display: flex; gap: 14px">
+      <div style="width: 46px">+2d</div>
+      <div style="color: #4d5560">█████</div>
+      <div style="font-variant-numeric: tabular-nums">5</div>
+    </div>
+    <div style="display: flex; gap: 14px">
+      <div style="width: 46px">+3d</div>
+      <div style="color: #4d5560">██</div>
+      <div style="font-variant-numeric: tabular-nums">2</div>
+    </div>
+  </div>
+
+  <!-- ── 卡片：无边框，靠缩进和色阶分层 ────────────────────── -->
+  <div style="padding: 26px 34px 0; display: flex; flex-direction: column; gap: 14px; flex-grow: 1">
+
+    <div style="display: flex; align-items: baseline; gap: 12px">
+      <div style="color: #4d5560">&gt;</div>
+      <div style="font-size: 30px; font-weight: 600; color: #e4e8ef; letter-spacing: -0.01em">leak</div>
+      <div style="color: #6d7480; font-size: 13px">/liːk/ verb</div>
+      <div style="flex-grow: 1"></div>
+      <div style="color: #4d5560; font-size: 12px; font-variant-numeric: tabular-nums">reps 3 · lapses 1 · stability 5.2d</div>
+    </div>
+
+    <div style="padding-left: 22px; display: flex; flex-direction: column; gap: 10px">
+      <div style="font-size: 19px; color: #d7c98a">泄漏</div>
+      <div style="font-size: 13px; line-height: 1.8; color: #98a0ac; max-width: 760px">此处为比喻用法，指抽象层在实际使用中暴露出与底层实现不一致的缺陷或问题。</div>
+      <div style="font-size: 13px; line-height: 1.8; color: #7b8391; max-width: 760px; border-left: 2px solid #2a2e36; padding-left: 14px">Every abstraction <span style="color: #d7c98a">leaks</span>. The question is not whether it leaks, but whether the leak is cheaper than the thing it hides.<br><span style="color: #4d5560; font-size: 12px">The Hidden Cost of Abstraction</span></div>
+    </div>
+  </div>
+
+  <!-- ── 键位条：键是主角，不是脚注 ────────────────────────── -->
+  <div style="border-top: 1px solid #2a2e36; background: #1c1f25; padding: 14px 34px; display: flex; gap: 10px; align-items: center">
+    <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #3a3f49; border-radius: 3px; padding: 7px 13px">
+      <span style="background: #2a2e36; color: #c8ccd4; padding: 1px 7px; border-radius: 2px; font-size: 12px">1</span>
+      <span style="color: #98a0ac">again</span>
+      <span style="color: #4d5560; font-size: 12px; font-variant-numeric: tabular-nums">10m</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #3a3f49; border-radius: 3px; padding: 7px 13px">
+      <span style="background: #2a2e36; color: #c8ccd4; padding: 1px 7px; border-radius: 2px; font-size: 12px">2</span>
+      <span style="color: #98a0ac">hard</span>
+      <span style="color: #4d5560; font-size: 12px; font-variant-numeric: tabular-nums">2d</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #d7c98a; border-radius: 3px; padding: 7px 13px; background: #d7c98a">
+      <span style="background: #14161a; color: #d7c98a; padding: 1px 7px; border-radius: 2px; font-size: 12px">3</span>
+      <span style="color: #14161a; font-weight: 600">good</span>
+      <span style="color: #5c5433; font-size: 12px; font-variant-numeric: tabular-nums">5d</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #3a3f49; border-radius: 3px; padding: 7px 13px">
+      <span style="background: #2a2e36; color: #c8ccd4; padding: 1px 7px; border-radius: 2px; font-size: 12px">4</span>
+      <span style="color: #98a0ac">easy</span>
+      <span style="color: #4d5560; font-size: 12px; font-variant-numeric: tabular-nums">12d</span>
+    </div>
+    <div style="flex-grow: 1"></div>
+    <div style="color: #4d5560; font-size: 12px">space 翻面 · e 例句 · x 讲解 · q 出题</div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

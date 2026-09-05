@@ -1,0 +1,140 @@
+/*
+ * 拉丁衬线自带，不走 Google Fonts：划词浮层跑在别人的页面里，外部字体常被
+ * 宿主站的 CSP 拦掉，而且这个扩展除翻译请求外不该再往外发任何请求。
+ * 中文没有自带——见 build.mjs 的说明。
+ */
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url("fonts/source-serif-4-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal; font-weight: 600; font-display: swap;
+  src: url("fonts/source-serif-4-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: italic; font-weight: 400; font-display: swap;
+  src: url("fonts/source-serif-4-latin-400-italic.woff2") format("woff2");
+}
+
+/*
+ * 纸墨配色。accent 的亮暗两版在 oklch 里同色度同色相（C=0.123 H=50.8），
+ * 只抬亮度 L=0.536 -> 0.72，所以暗色下不会偏色，只是更亮。
+ */
+:root {
+  --bg: #faf7f2;          /* 纸 */
+  --card: #fffdfa;        /* 卡片，比纸再白一点 */
+  --fg: #1f1b16;          /* 墨 */
+  --fg-soft: #4a4238;     /* 次级正文 */
+  --muted: #6f6558;
+  --line: #e3ddd2;
+  --line-soft: #eee7dc;   /* 卡片内部的分隔线 */
+  --accent: #a4551f;      /* 赭 */
+  --bar: #e0c4a8;
+  --bar-strong: #c99a72;
+  --warn: #8b5a2b;
+
+  /*
+   * 两套字体分工：衬线承担内容（标题、大数字、kv 标签），
+   * 无衬线承担注脚（域名、时长、日期）。380px 的 popup 里整栏衬线会糊，
+   * 这个分工是窄栏能站住的前提。
+   */
+  --serif: "Source Serif 4", Georgia, "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1917;
+    --card: #262220;
+    --fg: #e8e0d5;
+    --fg-soft: #bdb3a4;
+    --muted: #9a8f7f;
+    --line: #332f2a;
+    --line-soft: #2b2724;
+    --accent: #e18d5a;
+    --bar: #653d15;
+    --bar-strong: #e18d5a;
+    --warn: #d4a373;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 380px;
+  margin: 0;
+  font: 13.5px/1.55 var(--serif);
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tab {
+  flex: 1; padding: 9px 4px; border: 0; background: none; cursor: pointer;
+  color: var(--muted); font: inherit; border-bottom: 2px solid transparent;
+}
+.tab.is-active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+.panel { padding: 12px; max-height: 460px; overflow-y: auto; }
+
+h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+/* 注脚：域名、时长、日期这类，用无衬线 */
+.small, .item-meta, .item-host, .foot, table.sessions { font-family: var(--sans); }
+
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; margin: 10px 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+/* 「预计还需」下面那句依据：紧贴着数字，不另起一块 */
+.basis { margin: -6px 0 10px; }
+
+.big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.live { color: var(--accent); }
+
+.progress { height: 5px; background: var(--line-soft); border-radius: 2px; overflow: hidden; margin: 6px 0; }
+.progress > span { display: block; height: 100%; background: var(--bar-strong); }
+
+/* session 时间条：每段宽度正比于时长 */
+.timeline { display: flex; gap: 2px; align-items: flex-end; height: 34px; margin: 8px 0 4px; }
+.timeline .seg { background: var(--bar); border-radius: 2px; min-width: 3px; height: 100%; }
+.timeline .seg.is-live { background: var(--bar-strong); }
+.timeline .gap { flex: 0 1 auto; min-width: 2px; }
+
+.empty { color: var(--muted); text-align: center; padding: 26px 10px; }
+
+.item { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.item:last-child { border-bottom: 0; }
+.item-head { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.item-title {
+  flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.item-meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.item-host { color: var(--muted); font-size: 11px; }
+
+table.sessions { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
+table.sessions th { text-align: right; color: var(--muted); font-weight: 500; padding: 2px 4px; }
+table.sessions th:first-child { text-align: left; }
+table.sessions td { text-align: right; padding: 2px 4px; font-variant-numeric: tabular-nums; }
+table.sessions td:first-child { text-align: left; color: var(--muted); }
+
+.reason { font-size: 10px; padding: 0 4px; border-radius: 2px; background: var(--line); color: var(--muted); font-family: var(--sans); }
+
+.foot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 12px; border-top: 1px solid var(--line); font-size: 11px;
+}
+.foot a { color: var(--accent); text-decoration: none; }
+.foot a:hover { text-decoration: underline; }
+
+/* popup 里「回顾材料备好了没」那一行。和 kv 表拉开一点距离，是提示不是数据。 */
+.review-line {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line-soft);
+  font-family: var(--sans); font-size: 11.5px; color: var(--muted);
+}
+.review-line a { color: var(--accent); text-decoration: none; margin-left: auto; }
+.review-line .hint-right { margin-left: auto; }
+.review-line a:hover { text-decoration: underline; }

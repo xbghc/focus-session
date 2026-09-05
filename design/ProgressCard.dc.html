@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { color: #1d4ed8; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 560px; height: 520px; background: #f6f7f9; padding: 26px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; color: #1a1a1a">
+
+  <div style="background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px 26px; display: flex; flex-direction: column; gap: 13px; box-shadow: 0 1px 3px rgba(26, 26, 26, 0.05)">
+
+    <!-- 这张卡在整个队列里的位置——进度感方向的特征 -->
+    <div style="display: flex; align-items: center; gap: 10px">
+      <div style="font-size: 11px; color: #6b7280; font-variant-numeric: tabular-nums">第 17 张 / 共 23</div>
+      <div style="flex-grow: 1; height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden">
+        <div style="width: 73.9%; height: 100%; background: #2563eb"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: baseline; gap: 10px">
+      <div style="font-size: 30px; font-weight: 600; letter-spacing: -0.01em">leak</div>
+      <div style="font-size: 12.5px; color: #6b7280; flex-grow: 1">/liːk/ · verb</div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 8px">
+      <div style="font-size: 11px; color: #6b7280">掌握度</div>
+      <div style="width: 88px; height: 5px; background: #e5e7eb; border-radius: 3px; overflow: hidden">
+        <div style="width: 62%; height: 100%; background: #2563eb"></div>
+      </div>
+      <div style="font-size: 11px; color: #9ca3af; font-variant-numeric: tabular-nums">稳定 5.2 天 · 忘过 1 次</div>
+    </div>
+
+    <div style="font-size: 19px; padding-top: 2px">泄漏</div>
+
+    <div style="font-size: 12.5px; line-height: 1.75; color: #6b7280">此处为比喻用法，指抽象层在实际使用中暴露出与底层实现不一致的缺陷或问题。</div>
+
+    <div style="border-top: 1px solid #e5e7eb; padding-top: 12px; font-size: 12.5px; line-height: 1.7; color: #6b7280">
+      Every abstraction <span style="background: #dbeafe; color: #1a1a1a; padding: 0 3px; border-radius: 2px">leaks</span>. The question is not whether it leaks, but whether the leak is cheaper than the thing it hides.
+      <div style="margin-top: 5px; font-size: 11px; color: #9ca3af">The Hidden Cost of Abstraction · 出现在 2 篇文章</div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 2px">
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 8px 3px; text-align: center">
+        <div style="font-size: 12.5px">忘了</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">10 分钟</div>
+      </div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 8px 3px; text-align: center">
+        <div style="font-size: 12.5px">有点难</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">2 天</div>
+      </div>
+      <div style="border: 1px solid #2563eb; background: #2563eb; border-radius: 7px; padding: 8px 3px; text-align: center; color: #ffffff">
+        <div style="font-size: 12.5px">记得</div>
+        <div style="font-size: 10px; margin-top: 2px; color: #c7dbff; font-variant-numeric: tabular-nums">5 天</div>
+      </div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 8px 3px; text-align: center">
+        <div style="font-size: 12.5px">太简单</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">12 天</div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 7px; align-items: center">
+      <div style="border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; color: #6b7280">再给个例句</div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; color: #6b7280">换个说法讲</div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; color: #6b7280">考我一下</div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

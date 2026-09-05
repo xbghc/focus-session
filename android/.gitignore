@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+# 由仓库根目录的 `npm run build:app` 生成
+app/src/main/assets/www/

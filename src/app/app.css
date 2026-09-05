@@ -1,0 +1,131 @@
+/*
+ * App 专用的布局覆盖。配色 token 与字体都来自 popup.css，这里只管手机屏幕上怎么摆：
+ * 导航贴底、正文放大、浮层不顶穿视口。
+ */
+html { -webkit-text-size-adjust: 100%; }
+body.app { padding: 0 14px calc(64px + env(safe-area-inset-bottom)); max-width: none; }
+body.app header { padding-top: calc(12px + env(safe-area-inset-top)); }
+body.app header h1 { font-size: 16px; }
+
+/* 手机：标签放到底部当导航栏，拇指够得着 */
+@media (max-width: 720px) {
+  body.app header nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    display: flex; gap: 0;
+    background: var(--card); border-top: 1px solid var(--line);
+    padding: 4px max(8px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+  body.app header nav .tab { flex: 1; text-align: center; padding: 11px 4px; border-color: transparent; }
+  body.app header nav .tab.active { border-color: transparent; }
+  body.app header { gap: 10px; }
+  .toolbar input[type="search"] { min-width: 0; }
+  .reviewer { max-width: none; }
+  .statbar { gap: 16px; }
+}
+
+/* 粘贴地址那一行 */
+.addrow { display: flex; gap: 8px; margin: 12px 0 14px; }
+.addrow input {
+  flex: 1; min-width: 0; font: inherit; color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: 3px; padding: 9px 11px;
+}
+.addrow button {
+  font-family: var(--sans); font-size: 13px; padding: 8px 16px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--card);
+}
+#add-hint { margin: -6px 0 10px; }
+
+/* 设置页顶部的返回 */
+.topnav { font-family: var(--sans); font-size: 14px; padding: calc(10px + env(safe-area-inset-top)) 0 2px; }
+.topnav a { color: var(--accent); text-decoration: none; }
+
+/* ---------- 阅读器 ---------- */
+body.reader {
+  width: auto; max-width: none; margin: 0; padding: 0;
+  font-size: 17px; line-height: 1.75;
+}
+.rbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+  padding: calc(6px + env(safe-area-inset-top)) 6px 6px;
+  background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.rinfo { flex: 1; min-width: 0; }
+.rtitle {
+  font-size: 14px; font-weight: 600; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rmeta { font: 11px/1.4 var(--sans); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iconbtn {
+  flex: 0 0 auto; min-width: 40px; height: 40px; padding: 0 10px;
+  font: 22px/1 var(--serif); color: var(--fg-soft); background: none; border: 0; border-radius: 3px;
+}
+.iconbtn.words { font: 600 14px/1 var(--sans); color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
+.iconbtn .n { font-size: 11px; color: var(--muted); font-weight: 400; }
+.iconbtn:active { background: color-mix(in srgb, var(--line) 60%, transparent); }
+
+.article { padding: 14px 18px calc(90px + env(safe-area-inset-bottom)); max-width: 42em; margin: 0 auto; overflow-wrap: break-word; }
+.article .atitle { font-size: 24px; line-height: 1.3; letter-spacing: -0.01em; margin: 6px 0 8px; }
+.article .aline {
+  font: 12px/1.5 var(--sans); color: var(--muted); display: flex; gap: 12px;
+  padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--line-soft);
+}
+.article .aline a { color: inherit; text-decoration: none; }
+.article .body h1, .article .body h2, .article .body h3, .article .body h4 { line-height: 1.35; margin: 1.4em 0 0.5em; }
+.article .body h1 { font-size: 22px; }
+.article .body h2 { font-size: 20px; }
+.article .body h3 { font-size: 18px; }
+.article .body p { margin: 0 0 1em; }
+.article .body img { max-width: 100%; height: auto; display: block; margin: 12px auto; border-radius: 2px; }
+.article .body figure { margin: 14px 0; }
+.article .body figcaption { font: 12px/1.5 var(--sans); color: var(--muted); text-align: center; }
+.article .body a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+.article .body blockquote { margin: 1em 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--line); color: var(--fg-soft); }
+.article .body pre {
+  overflow-x: auto; padding: 10px 12px; border-radius: 3px; font-size: 13px; line-height: 1.55;
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+}
+.article .body code { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; }
+.article .body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 14px; }
+.article .body th, .article .body td { border: 1px solid var(--line); padding: 4px 8px; }
+.article .body hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
+.article .body ul, .article .body ol { padding-left: 1.4em; }
+.article .status { color: var(--muted); text-align: center; padding: 60px 10px; font-family: var(--sans); font-size: 14px; line-height: 2; }
+.article .status .mini { margin-top: 8px; }
+
+/* 本文生词：从底部拉起的一张单子 */
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  max-height: 72vh; overflow-y: auto;
+  background: var(--bg); border-top: 1px solid var(--line);
+  box-shadow: 0 -8px 28px rgba(31, 27, 22, 0.14);
+  padding: 8px 14px calc(20px + env(safe-area-inset-bottom));
+  font-size: 14px; line-height: 1.6;
+}
+.sheet-head { display: flex; align-items: center; gap: 8px; padding: 4px 0 10px; font-weight: 600; }
+.sheet-head .grow { flex: 1; }
+.sheet .empty { color: var(--muted); text-align: center; padding: 30px 8px; line-height: 1.8; }
+/* 每条生词是一张小索引卡，顶部一道赭线——和扩展的侧边栏同一副面孔 */
+.sheet .item {
+  border: 1px solid var(--line); border-top: 2px solid var(--accent);
+  border-radius: 3px; background: var(--card);
+  padding: 10px 11px; margin-bottom: 8px;
+}
+.sheet .item .t { font-weight: 600; word-break: break-word; font-size: 15px; }
+.sheet .item .m { color: var(--muted); font-size: 11px; margin-top: 1px; font-family: var(--sans); }
+.sheet .item .tr { margin-top: 5px; font-size: 14px; }
+.sheet .item .n, .sheet .item .u { color: var(--fg-soft); font-size: 12.5px; line-height: 1.75; margin-top: 5px; }
+.sheet .item .u::before { content: "用法 · "; color: var(--muted); font-size: 11px; font-family: var(--sans); }
+.sheet .item .vocab { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line); }
+.sheet .item .v + .v { margin-top: 6px; }
+.sheet .item .vw { font-weight: 600; font-size: 13px; }
+.sheet .item .vm { color: var(--muted); font-size: 11px; margin-left: 6px; font-family: var(--sans); }
+.sheet .item .vd { font-size: 12.5px; line-height: 1.7; }
+.sheet .item .vn { color: var(--muted); font-size: 11.5px; line-height: 1.7; font-family: var(--sans); }
+.ph { cursor: pointer; border-bottom: 1px dotted currentColor; }
+
+button.mini {
+  font-family: var(--sans); font-size: 12px; cursor: pointer;
+  padding: 5px 10px; border-radius: 3px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+}

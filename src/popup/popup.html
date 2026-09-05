@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Focus Session</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="current" role="tab">当前页</button>
+      <button class="tab" data-tab="history" role="tab">历史</button>
+      <button class="tab" data-tab="overview" role="tab">概览</button>
+    </nav>
+
+    <section id="panel-current" class="panel"></section>
+    <section id="panel-history" class="panel" hidden></section>
+    <section id="panel-overview" class="panel" hidden></section>
+
+    <footer class="foot">
+      <a id="open-dashboard" href="#">面板 / 复习</a>
+      <a id="open-panel" href="#">本页生词</a>
+      <a id="open-options" href="#">设置</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

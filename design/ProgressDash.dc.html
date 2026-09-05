@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { color: #1d4ed8; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 1120px; height: 760px; background: #ffffff; color: #1a1a1a; display: flex; flex-direction: column; overflow: hidden">
+
+  <!-- ── 页眉 ───────────────────────────────────────────── -->
+  <div style="display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid #e5e7eb">
+    <div style="font-size: 15px; font-weight: 600">Focus Session</div>
+    <div style="display: flex; gap: 6px; flex-grow: 1">
+      <div style="padding: 5px 13px; border-radius: 6px; color: #6b7280; font-size: 13px">文章</div>
+      <div style="padding: 5px 13px; border-radius: 6px; background: #eff4ff; color: #2563eb; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px">
+        <span>复习</span>
+        <span style="background: #2563eb; color: #ffffff; border-radius: 9px; padding: 0 6px; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums">7</span>
+      </div>
+      <div style="padding: 5px 13px; border-radius: 6px; color: #6b7280; font-size: 13px">生词本</div>
+    </div>
+    <div style="font-size: 12px; color: #6b7280">设置</div>
+  </div>
+
+  <!-- ── 进度是视觉主角：连续天数 + 今日进度环 ─────────────── -->
+  <div style="display: flex; gap: 18px; padding: 22px 40px 0">
+
+    <!-- 今日复习进度 -->
+    <div style="flex-grow: 1; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px">
+      <div style="display: flex; align-items: baseline; gap: 8px">
+        <div style="font-size: 13px; color: #6b7280; flex-grow: 1">今天的队列</div>
+        <div style="font-size: 12px; color: #6b7280; font-variant-numeric: tabular-nums">还剩 7 张</div>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 6px">
+        <div style="font-size: 40px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums">16</div>
+        <div style="font-size: 15px; color: #6b7280; font-variant-numeric: tabular-nums">/ 23</div>
+      </div>
+      <div style="height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden">
+        <div style="width: 69.5%; height: 100%; background: #2563eb"></div>
+      </div>
+    </div>
+
+    <!-- 连续天数 -->
+    <div style="width: 200px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px">
+      <div style="font-size: 13px; color: #6b7280">连续复习</div>
+      <div style="display: flex; align-items: baseline; gap: 5px">
+        <div style="font-size: 40px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums">12</div>
+        <div style="font-size: 15px; color: #6b7280">天</div>
+      </div>
+      <div style="display: flex; gap: 3px">
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #2563eb"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #2563eb"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #2563eb"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #2563eb"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #2563eb"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #93c5fd"></div>
+        <div style="flex-grow: 1; height: 8px; border-radius: 2px; background: #e5e7eb"></div>
+      </div>
+    </div>
+
+    <!-- 未来 7 天到期柱状 -->
+    <div style="width: 330px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px">
+      <div style="font-size: 13px; color: #6b7280">未来 7 天到期</div>
+      <div style="display: flex; align-items: flex-end; gap: 8px; height: 56px">
+        <div style="flex-grow: 1; height: 100%; background: #2563eb; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 43%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 71%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 29%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 57%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 14%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+        <div style="flex-grow: 1; height: 43%; background: #93c5fd; border-radius: 3px 3px 0 0"></div>
+      </div>
+      <div style="display: flex; gap: 8px; font-size: 11px; color: #6b7280; font-variant-numeric: tabular-nums">
+        <div style="flex-grow: 1; text-align: center">7</div>
+        <div style="flex-grow: 1; text-align: center">3</div>
+        <div style="flex-grow: 1; text-align: center">5</div>
+        <div style="flex-grow: 1; text-align: center">2</div>
+        <div style="flex-grow: 1; text-align: center">4</div>
+        <div style="flex-grow: 1; text-align: center">1</div>
+        <div style="flex-grow: 1; text-align: center">3</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 卡片 ───────────────────────────────────────────── -->
+  <div style="padding: 20px 40px 0; display: flex; flex-direction: column; align-items: center; gap: 14px; flex-grow: 1">
+
+    <div style="width: 640px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 26px 30px; display: flex; flex-direction: column; gap: 12px">
+      <div style="display: flex; align-items: baseline; gap: 10px">
+        <div style="font-size: 30px; font-weight: 600; letter-spacing: -0.01em">leak</div>
+        <div style="font-size: 13px; color: #6b7280">/liːk/ · verb</div>
+        <div style="flex-grow: 1"></div>
+        <!-- 卡片自身的掌握度，进度感方向的特征元素 -->
+        <div style="display: flex; align-items: center; gap: 7px">
+          <div style="font-size: 11px; color: #6b7280">掌握度</div>
+          <div style="width: 70px; height: 5px; background: #e5e7eb; border-radius: 3px; overflow: hidden">
+            <div style="width: 62%; height: 100%; background: #2563eb"></div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size: 19px">泄漏</div>
+      <div style="font-size: 12.5px; line-height: 1.75; color: #6b7280">此处为比喻用法，指抽象层在实际使用中暴露出与底层实现不一致的缺陷或问题。</div>
+      <div style="border-top: 1px solid #e5e7eb; padding-top: 12px; font-size: 12.5px; line-height: 1.7; color: #6b7280">
+        Every abstraction <span style="background: #dbeafe; color: #1a1a1a; padding: 0 3px; border-radius: 2px">leaks</span>. The question is not whether it leaks, but whether the leak is cheaper than the thing it hides.
+        <div style="margin-top: 5px; font-size: 11px; color: #9ca3af">The Hidden Cost of Abstraction · 出现在 2 篇文章 · 第 3 次复习</div>
+      </div>
+    </div>
+
+    <div style="width: 640px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px">
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 9px 4px; text-align: center">
+        <div style="font-size: 13px">忘了</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">10 分钟</div>
+      </div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 9px 4px; text-align: center">
+        <div style="font-size: 13px">有点难</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">2 天</div>
+      </div>
+      <div style="border: 1px solid #2563eb; background: #2563eb; border-radius: 7px; padding: 9px 4px; text-align: center; color: #ffffff">
+        <div style="font-size: 13px">记得</div>
+        <div style="font-size: 10px; margin-top: 2px; color: #c7dbff; font-variant-numeric: tabular-nums">5 天</div>
+      </div>
+      <div style="border: 1px solid #e5e7eb; border-radius: 7px; padding: 9px 4px; text-align: center">
+        <div style="font-size: 13px">太简单</div>
+        <div style="font-size: 10px; color: #6b7280; margin-top: 2px; font-variant-numeric: tabular-nums">12 天</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,198 @@
+/* dashboard 复用 popup.css 的配色变量，只覆盖布局——popup 那边把 body 固定成 380px。 */
+body.dash {
+  width: auto;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 20px 60px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 0 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 5;
+}
+header h1 { font-size: 17px; margin: 0; }
+header nav { display: flex; gap: 4px; flex: 1; }
+header .tab {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+header .tab:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+header .tab.active { color: var(--accent); border-color: var(--line); font-weight: 600; }
+
+.badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--card);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.toolbar input[type="search"], .toolbar select {
+  font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 3px; padding: 5px 9px;
+}
+.toolbar input[type="search"] { flex: 1; min-width: 200px; }
+.chk { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+
+.list { display: flex; flex-direction: column; gap: 8px; }
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 13px 15px;
+  background: var(--card);
+}
+.card .row1 { display: flex; align-items: baseline; gap: 8px; }
+.card .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .title a { color: inherit; text-decoration: none; }
+.card .title a:hover { text-decoration: underline; }
+.card .sub {
+  color: var(--muted); font-size: 11.5px; margin-top: 4px;
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-family: var(--sans);
+}
+
+/* ---- 讲解：用法一行，生词逐条 ---- */
+.card .usage { font-size: 12.5px; line-height: 1.8; color: var(--fg-soft); margin-top: 4px; }
+.card .usage::before { content: "用法 · "; color: var(--muted); font-size: 11.5px; font-family: var(--sans); }
+.card .vocab { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-soft); }
+.card .v + .v { margin-top: 7px; }
+.card .vw { font-weight: 600; }
+.card .vm { color: var(--muted); font-size: 11.5px; margin-left: 7px; font-family: var(--sans); }
+/* 可点朗读的音标。虚线下划线是唯一的提示——注脚里塞个喇叭图标太吵。 */
+.ph { cursor: pointer; border-bottom: 1px dotted currentColor; }
+.ph:hover { color: var(--accent); }
+.card .vd { font-size: 13px; line-height: 1.75; }
+.card .vn { color: var(--muted); font-size: 12px; line-height: 1.7; font-family: var(--sans); }
+
+.progress { height: 2px; border-radius: 0; background: var(--line-soft); margin-top: 8px; overflow: hidden; }
+.progress > i { display: block; height: 100%; background: var(--bar-strong); }
+
+/*
+ * 「读完」「在复习」这类就位态用实心圆点 + 文字，不做成 pill——
+ * 这套设计的气质是纸和墨，不是标签贴纸。粒度标签（单词/短语/句子）
+ * 仍是描述性的，保留边框形态但收成直角。
+ */
+.pill {
+  font-size: 11px; padding: 1px 6px; border-radius: 2px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  font-family: var(--sans);
+}
+.pill.done {
+  border: 0; padding: 0; color: var(--accent);
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--serif); font-size: 13px;
+  /* 父行是 align-items: baseline，而圆点没有文字基线——不改成 center
+     的话浏览器拿圆点的下边缘当基线，「读完」二字会比同行标题低几像素 */
+  align-self: center;
+}
+.pill.done::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); flex: 0 0 auto;
+}
+
+button.mini {
+  font-family: var(--sans); font-size: 11.5px; cursor: pointer;
+  padding: 3px 9px; border-radius: 3px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+}
+button.mini:hover { border-color: var(--accent); color: var(--accent); }
+button.mini.danger:hover { border-color: var(--warn); color: var(--warn); }
+
+/* ---------- 复习 ---------- */
+/* 生词 / 文章两个队列的切换。做成下划线而不是按钮组，和顶部标签同一种语言。 */
+.segbar { display: flex; margin: 14px 0 0; border-bottom: 1px solid var(--line); }
+.seg {
+  font: inherit; cursor: pointer; background: none; border: 0;
+  padding: 6px 2px; margin-right: 22px; margin-bottom: -1px;
+  color: var(--muted); border-bottom: 2px solid transparent;
+}
+.seg:hover { color: var(--fg-soft); }
+.seg.active { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
+.seg .n {
+  font-family: var(--sans); font-size: 11px; color: var(--muted);
+  margin-left: 5px; font-variant-numeric: tabular-nums; font-weight: 400;
+}
+
+.statbar { display: flex; gap: 22px; padding: 12px 0 18px; flex-wrap: wrap; }
+.statbar .stat { display: flex; flex-direction: column; }
+.statbar .stat b { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.statbar .stat span { color: var(--muted); font-size: 11.5px; font-family: var(--sans); }
+
+.reviewer { max-width: 560px; margin: 0 auto; text-align: center; }
+.face {
+  border: 1px solid var(--line); border-top: 3px solid var(--accent);
+  border-radius: 3px; background: var(--card);
+  box-shadow: 0 1px 2px rgba(31, 27, 22, 0.05), 0 10px 28px rgba(31, 27, 22, 0.07);
+  padding: 30px 28px; min-height: 190px;
+  display: flex; flex-direction: column; justify-content: center; gap: 11px;
+}
+.face .word { font-size: 32px; font-weight: 600; word-break: break-word; letter-spacing: -0.01em; }
+.face .phon { color: var(--muted); font-size: 13px; font-style: italic; }
+.face .answer { font-size: 19px; }
+.face .note { color: var(--fg-soft); font-size: 13px; line-height: 1.85; text-align: left; }
+.face .src {
+  text-align: left; font-size: 13px; color: var(--fg-soft); line-height: 1.7;
+  border-top: 1px solid var(--line-soft); padding-top: 12px; margin-top: 4px;
+  font-style: italic;
+}
+.face .src em { font-style: normal; background: color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 2px; padding: 0 2px; }
+/* 出处那一行是注脚，不跟着引文一起斜。highlight() 生成的是文本节点 + em，
+   不是直接子 div，所以这条只命中出处行。 */
+.face .src > div { font-style: normal; font-family: var(--sans); font-size: 11.5px; color: var(--muted); }
+
+.grades { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+.grades button {
+  flex: 1; font: inherit; cursor: pointer; padding: 10px 4px;
+  border: 1px solid var(--line); border-radius: 3px; background: var(--card); color: var(--fg);
+}
+.grades button:hover { border-color: var(--accent); }
+.grades button small { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; font-family: var(--sans); font-variant-numeric: tabular-nums; }
+
+.assist { margin-top: 14px; text-align: left; }
+.assist .bar { display: flex; gap: 7px; justify-content: center; }
+.assist .out {
+  margin-top: 10px; padding: 12px 14px; border-radius: 3px;
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+  white-space: pre-wrap; font-size: 13px; line-height: 1.85;
+}
+
+.empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+
+/* ---------- 文章回顾 ----------
+   比生词卡宽：大纲是成句的，360px 一行放不下几个字。 */
+.reviewer.wide { max-width: 660px; }
+.face .atitle { font-size: 21px; font-weight: 600; line-height: 1.4; text-align: left; letter-spacing: -0.01em; }
+.face .ameta {
+  font-family: var(--sans); font-size: 11.5px; color: var(--muted); text-align: left;
+  border-bottom: 1px solid var(--line-soft); padding-bottom: 12px;
+}
+/* 小标题用无衬线全大写，和正文拉开层级又不抢戏 */
+.face .lead {
+  font-family: var(--sans); font-size: 11px; color: var(--muted);
+  text-align: left; letter-spacing: 0.08em; margin-top: 2px;
+}
+.face ol.qs, .face ol.ol { text-align: left; margin: 0; padding-left: 1.4em; }
+.face ol.qs li { margin: 9px 0; line-height: 1.75; font-size: 15px; }
+.face ol.ol li { margin: 10px 0; line-height: 1.85; }
+.face ol.qs li::marker, .face ol.ol li::marker { color: var(--accent); }

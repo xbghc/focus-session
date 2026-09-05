@@ -1,0 +1,7 @@
+# 仓库里一律 LF；Windows 的批处理文件例外
+* text=auto eol=lf
+*.bat text eol=crlf
+android/gradlew text eol=lf
+*.jar binary
+*.woff2 binary
+*.png binary

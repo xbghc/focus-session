@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Focus Session</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body class="dash">
+    <header>
+      <h1>Focus Session</h1>
+      <nav>
+        <button data-tab="articles" class="tab active">文章</button>
+        <button data-tab="review" class="tab">复习 <span id="due-badge" class="badge" hidden></span></button>
+        <button data-tab="words" class="tab">生词本</button>
+      </nav>
+      <a id="to-options" href="#" class="muted small">设置</a>
+    </header>
+
+    <!-- ---------------- 文章 ---------------- -->
+    <section id="pane-articles" class="pane">
+      <div class="toolbar">
+        <input id="q-article" type="search" placeholder="搜索标题或域名" />
+        <select id="finish-filter">
+          <option value="">全部文章</option>
+          <option value="done">已读完</option>
+          <option value="reading">未读完</option>
+        </select>
+        <span id="article-summary" class="muted small"></span>
+      </div>
+      <div id="articles" class="list"></div>
+    </section>
+
+    <!-- ---------------- 复习 ---------------- -->
+    <section id="pane-review" class="pane" hidden>
+      <!-- 两个队列不交错渲染：生词卡是一个词，文章卡是一整篇，节奏完全不同 -->
+      <div class="segbar">
+        <button class="seg active" data-queue="words">生词<span id="seg-words-n" class="n"></span></button>
+        <button class="seg" data-queue="articles">文章<span id="seg-articles-n" class="n"></span></button>
+      </div>
+      <div id="review-stats" class="statbar"></div>
+      <div id="review-area"></div>
+    </section>
+
+    <!-- ---------------- 生词本 ---------------- -->
+    <section id="pane-words" class="pane" hidden>
+      <div class="toolbar">
+        <input id="q-word" type="search" placeholder="搜索原文、译文或出处" />
+        <select id="kind-filter">
+          <option value="">全部粒度</option>
+          <option value="word">单词</option>
+          <option value="phrase">短语</option>
+          <option value="sentence">句子</option>
+        </select>
+        <span id="word-summary" class="muted small"></span>
+      </div>
+      <div id="words" class="list"></div>
+    </section>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

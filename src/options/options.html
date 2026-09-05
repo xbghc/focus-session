@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Focus Session 设置</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      /* 表单页不是读物：正文交给无衬线，只有标题保留衬线的调子 */
+      body { width: auto; max-width: 620px; margin: 0 auto; padding: 24px 20px 60px; font-family: var(--sans); }
+      h1 { font-family: var(--serif); font-size: 20px; margin: 0 0 4px; }
+      legend { font-family: var(--serif); font-size: 14px; }
+      fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin: 18px 0; background: var(--card); }
+      legend { padding: 0 6px; font-weight: 600; }
+      .field { display: grid; grid-template-columns: 190px 100px 1fr; gap: 10px; align-items: center; margin: 10px 0; }
+      .field label { color: var(--fg); }
+      .field .hint { color: var(--muted); font-size: 11px; }
+      input[type="number"], input[type="text"], input[type="password"], textarea {
+        font: inherit; color: var(--fg); background: var(--bg);
+        border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; width: 100%;
+      }
+      textarea { min-height: 88px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+      button {
+        font-family: var(--sans); font-size: 13px; padding: 7px 15px; border-radius: 3px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--card); }
+      button.danger { color: var(--warn); border-color: var(--warn); }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      #status { color: var(--accent); font-size: 12px; min-height: 1.2em; }
+      .field label { font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>Focus Session 设置</h1>
+    <p class="muted small">
+      阅读记录只保存在本机的浏览器存储里。<strong>但划词翻译会把选中的文本及其所在段落发送给
+      MiniMax</strong>——不需要翻译的页面请加进下面的排除域名，或直接关掉划词翻译。
+    </p>
+
+    <fieldset>
+      <legend>MiniMax（翻译与复习都用它）</legend>
+      <div class="field">
+        <label for="apiKey">API Key</label>
+        <input id="apiKey" type="password" placeholder="留空则保持不变" style="grid-column: 2 / 4" />
+      </div>
+      <div class="field">
+        <label for="model">模型</label>
+        <input id="model" type="text" style="grid-column: 2 / 4" />
+      </div>
+      <div class="field">
+        <label for="baseUrl">Base URL</label>
+        <input id="baseUrl" type="text" style="grid-column: 2 / 4" />
+      </div>
+      <div class="field">
+        <label for="maxTokens">max_tokens</label>
+        <input id="maxTokens" type="number" min="256" max="8192" step="64" />
+        <span class="hint">上限不是花销，只有真生成的 token 才计费；压低只会把输出截断</span>
+      </div>
+      <div class="field">
+        <label for="timeout">超时（秒）</label>
+        <input id="timeout" type="number" min="5" max="120" step="1" />
+        <span class="hint">流式下是整条流的总时限；实测 3–10 秒，长选区加讲解更久</span>
+      </div>
+      <p class="muted small">
+        去 <a href="https://platform.minimaxi.com/" target="_blank" rel="noreferrer">platform.minimaxi.com</a>
+        创建 API Key。密钥单独存放，不会随导出文件带出，也不会进入网页所在的进程。
+      </p>
+      <div class="row">
+        <button id="save-llm" class="primary">保存并测试连接</button>
+        <span id="llm-status" class="muted small"></span>
+      </div>
+      <p id="usage" class="muted small"></p>
+    </fieldset>
+
+    <fieldset>
+      <legend>划词翻译</legend>
+      <div class="field">
+        <label for="translateEnabled">启用划词翻译</label>
+        <input id="translateEnabled" type="checkbox" style="width: auto" />
+        <span class="hint">关掉后文章页不再监听选区</span>
+      </div>
+      <div class="field">
+        <label for="minSel">最短选区（字符）</label>
+        <input id="minSel" type="number" min="1" max="20" step="1" />
+        <span class="hint">短于此长度忽略，避免误选</span>
+      </div>
+      <div class="field">
+        <label for="maxAuto">自动翻译上限（词）</label>
+        <input id="maxAuto" type="number" min="3" max="360" step="1" />
+        <span class="hint">只拦离谱的量：超过才先弹按钮确认，不自动发请求</span>
+      </div>
+      <div class="field">
+        <label for="ctxChars">上下文长度（字符）</label>
+        <input id="ctxChars" type="number" min="0" max="2000" step="50" />
+        <span class="hint">随选中文本一起发出的段落，用于判断词义</span>
+      </div>
+      <div class="field">
+        <label for="explainVocab">像老师那样讲解</label>
+        <input id="explainVocab" type="checkbox" style="width: auto" />
+        <span class="hint">除译文外再补一句用法；选中句子时逐个讲里面的生词</span>
+      </div>
+      <p class="muted small">
+        讲解会让一次整句翻译的输出 token 大约翻倍，浮层也要多一两秒才定住——
+        译文仍然是最先到的那一个。只想要译文就关掉它。
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>读完判定</legend>
+      <p class="muted small">
+        一篇文章要<strong>同时</strong>满足两个条件才算读完：已读比例达到下面的阈值，
+        且正文最后一段进入过视野。只看比例会把读了 80% 就关掉算成读完；只看触底会把
+        一路滚到底的跳读算成读完。
+      </p>
+      <div class="field">
+        <label for="finishRatio">已读比例阈值（%）</label>
+        <input id="finishRatio" type="number" min="10" max="100" step="5" />
+        <span class="hint">读完状态可在 dashboard 手动改</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>续读位置</legend>
+      <p class="muted small">
+        记住每篇文章上次读到的段落，重新打开时跳回去。
+        <strong>只在网页自己没有定位过时才跳</strong>——链接带 <code>#锚点</code>、
+        或浏览器刷新时已经恢复了滚动位置，都说明落点已经有人安排了，插件不抢。
+        抽取正文期间你要是已经自己滚了，这次也不跳。
+      </p>
+      <div class="field">
+        <label for="restorePositionEnabled">跳回上次位置</label>
+        <input id="restorePositionEnabled" type="checkbox" style="width: auto" />
+        <span class="hint">跳完左下角会给一行说明和「回到顶部」</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>文章回顾</legend>
+      <p class="muted small">
+        读到上面的比例时，会把正文存下来并让 LLM 先生成一份大纲和三个回想问题，
+        等你读完最后那点，材料已经备好了。读两眼就走的页面不会被保存。
+      </p>
+      <div class="field">
+        <label for="articleReviewEnabled">启用文章回顾</label>
+        <input id="articleReviewEnabled" type="checkbox" style="width: auto" />
+        <span class="hint">这是唯一无需你动手就会花 token 的地方</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>走神阈值</legend>
+      <p class="muted small">
+        阅读本身不产生任何输入：一屏 400 词按 238 字/分要读 100 秒，期间可以一下都不动。
+        所以两个阈值都<strong>随视口里的文字量自适应</strong>——静默上限 = max(下面的固定值，
+        读完当前一屏所需时间 × 1.5)，再不超过自适应上限。固定值是下限，视口里没什么字
+        （图、评论区）时它照旧起作用。
+      </p>
+      <div class="field">
+        <label for="idle">idleTimeout（秒）</label>
+        <input id="idle" type="number" min="5" max="600" step="1" />
+        <span class="hint">完全没有活动信号多久算走神（下限）</span>
+      </div>
+      <div class="field">
+        <label for="stall">stallTimeout（秒）</label>
+        <input id="stall" type="number" min="10" max="1800" step="1" />
+        <span class="hint">有输入但滚动位置不变多久算发呆（下限）</span>
+      </div>
+      <div class="field">
+        <label for="maxQuiet">自适应上限（秒）</label>
+        <input id="maxQuiet" type="number" min="0" max="1800" step="10" />
+        <span class="hint">静默上限最多放宽到这里；真离开时最多高估这么长。填 0 关闭自适应</span>
+      </div>
+      <div class="field">
+        <label for="minSession">最短 session（秒）</label>
+        <input id="minSession" type="number" min="0" max="120" step="1" />
+        <span class="hint">短于此长度直接丢弃，过滤切换标签产生的碎片</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>段落已读判定</legend>
+      <p class="muted small">
+        一段文字要在视野里停留到<strong>读完它所需时间的一定比例</strong>才记为已读，
+        不是露出一秒就算。正常阅读的停留是所需时间的 0.8 倍以上，跳读只有 0.4 倍左右，
+        默认 50% 落在两者之间。
+      </p>
+      <div class="field">
+        <label for="readFraction">所需时间的比例（%）</label>
+        <input id="readFraction" type="number" min="10" max="100" step="5" />
+        <span class="hint">按 238 词/分（英文）、400 字/分（中日韩）估算所需时间</span>
+      </div>
+      <div class="field">
+        <label for="dwell">最短停留（毫秒）</label>
+        <input id="dwell" type="number" min="100" max="10000" step="100" />
+        <span class="hint">阈值的下限：几个字的标题也得看上一眼</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>统计口径</legend>
+      <p class="muted small">
+        session 的边界是「输入信号中断」，切去查个东西再回来、安静读一屏后被判走神，
+        都会把一次连续投入切成一串片段。<strong>回合</strong>把同一篇文章内间隔不长的片段接回去，
+        概览页以它为主。合并阈值本身是结果的一部分，概览页会把它写出来。
+      </p>
+      <div class="field">
+        <label for="episodeGap">回合合并间隔（分钟）</label>
+        <input id="episodeGap" type="number" min="0" max="120" step="1" />
+        <span class="hint">同一篇文章内间隔不超过这个值的片段合成一个回合</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>排除域名</legend>
+      <p class="muted small">每行一个。填写 example.com 会同时排除它的子域。</p>
+      <textarea id="excluded" spellcheck="false" placeholder="mail.google.com&#10;twitter.com"></textarea>
+    </fieldset>
+
+    <div class="row">
+      <button id="save" class="primary">保存</button>
+      <button id="reset">恢复默认</button>
+      <span id="status"></span>
+    </div>
+
+    <fieldset>
+      <legend>数据</legend>
+      <p class="muted small">
+        导出为 JSON：一是给另一台设备（手机 App、另一台电脑上的扩展）导入合并，二是日后接入
+        ActivityWatch 之类的工具做跨应用统计。
+      </p>
+      <div class="row">
+        <button id="export">导出 JSON</button>
+        <a id="download" hidden></a>
+        <button id="import">导入并合并 JSON…</button>
+        <input id="import-file" type="file" accept="application/json,.json" hidden />
+        <button id="clear" class="danger">清空全部记录</button>
+        <span id="data-status" class="muted small"></span>
+      </div>
+      <p class="muted small">
+        导入按文章、专注片段、划词、复习卡逐条合并：同一份文件导两次不会重复，
+        同一个词在两边各有一张卡时合成一张、取最近复习过的排期。设置与 API Key 不受影响。
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>诊断日志</legend>
+      <p class="muted small">
+        每次 LLM 调用失败（解析失败、超时、接口报错）都把现场记在本机：错误信息、模型的原始输出、
+        当时选中的文本。出问题时复制或下载它即可。不含 API Key，不进上面的数据导出，只留最近 10 条。
+      </p>
+      <div class="row">
+        <button id="log-copy">复制诊断日志</button>
+        <button id="log-download">下载 JSON</button>
+        <a id="log-file" hidden></a>
+        <button id="log-clear">清空日志</button>
+        <span id="log-status" class="muted small"></span>
+      </div>
+      <p id="log-summary" class="muted small"></p>
+    </fieldset>
+
+    <script src="options.js"></script>
+  </body>
+</html>

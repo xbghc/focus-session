@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Noto+Serif+SC:wght@400;500;600&display=swap">
+  <style>
+    body {
+      margin: 0;
+      font-family: "Source Serif 4", "Noto Serif SC", Georgia, "Songti SC", serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: #a4551f; text-decoration: none; }
+    a:hover { color: #7d3f16; text-decoration: underline; }
+  </style>
+</helmet>
+
+<div style="width: 380px; height: 600px; background: #faf7f2; color: #1f1b16; display: flex; flex-direction: column; overflow: hidden">
+
+  <!-- ── 标签 ───────────────────────────────────────────── -->
+  <div style="display: flex; border-bottom: 1px solid #e3ddd2">
+    <div style="flex-grow: 1; text-align: center; padding: 9px 4px; font-size: 14px; color: #1f1b16; font-weight: 600; border-bottom: 2px solid #a4551f">当前页</div>
+    <div style="flex-grow: 1; text-align: center; padding: 9px 4px; font-size: 14px; color: #6f6558; border-bottom: 2px solid transparent">历史</div>
+    <div style="flex-grow: 1; text-align: center; padding: 9px 4px; font-size: 14px; color: #6f6558; border-bottom: 2px solid transparent">概览</div>
+  </div>
+
+  <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 13px; flex-grow: 1">
+
+    <!-- 文章标题：衬线在窄栏里的主要考验 -->
+    <div style="display: flex; flex-direction: column; gap: 2px">
+      <div style="font-size: 14.5px; font-weight: 600; line-height: 1.4">The Hidden Cost of Abstraction</div>
+      <div style="font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11px; color: #8a7f70">example.com</div>
+    </div>
+
+    <!-- 本次专注时长 -->
+    <div style="display: flex; align-items: baseline; gap: 8px">
+      <div style="font-size: 27px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; color: #a4551f">8:42</div>
+      <div style="font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11px; color: #8a7f70">本次专注</div>
+    </div>
+
+    <!-- 阅读进度 -->
+    <div style="display: flex; flex-direction: column; gap: 5px">
+      <div style="display: flex; align-items: baseline; gap: 8px; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #6f6558; font-variant-numeric: tabular-nums">
+        <div style="flex-grow: 1">已读 1,240 / 1,840 字</div>
+        <div>67%</div>
+      </div>
+      <div style="height: 5px; background: #eee7dc; border-radius: 2px; overflow: hidden">
+        <div style="width: 67%; height: 100%; background: #c99a72"></div>
+      </div>
+    </div>
+
+    <!-- session 时间条 -->
+    <div style="display: flex; flex-direction: column; gap: 5px">
+      <div style="font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11px; color: #8a7f70">本次打开产生的专注片段</div>
+      <div style="display: flex; gap: 2px; align-items: flex-end; height: 30px">
+        <div style="width: 34px; height: 100%; background: #e0c4a8; border-radius: 2px"></div>
+        <div style="width: 9px"></div>
+        <div style="width: 62px; height: 100%; background: #e0c4a8; border-radius: 2px"></div>
+        <div style="width: 6px"></div>
+        <div style="width: 21px; height: 100%; background: #e0c4a8; border-radius: 2px"></div>
+        <div style="width: 14px"></div>
+        <div style="width: 88px; height: 100%; background: #c99a72; border-radius: 2px"></div>
+      </div>
+    </div>
+
+    <!-- kv 表：两栏在 356px 内的可读性考验 -->
+    <div style="display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; font-size: 13px; border-top: 1px solid #eee7dc; padding-top: 12px">
+      <div style="color: #6f6558">段落</div>
+      <div style="text-align: right; font-variant-numeric: tabular-nums">18 / 27</div>
+      <div style="color: #6f6558">阅读速度</div>
+      <div style="text-align: right; font-variant-numeric: tabular-nums">142 字/分</div>
+      <div style="color: #6f6558">累计专注</div>
+      <div style="text-align: right; font-variant-numeric: tabular-nums">23 分 10 秒</div>
+      <div style="color: #6f6558">本页划词</div>
+      <div style="text-align: right; font-variant-numeric: tabular-nums">4 条</div>
+    </div>
+
+    <!-- 读完状态 -->
+    <div style="display: flex; align-items: center; gap: 7px; border-top: 1px solid #eee7dc; padding-top: 12px">
+      <div style="width: 6px; height: 6px; border-radius: 50%; background: #a4551f"></div>
+      <div style="font-size: 13px; color: #a4551f; flex-grow: 1">已读完</div>
+      <div style="font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px; color: #9a8f7f; border: 1px solid #ddd5c8; border-radius: 3px; padding: 3px 9px">标记未读完</div>
+    </div>
+
+  </div>
+
+  <!-- ── 页脚 ───────────────────────────────────────────── -->
+  <div style="display: flex; justify-content: space-between; align-items: center; padding: 9px 16px; border-top: 1px solid #e3ddd2; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size: 11.5px">
+    <div style="color: #a4551f">面板 / 复习</div>
+    <div style="color: #a4551f">本页生词</div>
+    <div style="color: #a4551f">设置</div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
