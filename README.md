@@ -34,6 +34,9 @@ npm run build      # 产出 dist/
 
 **Chrome / Edge 114+**：打开 `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」→ 选 `dist/`。
 
+不想自己构建的话，[Releases](https://github.com/xbghc/focus-session/releases) 里有打好的
+`focus-session-extension-vX.Y.Z.zip`，解压后同样用「加载已解压的扩展程序」选那个目录。
+
 装好后打开扩展的**设置页**填 MiniMax API Key（去
 [platform.minimaxi.com](https://platform.minimaxi.com/) 创建），点「保存并测试连接」验证。
 没填 key 时阅读追踪照常工作，只是划词浮层会提示去配置。
@@ -52,6 +55,9 @@ cd android && ./gradlew assembleDebug   # 会先跑 npm run build:app 生成网�
 目录直接运行。需要 JDK 17 和 Android SDK（compileSdk 36、build-tools 36.0.0）——Android Studio
 自带前者、会代下后者；没有 Android Studio 的话，便携版 JDK + Gradle 8.13 也能构建，
 `android/local.properties` 里指一下 `sdk.dir` 即可。
+
+[Releases](https://github.com/xbghc/focus-session/releases) 里也有打好的 APK，不装工具链也能用。
+签名不同的两个包不能互相覆盖安装（见[持续集成与发布](#持续集成与发布)），换包前先在 App 里导出数据。
 
 装好后进「设置」填 MiniMax API Key。App 和扩展**各存各的密钥**，导出文件不带它。
 
@@ -591,6 +597,10 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 
 四个 Secret：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
 都在时 Release 工作流改出正式签名的 `focus-session-vX.Y.Z.apk`。密钥文件本身别进仓库，丢了就没法再给老安装升级。
+
+本地也能出正式签名的包：把 `FS_KEYSTORE_FILE`、`FS_KEYSTORE_PASSWORD`、`FS_KEY_ALIAS`、`FS_KEY_PASSWORD`
+四个环境变量指向同一把密钥，`cd android && ./gradlew assembleRelease`，产物在
+`android/app/build/outputs/apk/release/app-release.apk`。`*.jks` 已在 `.gitignore` 里。
 
 ## 已验证 / 未验证
 
