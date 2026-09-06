@@ -1,4 +1,4 @@
-import type { AnyMessage } from "../types.ts";
+import type { AnyMessage, BgToContent } from "../types.ts";
 import { PORT_TRANSLATE } from "../types.ts";
 import { normalizeUrl } from "../lib/url.ts";
 import { attachTranslatePort, boot, getOpen, handle, recoverOpen } from "./handle.ts";
@@ -39,4 +39,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     const o = (await getOpen())[String(tabId)];
     if (o && normalizeUrl(changeInfo.url!) !== o.articleId) await recoverOpen(tabId);
   })();
+  /*
+   * 页内导航（SPA 路由）不触发 pagehide，content script 察觉不到自己已经不在
+   * 原来那篇上了：读完角标会一直挂在右下角，之后开的 session 也全记到旧文章名下。
+   *
+   * 这一条**不能**跟着上面的 open 记录走。读完之后 session 早就因走神结束、
+   * 记录已被删掉，而角标还挂着——那正是这个通知最该送到的时候。
+   * 是不是真换了一篇由页面自己判（口径同为 normalizeUrl），这里只管报地址。
+   */
+  try {
+    void chrome.tabs
+      .sendMessage(tabId, { type: "page:url-changed", url: changeInfo.url } satisfies BgToContent)
+      // 那一页没有 content script（扩展页、商店页、还没注入完）时会拒绝，正常
+      ?.catch?.(() => undefined);
+  } catch {
+    /* 扩展正在重载 */
+  }
 });
