@@ -312,6 +312,15 @@ export type PopupToContent =
   /** 「本页启用划词翻译」：只对本次加载有效。应答和 page:state 一样是更新后的 PageState。 */
   | { type: "page:translate-here" };
 
+/**
+ * 后台推给 content script 的消息。
+ *
+ * 只有一条，因为 content script 唯一察觉不到的事就是同文档导航：SPA 路由和
+ * history.pushState 不触发 pagehide，页内那套追踪不会知道自己已经不在原来那篇上了。
+ * 地址变化只有后台看得见（tabs.onUpdated），所以由它来告诉页面。不应答。
+ */
+export type BgToContent = { type: "page:url-changed"; url: string };
+
 export type AnyMessage = ContentToBg | PopupToBg | PopupToContent;
 
 export interface ReadState {

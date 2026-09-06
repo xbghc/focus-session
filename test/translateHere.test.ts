@@ -46,6 +46,10 @@ g["chrome"] = {
       addListener: (fn: Changed) => {
         onChanged = fn;
       },
+      // 收摊时要摘掉，否则总开关一变，停掉的翻译器又会被拉起来
+      removeListener: (fn: Changed) => {
+        if (onChanged === fn) onChanged = null;
+      },
     },
   },
   runtime: {

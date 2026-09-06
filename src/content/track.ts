@@ -70,6 +70,12 @@ export interface TrackOptions {
    * App 的阅读器自己渲染正文，直接从那个容器里取（见 paragraphs.ts 的 extractFromContainer）。
    */
   extract?: () => ExtractResult | null;
+  /**
+   * 这一轮不作数了。页内换文章时宿主会作废手上这轮、按新地址另起一轮（见 content/host.ts），
+   * 而抽正文最长要重试到 4 秒：没有这个信号，作废的那轮会一路跑到底，还会替**旧**那篇
+   * 发一遍 article:meta。每个 await 之后查一次，作废了就当没识别过这一页。
+   */
+  signal?: AbortSignal;
 }
 
 export interface TrackController {
@@ -86,6 +92,9 @@ export interface TrackController {
   translateHere(): void;
 }
 
+/** chrome.storage.onChanged 的回调类型。具名注册才摘得掉，见 finish 与 translateOnly 的 stop。 */
+type SettingsListener = Parameters<typeof chrome.storage.onChanged.addListener>[0];
+
 const idle = (reason: string): TrackController => ({
   state: () => ({ tracked: false, reason }),
   setVisible: () => undefined,
@@ -96,6 +105,19 @@ const idle = (reason: string): TrackController => ({
 export async function startTracking(opts: TrackOptions): Promise<TrackController> {
   const pageUrl = opts.url;
   const assumeFocus = opts.focus === "assume";
+
+  /*
+   * 这一轮挂到 document / window 上的监听，收摊时一次摘掉。
+   *
+   * 页内换文章要靠"摘干净"才敢原地再起一轮：漏掉哪一个，它就会和新那轮的同名监听
+   * 一起留在页面上，同一个 scroll 喂给两个状态机，同一段阅读记两遍。注册和摘除写在
+   * 一处，往后添监听不至于只写一半——划词翻译那边是同样的做法，见 selection.ts。
+   */
+  const detach: Array<() => void> = [];
+  const on = (target: Document | Window, type: string, fn: EventListener, init?: AddEventListenerOptions): void => {
+    target.addEventListener(type, fn, init);
+    detach.push(() => target.removeEventListener(type, fn, init));
+  };
 
   /*
    * 「用户已经自己动过了」的哨兵，必须在第一个 await 之前挂上：
@@ -114,8 +136,21 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   const stopWatchingInput = (): void => {
     for (const type of MOVE_EVENTS) document.removeEventListener(type, markMoved, watchOpts);
   };
+  // 这一组另有出口：跳回上次位置之后就不必再盯着，不必等到收摊。重复摘无害。
+  detach.push(stopWatchingInput);
+
+  /** 这一轮已经被顶掉了：把提前挂上的那组监听摘掉，当没识别过这一页。 */
+  const abandoned = (): TrackController | null => {
+    if (opts.signal?.aborted !== true) return null;
+    stopWatchingInput();
+    return idle("已切到另一篇");
+  };
 
   const stored = await chrome.storage.local.get("settings");
+  // 下一步就要跑 Readability 了，先看这一轮还作不作数
+  const preempted = abandoned();
+  if (preempted) return preempted;
+
   let settings: Settings = { ...DEFAULT_SETTINGS, ...((stored["settings"] as Partial<Settings>) ?? {}) };
 
   const host = hostnameOf(pageUrl);
@@ -124,7 +159,11 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     return idle(`${host} 在排除列表中`);
   }
 
-  const article = opts.extract ? opts.extract() : await extractWithRetry();
+  const article = opts.extract ? opts.extract() : await extractWithRetry(opts.signal);
+  // 抽正文那几秒里页面可能又换了一篇。必须赶在 article:meta 之前：那条消息会替
+  // 这个 articleId 建卡，慢一步就在**旧**那篇名下留一张没人读过的孤儿卡。
+  const gone = abandoned();
+  if (gone) return gone;
   if (!article) {
     stopWatchingInput();
     return translateOnly(pageUrl, host, settings);
@@ -221,7 +260,16 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   /** 已经弹过或已被关掉。本次加载内不再弹第二次。 */
   let cardDone = wasFinishedOnLoad;
   let marking = false;
-  /** 已经拆掉追踪（离开页面 / 域名被加进排除列表）。落盘的回调可能还在路上。 */
+  /**
+   * 已经收摊（离开页面 / 页内换了文章 / 域名被加进排除列表）。
+   *
+   * 事件那一侧不用查它——finish 已经把监听整组摘掉了。留着是为了两处
+   * 跑在收摊边界上的调用：读完自查要等后台确认建卡才挂角标，回来时页面可能已经拆了；
+   * 以及宿主直接调的 setVisible（App 的 WebView 那条路，不经过事件）。
+   *
+   * 因此 torn 必须在 machine.stop() **之后**才置位：stop 会同步走一遍 onEnd，
+   * 那里还要结算最后一段、把正文和读完判定送出去。
+   */
   let torn = false;
   const maybeShowFinished = (): void => {
     if (torn || cardDone || marking || !settings.articleReviewEnabled) return;
@@ -393,6 +441,12 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   let lastWindowY = Math.round(window.scrollY);
   const containerTops = new WeakMap<Element, number>();
 
+  /*
+   * 状态机没有终态：`maybeStart` 只看"此刻活跃吗"。收摊之后随便一个 scroll 都会开一个新
+   * session，认的还是**旧**那篇的 articleId——页内换文章时这就是把新文章的阅读时间记到旧
+   * 文章头上，域名被加进排除列表时更糟：用户刚说别记了，下一次滚动又记起来。
+   * 防的是 finish 那一步把这些监听整组摘掉，而不是在每个回调里设闸。
+   */
   const signal = (): void => machine.activity(odometer);
 
   /**
@@ -421,11 +475,12 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   };
 
   // scroll 事件不冒泡，用捕获阶段才能收到内部容器的滚动
-  document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+  on(document, "scroll", onScroll, { passive: true, capture: true });
 
   let lastMove = 0;
   const opts_ = { passive: true, capture: true } as const;
-  document.addEventListener(
+  on(
+    document,
     "mousemove",
     () => {
       const now = Date.now();
@@ -435,16 +490,12 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     },
     opts_,
   );
-  for (const type of ["wheel", "keydown", "touchmove"]) {
-    document.addEventListener(type, signal, opts_);
-  }
+  for (const type of ["wheel", "keydown", "touchmove"]) on(document, type, signal, opts_);
 
-  document.addEventListener("visibilitychange", () => {
-    machine.setVisible(document.visibilityState === "visible");
-  });
+  on(document, "visibilitychange", () => machine.setVisible(document.visibilityState === "visible"));
   if (!assumeFocus) {
-    window.addEventListener("focus", () => machine.setFocused(true));
-    window.addEventListener("blur", () => machine.setFocused(false));
+    on(window, "focus", () => machine.setFocused(true));
+    on(window, "blur", () => machine.setFocused(false));
   }
 
   let stopped = false;
@@ -457,12 +508,15 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     translator.stop();
     finishCard.hide();
     stopRestore();
+    chrome.storage.onChanged.removeListener(onSettingsChanged);
+    for (const off of detach) off(); // 页内换文章时紧接着就要另起一轮，漏一个就累积一个
+    detach.length = 0;
   };
   // pagehide 的消息未必送达，后台会在 tab 关闭/导航时用最后一次心跳兜底
-  window.addEventListener("pagehide", finish("unload"));
+  on(window, "pagehide", finish("unload"));
 
   /* ---- 设置热更新 ---- */
-  chrome.storage.onChanged.addListener((changes, area) => {
+  const onSettingsChanged: SettingsListener = (changes, area) => {
     if (area !== "local" || !changes["settings"]) return;
     settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
     machine.updateThresholds({
@@ -478,7 +532,8 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       translatorOn = false;
       excludedNow = `${host} 在排除列表中`;
     }
-  });
+  };
+  chrome.storage.onChanged.addListener(onSettingsChanged);
   /** 运行中被加进排除列表：状态要能说明为什么不追踪了。 */
   let excludedNow: string | null = null;
 
@@ -518,7 +573,10 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   return {
     state: () => (excludedNow ? { tracked: false, reason: excludedNow } : state()),
-    setVisible: (v) => machine.setVisible(v),
+    setVisible: (v) => {
+      // 宿主直接调的，不在 finish 摘掉的那组监听里：收摊之后再通知可见也不该重新计时
+      if (!torn) machine.setVisible(v);
+    },
     stop: (reason = "unload") => finish(reason)(),
     translateHere: () => undefined, // 文章页本来就挂着，跟着总开关走
   };
@@ -668,12 +726,13 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
     translator.start();
   };
 
-  chrome.storage.onChanged.addListener((changes, area) => {
+  const onSettingsChanged: SettingsListener = (changes, area) => {
     if (area !== "local" || !changes["settings"]) return;
     settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
     excluded = isExcluded(host, settings.excludedDomains);
     sync();
-  });
+  };
+  chrome.storage.onChanged.addListener(onSettingsChanged);
 
   return {
     state: () => {
@@ -686,6 +745,7 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
     stop: () => {
       wanted = false;
       sync();
+      chrome.storage.onChanged.removeListener(onSettingsChanged);
     },
     translateHere: () => {
       wanted = true;
@@ -694,9 +754,11 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
   };
 }
 
-async function extractWithRetry(): Promise<ReturnType<typeof extractArticle>> {
+async function extractWithRetry(signal?: AbortSignal): Promise<ReturnType<typeof extractArticle>> {
   for (const delay of EXTRACT_RETRY_MS) {
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    // 等这几秒的工夫页面可能已经换了一篇，别再拿旧地址那轮去跑一遍 Readability
+    if (signal?.aborted === true) return null;
     const res = extractArticle(document);
     if (res) return res;
   }
