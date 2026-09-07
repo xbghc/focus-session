@@ -624,7 +624,7 @@ export const EMPTY_USAGE: LlmUsage = {
 export interface LlmFailure {
   ts: number;
   /** 哪条路径出的错 */
-  source: "translate" | "test" | "assist" | "articleReview";
+  source: "translate" | "test" | "assist" | "articleReview" | "ask";
   /** LlmError 的 kind（config / http / network / timeout / parse / abort）；不是 LlmError 的记 unknown */
   kind: string;
   /** HTTP 状态码，只有 http 类失败才有 */
@@ -680,11 +680,52 @@ export type TranslateReply =
   | { ok: true; snippet: Snippet; cached: boolean }
   | { ok: false; error: string; needsConfig: boolean };
 
-export type TranslatePortIn = { type: "start"; req: TranslateRequest };
+/* ---- 追问 ---- */
+
+/** 追问的一轮。同一个浮层里问过的都留着，让「那它呢」这种问法有着落。 */
+export interface AskTurn {
+  question: string;
+  answer: string;
+}
+
+/**
+ * 浮层里的一次追问。
+ *
+ * 译文和语境解释已经在用户眼前了，随请求带上是为了让模型别把说过的再说一遍；
+ * 它们**不必**再算一次，直接取自刚刚那条 Snippet。追问不入库（同复习助手，
+ * 见 background/translate.ts 的 handleAssist），所以这里没有 articleId。
+ */
+export interface AskRequest {
+  /** 选中的原文。 */
+  text: string;
+  kind: SnippetKind;
+  /** 已经给过的译文与语境解释。 */
+  translation: string;
+  contextNote: string;
+  /** 选区所在段落，和翻译用的是同一份。 */
+  context: string;
+  articleTitle: string;
+  /** 用户这一问。 */
+  question: string;
+  /** 这个浮层里之前问过的几轮，最近的在最后。条数由 lib/llm.ts 的 ASK_HISTORY_TURNS 封顶。 */
+  history: AskTurn[];
+}
+
+/** 一次追问的最终结果。 */
+export type AskReply = { ok: true; text: string } | { ok: false; error: string; needsConfig: boolean };
+
+/**
+ * 一条 port 做一件事：连上之后发 start（翻译）或 ask（追问），完事即断。
+ * 追问复用翻译那条 port，安卓 App 的垫片（app/shim.ts）因此不必再认一个新名字。
+ */
+export type TranslatePortIn = { type: "start"; req: TranslateRequest } | { type: "ask"; req: AskRequest };
 
 export type TranslatePortOut =
   | { type: "partial"; partial: PartialTranslation }
-  | { type: "done"; res: TranslateReply };
+  | { type: "done"; res: TranslateReply }
+  /** 追问的增量，参数是**到目前为止的全部答案**，同 StreamOptions.onDelta 的口径。 */
+  | { type: "ask-partial"; text: string }
+  | { type: "ask-done"; res: AskReply };
 
 /* ==================== 文章回顾 ==================== */
 

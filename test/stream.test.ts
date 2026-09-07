@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   LlmError,
+  askStream,
   callMessagesStream,
   closedVocab,
   partialField,
@@ -10,7 +11,7 @@ import {
   topLevelSlice,
   translateStream,
 } from "../src/lib/llm.ts";
-import type { LlmConfig, PartialTranslation, TranslateRequest } from "../src/types.ts";
+import type { AskRequest, LlmConfig, PartialTranslation, TranslateRequest } from "../src/types.ts";
 import { DEFAULT_LLM } from "../src/types.ts";
 
 const CFG: LlmConfig = { ...DEFAULT_LLM, apiKey: "test-key", timeoutMs: 1_000 };
@@ -458,4 +459,40 @@ test("模型在 JSON 之前照抄字段名也不受影响", () => {
   const p = partialOf(chatty, "sentence", SEL);
   assert.equal(p.contextNote, "y", "取最后一次出现，绕开前面那句废话里的假键");
   assert.equal(p.vocab.length, 1);
+});
+
+/* ---------- 追问的流式 ---------- */
+
+const ASK_REQ: AskRequest = {
+  text: "leaks",
+  kind: "word",
+  translation: "泄漏",
+  contextNote: "",
+  context: "Every abstraction leaks.",
+  articleTitle: "T",
+  question: "为什么用复数？",
+  history: [],
+};
+
+test("追问的增量是到目前为止的全部答案，最终结果去掉首尾空白", async () => {
+  const seen: string[] = [];
+  const { text, usage } = await askStream(ASK_REQ, CFG, (t) => void seen.push(t), undefined, {
+    // 开头故意留空行：模型常先吐一个换行，那时不该先闪一下空答案
+    fetch: fetchOf(textStream("\n主语是 abstraction，复数在这里指每一次抽象。", 8)),
+  });
+  assert.equal(text, "主语是 abstraction，复数在这里指每一次抽象。");
+  assert.ok(seen.length > 1, "应当推了多批");
+  // 每一批都是累积值：后一批必以前一批开头
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i]!.startsWith(seen[i - 1]!), "增量必须是累积的");
+  assert.equal(seen[seen.length - 1], text);
+  assert.equal(usage.outputTokens, 58);
+});
+
+test("追问被取消时抛 abort，不当成一次失败", async () => {
+  const ctrl = new AbortController();
+  ctrl.abort();
+  await assert.rejects(
+    () => askStream(ASK_REQ, CFG, () => {}, ctrl.signal, { fetch: fetchOf(textStream("不该跑到这里")) }),
+    (err: unknown) => err instanceof LlmError && err.kind === "abort",
+  );
 });

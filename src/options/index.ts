@@ -202,6 +202,7 @@ const SOURCE_LABEL: Record<LlmFailure["source"], string> = {
   translate: "划词翻译",
   test: "测试连接",
   assist: "复习助手",
+  ask: "浮层追问",
   articleReview: "文章回顾",
 };
 

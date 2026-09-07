@@ -1,4 +1,13 @@
-import type { PartialTranslation, Settings, TranslateReply, TranslateRequest } from "../types.ts";
+import type {
+  AskReply,
+  AskRequest,
+  AskTurn,
+  PartialTranslation,
+  Settings,
+  Snippet,
+  TranslateReply,
+  TranslateRequest,
+} from "../types.ts";
 import { judgeSelection } from "../lib/lang.ts";
 import { Popover } from "./popover.ts";
 
@@ -68,6 +77,11 @@ export interface SelectionDeps {
     onPartial: (p: PartialTranslation) => void,
     signal: AbortSignal,
   ) => Promise<TranslateResponse>;
+  /**
+   * 就着刚翻完的这段追问一句。增量是**到目前为止的全部答案**（同 StreamOptions.onDelta），
+   * 直接覆盖显示即可，不必自己累加。
+   */
+  ask: (req: AskRequest, onDelta: (text: string) => void, signal: AbortSignal) => Promise<AskReply>;
   /** 唤醒 background service worker，见 DEBOUNCE_MS 旁边的说明。 */
   warm: () => void;
   openOptions: () => void;
@@ -88,12 +102,17 @@ export class SelectionTranslator {
   private lastWarm = 0;
   /** 最近一次在浮层上落指的时刻，见 POPOVER_TOUCH_GRACE_MS。 */
   private lastPopoverTouch = 0;
+  /** 翻完的这一条，追问要就着它问。没翻出来（还在流式、出错了）时是 null，那时浮层也不给追问入口。 */
+  private answered: { snippet: Snippet; context: string } | null = null;
+  /** 这个浮层里已经问过的几轮。换一次选区就清空——追问只跟着眼前这一段。 */
+  private turns: AskTurn[] = [];
 
   constructor(deps: SelectionDeps) {
     this.deps = deps;
     this.popover = new Popover({
       onConfirm: () => void this.runPending(),
       onOpenOptions: () => this.deps.openOptions(),
+      onAsk: (question) => void this.runAsk(question),
     });
   }
 
@@ -122,7 +141,11 @@ export class SelectionTranslator {
       // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
       this.warm();
     }, { capture: true });
-    on(document, "scroll", () => this.dismiss(), { capture: true, passive: true });
+    on(document, "scroll", () => {
+      // 追问期间不关：手机上弹出键盘就是一次滚动，正打着字的问题不该被这一下收走。
+      // 浮层是 fixed 的，滚动时它停在原处、和原文错开——比丢掉答案划算。
+      if (!this.popover.asking) this.dismiss();
+    }, { capture: true, passive: true });
     on(document, "keydown", (e) => {
       if ((e as KeyboardEvent).key === "Escape") this.dismiss();
     });
@@ -154,6 +177,8 @@ export class SelectionTranslator {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.pending = null;
+    this.answered = null;
+    this.turns = [];
     this.seq += 1; // 让在途响应作废
     this.inflight?.abort();
     this.inflight = null;
@@ -174,6 +199,14 @@ export class SelectionTranslator {
   }
 
   private evaluate(): void {
+    /*
+     * 正在追问：不看选区。
+     *
+     * 点进输入框、乃至在里面打字，都会让页面上原来那段选区塌掉；触屏上这一下会走
+     * selectionchange 进到这里，照常判下去就是「选区没了」→ 关掉浮层，用户的问题
+     * 打到一半凭空消失。而追问要问的那一段早就存进 answered 了，选区此刻已无用。
+     */
+    if (this.popover.asking) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       this.dismiss();
@@ -219,6 +252,8 @@ export class SelectionTranslator {
     if (!pending) return;
     const mine = ++this.seq;
     const { rect, req } = pending;
+    this.answered = null;
+    this.turns = [];
 
     this.inflight?.abort();
     const ctrl = new AbortController();
@@ -241,8 +276,59 @@ export class SelectionTranslator {
     // 期间用户又选了别的、或者关掉了浮层——这次结果已经过期
     if (mine !== this.seq) return;
     if (this.inflight === ctrl) this.inflight = null;
-    if (res.ok) this.popover.showResult(rect, res.snippet);
-    else this.popover.showError(rect, res.error, res.needsConfig);
+    if (res.ok) {
+      this.answered = { snippet: res.snippet, context: req.context };
+      this.popover.showResult(rect, res.snippet);
+      // 翻出来了才给追问入口：没有译文可倚，追问问的是空气
+      this.popover.enableAsk();
+    } else this.popover.showError(rect, res.error, res.needsConfig);
+  }
+
+  /**
+   * 用户在浮层里问了一句。
+   *
+   * 沿用翻译那套作废机制：seq 一变（换了选区、关了浮层）就丢掉迟到的增量和结果；
+   * in-flight 也共用一个 AbortController——一个浮层同一时刻只烧一次 token。
+   */
+  private async runAsk(question: string): Promise<void> {
+    const cur = this.answered;
+    if (!cur) return;
+    const mine = this.seq; // 追问不换选区，不能动 seq，否则自己把自己作废了
+    const s = cur.snippet;
+
+    this.inflight?.abort();
+    const ctrl = new AbortController();
+    this.inflight = ctrl;
+
+    const req: AskRequest = {
+      text: s.text,
+      kind: s.kind,
+      translation: s.translation,
+      contextNote: s.contextNote,
+      context: cur.context,
+      articleTitle: s.articleTitle,
+      question,
+      history: this.turns,
+    };
+
+    let res: AskReply;
+    try {
+      res = await this.deps.ask(
+        req,
+        (text) => {
+          if (mine === this.seq) this.popover.updateAnswer(text);
+        },
+        ctrl.signal,
+      );
+    } catch (err) {
+      res = { ok: false, error: String(err), needsConfig: false };
+    }
+    if (mine !== this.seq) return;
+    if (this.inflight === ctrl) this.inflight = null;
+    if (res.ok) {
+      this.turns.push({ question, answer: res.text });
+      this.popover.finishAnswer(res.text);
+    } else this.popover.failAnswer(res.error, res.needsConfig);
   }
 }
 

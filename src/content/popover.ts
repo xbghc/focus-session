@@ -67,14 +67,19 @@ const CSS = `
 }
 @media (prefers-color-scheme: dark) {
   .box { background: #262220; color: #e8e0d5; border-color: #332f2a; border-top-color: #e18d5a; }
-  .meta, .vm, .vn { color: #9a8f7f; }
+  .meta, .vm, .vn, .qq { color: #9a8f7f; }
   .ph { border-bottom-color: #6b6053; }
   .ph:hover { color: #e18d5a; border-bottom-color: #e18d5a; }
-  .note, .usage, .vd { color: #bdb3a4; }
+  .note, .usage, .vd, .aa { color: #bdb3a4; }
   .usage::before { color: #9a8f7f; }
-  .ctx, .vocab { border-top-color: #2b2724; }
+  .ctx, .vocab, .ask { border-top-color: #2b2724; }
   button { background: #1c1917; color: #bdb3a4; border-color: #3d3833; }
   button:hover { background: #332f2a; color: #e18d5a; border-color: #e18d5a; }
+  .qin { background: #1c1917; color: #e8e0d5; border-color: #3d3833; }
+  .qin:focus { border-color: #e18d5a; }
+  /* 图标按钮在深色下同样不要底和框，只换字色 */
+  .iconbtn { background: transparent; border-color: transparent; color: #9a8f7f; }
+  .iconbtn:hover { background: transparent; border-color: transparent; color: #e18d5a; }
 }
 .head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
 .term { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
@@ -129,6 +134,42 @@ button:hover { border-color: #a4551f; color: #a4551f; }
  */
 .more { display: none; margin-top: 9px; }
 .more.on { display: block; }
+/* ---- 追问：译文出来之后，就着这一段再问一句 ---- */
+.ask { margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee7dc; }
+/* 骨架里先空着。译文还没到就先亮一道分隔线，看着像下面还有东西没加载出来 */
+.ask:empty { display: none; }
+.qa + .qa { margin-top: 10px; }
+.qq {
+  color: #6f6558; font-size: 11.5px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.qq::before { content: "问 · "; }
+/* 答案里的换行是模型自己分的段，留着 */
+.aa { margin-top: 3px; font-size: 13px; line-height: 1.8; color: #4a4238; white-space: pre-wrap; }
+.askbar { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+/*
+ * 图标按钮：拿一个字符当图标，不写文字标签。同 App 阅读器顶栏的 .iconbtn（那里是 ‹ 和 词）
+ * 与读完角标的 ×——这套 UI 的图标一律是正文字体里的字形，不引矢量图标。
+ *
+ * 真正的名字挂在 aria-label 和 title 上：纯图标按钮不给无障碍名字就是个哑巴，
+ * 鼠标用户也只能靠猜（tooltip 正是为这一下准备的）。
+ */
+.iconbtn {
+  padding: 2px 7px; border-color: transparent; background: transparent;
+  color: #9a8f7f; font-size: 15px; line-height: 1.3;
+  font-family: "Source Serif 4", Georgia, "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+}
+.iconbtn:hover { color: #a4551f; border-color: transparent; background: transparent; }
+.qin {
+  flex: 1; min-width: 0; box-sizing: border-box;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 12px; padding: 4px 8px;
+  border: 1px solid #ddd5c8; border-radius: 3px;
+  background: #fffdfa; color: #1f1b16;
+}
+.qin:focus { outline: none; border-color: #a4551f; }
+/* 上一问还没答完时禁用。pointer-events 一并关掉，否则 :hover 还会把它描成可点的样子 */
+.qin:disabled, button:disabled { opacity: 0.5; pointer-events: none; }
 .err { color: #8b5a2b; }
 .spin {
   display: inline-block; width: 11px; height: 11px;
@@ -138,10 +179,21 @@ button:hover { border-color: #a4551f; color: #a4551f; }
 @keyframes r { to { transform: rotate(360deg); } }
 `;
 
+/** 一问的长度上限。追问是「就这一段再问一句」，不是往这里贴一段材料。 */
+const MAX_QUESTION_CHARS = 200;
+
+/** 离底不到这么远就算「贴着底」，见 pinBottom。 */
+const PIN_SLACK_PX = 24;
+
 export interface PopoverActions {
   /** 用户点了「翻译」（长选区需要确认时才出现这个按钮）。 */
   onConfirm: () => void;
   onOpenOptions: () => void;
+  /**
+   * 用户就着这一段问了一句。答案由外面流式喂回来：
+   * updateAnswer 逐段覆盖，finishAnswer / failAnswer 收尾。
+   */
+  onAsk: (question: string) => void;
 }
 
 export class Popover {
@@ -169,6 +221,23 @@ export class Popover {
     /** 已经画出来的生词条数。生词是**追加**的，不重画——重画会让读到一半的人跳行。 */
     drawn: number;
   } | null = null;
+  /**
+   * 追问那一块。译文出来之后才挂（enableAsk），整块重建时跟着作废。
+   *
+   * engaged：用户已经点开输入框了。从这一刻起页面上原来那段选区就不作数了
+   * （焦点进了输入框，选区会塌），浮层的去留不能再看它——见 asking。
+   */
+  private ask: {
+    qas: HTMLElement;
+    bar: HTMLElement;
+    /** 正在写的那一条答案；没有在途的问就是 null。 */
+    answer: HTMLElement | null;
+    input: HTMLInputElement | null;
+    send: HTMLButtonElement | null;
+    engaged: boolean;
+  } | null = null;
+  /** 同一帧里的多次贴位合并成一次，见 reposition。 */
+  private repositioning = false;
 
   constructor(actions: PopoverActions) {
     this.actions = actions;
@@ -200,7 +269,12 @@ export class Popover {
 
     // 关键：按下浮层时不能让浏览器清掉选区，否则点按钮的瞬间
     // getSelection() 就空了，"翻译这段选中的文字"直接失效。
-    box.addEventListener("mousedown", (e) => e.preventDefault());
+    box.addEventListener("mousedown", (e) => {
+      // 唯一的例外是追问的输入框：拦掉默认行为它就永远拿不到焦点，一个字也打不进去。
+      // 这时选区塌掉不要紧——要问的那一段早就在 selection.ts 手里了。
+      if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
+      e.preventDefault();
+    });
 
     root.append(style, box);
     document.documentElement.appendChild(host);
@@ -250,6 +324,7 @@ export class Popover {
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void): void {
     const box = this.ensure();
     this.stream = null; // 整块重建，旧骨架的引用全作废
+    this.ask = null;
     box.innerHTML = html;
     wire?.(box);
     this.place(rect);
@@ -267,7 +342,8 @@ export class Popover {
        <div class="note"></div>
        <div class="usage"></div>
        <div class="vocab"></div>
-       <div class="more"><span class="spin"></span></div>`,
+       <div class="more"><span class="spin"></span></div>
+       <div class="ask"></div>`,
       (box) => {
         const q = (sel: string): HTMLElement => box.querySelector(sel) as HTMLElement;
         const nodes = {
@@ -361,7 +437,8 @@ export class Popover {
        <div class="tr"></div>
        <div class="note"></div>
        <div class="usage"></div>
-       <div class="vocab"></div>`,
+       <div class="vocab"></div>
+       <div class="ask"></div>`,
       (box) => {
         box.querySelector(".term")!.textContent = truncate(s.text, 90);
         fillMeta(box.querySelector(".meta")!, meta);
@@ -390,13 +467,205 @@ export class Popover {
     );
   }
 
+  /* ==================== 追问 ==================== */
+
+  /**
+   * 用户已经在追问了：输入框点开过（此后一直算），或答案还在写。
+   *
+   * 这时页面上原来那段选区多半已经塌了——焦点进了输入框。选区的存亡因此不能再拿来
+   * 决定浮层的去留，否则手机上打字打到一半浮层就没了（见 selection.ts 的 evaluate）。
+   */
+  get asking(): boolean {
+    return this.ask?.engaged === true;
+  }
+
+  /**
+   * 挂上追问入口。**只在译文已经到手之后调**——没有译文可倚，追问问的是空气。
+   *
+   * 骨架里那个 .ask 是空的（CSS 里 :empty 藏着），填上内容它才现身。
+   */
+  enableAsk(): void {
+    const wrap = this.box?.querySelector(".ask") as HTMLElement | null;
+    if (!wrap) return;
+    wrap.textContent = "";
+    const qas = document.createElement("div");
+    qas.className = "qas";
+    const bar = document.createElement("div");
+    bar.className = "askbar";
+    wrap.append(qas, bar);
+    this.ask = { qas, bar, answer: null, input: null, send: null, engaged: false };
+
+    // 先只给一个按钮：输入框一上来就摆着，会把「看一眼译文就走」的常态压成一个表单
+    const open = iconButton("ask", "问", "就这段追问");
+    open.addEventListener("click", () => this.openAsk());
+    bar.append(open);
+    this.position();
+  }
+
+  /** 点开输入框。之后它一直留着，答完一问可以接着问下一问。 */
+  private openAsk(): void {
+    const a = this.ask;
+    if (!a) return;
+    a.engaged = true;
+    a.bar.textContent = "";
+
+    const input = document.createElement("input");
+    input.className = "qin";
+    input.type = "text";
+    input.maxLength = MAX_QUESTION_CHARS;
+    input.placeholder = "就这段问一句…";
+    input.addEventListener("keydown", (e) => {
+      // 输入法选词时的回车是「确认候选」，不是「发送」——中文输入第一下就会撞上
+      if (e.key !== "Enter" || e.isComposing) return;
+      e.preventDefault();
+      this.submitAsk();
+    });
+
+    // 回车也能发；写进 title 里，否则这条捷径没人知道
+    const send = iconButton("send", "↵", "发送（回车）");
+    send.addEventListener("click", () => this.submitAsk());
+
+    a.input = input;
+    a.send = send;
+    a.bar.append(input, send);
+    input.focus();
+    this.position();
+  }
+
+  /**
+   * 浮层自己有 max-height 和内部滚动（讲解能占大半屏）。追问的问答挂在最底下，
+   * 长选区上它一出生就在折线以下——答案一路往外冒，人却什么都看不见。
+   *
+   * 只在**本来就贴着底**时才跟着滚：流式期间回头重看译文是常事，
+   * 无条件滚到底会把正在看的地方抽走。
+   */
+  private pinBottom(mutate: () => void): void {
+    const box = this.box;
+    const pinned = box !== null && box.scrollHeight - box.scrollTop - box.clientHeight < PIN_SLACK_PX;
+    mutate();
+    if (box && pinned) box.scrollTop = box.scrollHeight;
+  }
+
+  /** 发出这一问：把问题挂上去、答案位先放转圈，再交给外面。 */
+  private submitAsk(): void {
+    const a = this.ask;
+    if (!a?.input || a.answer !== null) return; // 上一问还没答完
+    const q = a.input.value.trim();
+    if (!q) return;
+    a.input.value = "";
+    this.setAskBusy(true);
+
+    const qa = document.createElement("div");
+    qa.className = "qa";
+    const qq = document.createElement("div");
+    qq.className = "qq";
+    qq.textContent = q;
+    const slot = document.createElement("div");
+    slot.className = "aa";
+    slot.append(spinner());
+    qa.append(qq, slot);
+    a.answer = slot;
+    this.pinBottom(() => a.qas.append(qa));
+
+    this.actions.onAsk(q);
+    this.position();
+  }
+
+  private setAskBusy(busy: boolean): void {
+    const a = this.ask;
+    if (!a) return;
+    if (a.input) a.input.disabled = busy;
+    if (a.send) a.send.disabled = busy;
+  }
+
+  /** 答案的增量。参数是**到目前为止的全部答案**，直接覆盖。 */
+  updateAnswer(text: string): void {
+    const slot = this.ask?.answer;
+    if (!slot) return;
+    // 直接来自模型，只能当文本填，不能拼进 HTML
+    this.pinBottom(() => void (slot.textContent = text));
+    this.reposition();
+  }
+
+  finishAnswer(text: string): void {
+    const a = this.ask;
+    if (!a?.answer) return;
+    // 一个字都没吐出来（被截断、被拦）时别留个空框加转圈在那儿转
+    a.answer.textContent = text || "（这一问没有得到回答）";
+    a.answer = null;
+    this.setAskBusy(false);
+    this.position();
+  }
+
+  failAnswer(message: string, needsConfig: boolean): void {
+    const a = this.ask;
+    if (!a?.answer) return;
+    const slot = a.answer;
+    slot.textContent = needsConfig ? "还没配置 MiniMax API Key" : truncate(message, 200);
+    slot.classList.add("err");
+    if (needsConfig) {
+      const row = document.createElement("div");
+      row.className = "ctx";
+      const btn = document.createElement("button");
+      btn.setAttribute("data-act", "opt");
+      btn.textContent = "去设置";
+      btn.addEventListener("click", () => this.actions.onOpenOptions());
+      row.append(btn);
+      slot.after(row);
+    }
+    a.answer = null;
+    this.setAskBusy(false);
+    this.position();
+  }
+
+  /**
+   * 合并同一帧里的多次贴位。
+   *
+   * 答案是一段一段冒出来的，每来一段都量一次尺寸、改一次 left/top，
+   * 等于每帧强制同步布局好几回。翻译那边一次至多推四批，没有这个问题。
+   */
+  private reposition(): void {
+    if (this.repositioning) return;
+    this.repositioning = true;
+    const run = (): void => {
+      this.repositioning = false;
+      this.position();
+    };
+    // 测试环境（jsdom）没有 rAF，退回同步——贴位本身不依赖动画帧
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else run();
+  }
+
   hide(): void {
     stopSpeaking();
     this.host?.remove();
     this.host = this.root = this.box = null;
     this.stream = null;
+    this.ask = null;
     this.anchor = null;
   }
+}
+
+/**
+ * 一个字符当图标的按钮。
+ *
+ * label 同时挂到 aria-label 和 title 上：前者给读屏软件，后者给鼠标——
+ * 纯图标按钮少了哪一个都等于没有名字。
+ */
+function iconButton(act: string, glyph: string, label: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.className = "iconbtn";
+  btn.setAttribute("data-act", act);
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  btn.textContent = glyph;
+  return btn;
+}
+
+function spinner(): HTMLElement {
+  const el = document.createElement("span");
+  el.className = "spin";
+  return el;
 }
 
 function truncate(s: string, n: number): string {

@@ -1,4 +1,5 @@
 import type {
+  AskRequest,
   LlmConfig,
   PartialTranslation,
   SnippetKind,
@@ -744,4 +745,79 @@ export async function assist(
 ): Promise<{ text: string; usage: RawUsage }> {
   const { text, usage } = await callMessages(config, ASSIST_SYSTEM, buildAssistPrompt(mode, input), deps);
   return { text: text.trim(), usage };
+}
+
+/* ==================== 浮层里的追问 ==================== */
+
+/**
+ * 带过去的历史轮数上限。
+ *
+ * 追问是「就着眼前这个词再聊两句」，不是完整对话：轮数不封顶的话，读一篇长文时
+ * 一个浮层能攒出几千 token 的前情，而其中大半和当前这一问无关。三轮足够撑住
+ * 「那它呢」「为什么」这类顺着上一答的追问。
+ */
+export const ASK_HISTORY_TURNS = 3;
+
+/** 单条历史答案带过去的字数上限。留个梗概就够模型接上话，全文照搬纯属浪费。 */
+export const ASK_HISTORY_ANSWER_CHARS = 200;
+
+const ASK_SYSTEM = `你在帮一位中文母语者读英文文章。他刚划下一段原文、看过你给的译文，现在就着它追问一句。
+用中文回答，直接说答案，不要开场白，不要 markdown 标记，不要代码块。控制在 150 字以内。
+问题与这段原文无关时，直接说不知道，不要编。`;
+
+/**
+ * 追问的 prompt。
+ *
+ * 译文和语境解释一并带上，是为了让模型别把用户已经看见的再复述一遍——
+ * 这是追问最容易变废话的一种方式。
+ */
+export function buildAskPrompt(req: AskRequest): string {
+  const parts = [
+    `原文：${req.text}`,
+    `已给出的译文：${req.translation}`,
+  ];
+  if (req.contextNote) parts.push(`已给出的语境解释：${req.contextNote}`);
+  if (req.context) parts.push(`它所在的段落：${req.context}`);
+  if (req.articleTitle) parts.push(`出处：《${req.articleTitle}》`);
+
+  // 只带最近几轮，且答案留梗概：见 ASK_HISTORY_TURNS
+  const history = req.history.slice(-ASK_HISTORY_TURNS);
+  if (history.length > 0) {
+    const lines = history.map(
+      (t) => `问：${t.question}
+答：${t.answer.slice(0, ASK_HISTORY_ANSWER_CHARS)}`,
+    );
+    parts.push([`之前问过的：`, ...lines].join("\n"));
+  }
+
+  parts.push(`现在的问题：${req.question}`);
+  return parts.join("\n\n");
+}
+
+/**
+ * 流式追问。答案是纯文本，不是 JSON，所以增量原样往外送——
+ * 翻译那边要等字段闭合才敢显示（半个转义序列解析不了），这里没有这层顾虑。
+ */
+export async function askStream(
+  req: AskRequest,
+  config: LlmConfig,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+  deps?: LlmDeps,
+): Promise<{ text: string; usage: RawUsage }> {
+  const res = await callMessagesStream(
+    config,
+    ASK_SYSTEM,
+    buildAskPrompt(req),
+    {
+      signal,
+      // 头几个 token 常是换行；trimStart 之后为空就还没什么可显示的
+      onDelta: (full) => {
+        const t = full.trimStart();
+        if (t) onDelta(t);
+      },
+    },
+    deps,
+  );
+  return { text: res.text.trim(), usage: res.usage };
 }

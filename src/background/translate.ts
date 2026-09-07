@@ -1,5 +1,13 @@
-import type { LlmConfig, PartialTranslation, Snippet, TranslateReply, TranslateRequest } from "../types.ts";
-import { LlmError, assist, translate, translateStream } from "../lib/llm.ts";
+import type {
+  AskReply,
+  AskRequest,
+  LlmConfig,
+  PartialTranslation,
+  Snippet,
+  TranslateReply,
+  TranslateRequest,
+} from "../types.ts";
+import { LlmError, askStream, assist, translate, translateStream } from "../lib/llm.ts";
 import type { AssistMode } from "../types.ts";
 import { addSnippet, addUsage, getLlmConfig } from "./vocab.ts";
 import { type FailureContext, recordFailure } from "./llmLog.ts";
@@ -173,6 +181,45 @@ export function streamTranslate(req: TranslateRequest, onPartial: (p: PartialTra
       if (shared.subs.size === 0 && shared.last === null) shared.ctrl.abort();
     },
   };
+}
+
+/* ==================== 追问 ==================== */
+
+export interface AskHandle {
+  done: Promise<AskReply>;
+  /** 浮层关了 / 用户又划了别的词就调它。 */
+  cancel: () => void;
+}
+
+/**
+ * 浮层里的一次追问。
+ *
+ * 和翻译的三点不同，都是「追问不入库」推出来的：
+ * 不进缓存（同一个词问两次多半是问不同的事），不做并发合流（每一问都是独立的一句），
+ * 取消就真的中断（翻译要跑完才好把这个词记进复习队列，追问没有这层价值，
+ * 见 streamTranslate 里 cancel 的说明）。
+ */
+export function streamAsk(req: AskRequest, onDelta: (text: string) => void): AskHandle {
+  const ctrl = new AbortController();
+  return { done: runAsk(req, onDelta, ctrl.signal), cancel: () => ctrl.abort() };
+}
+
+async function runAsk(req: AskRequest, onDelta: (text: string) => void, signal: AbortSignal): Promise<AskReply> {
+  const config = await getLlmConfig();
+  try {
+    const { text, usage } = await askStream(req, config, onDelta, signal);
+    await addUsage(usage.inputTokens, usage.outputTokens);
+    return { ok: true, text };
+  } catch (err) {
+    // 同 runStream：主动取消和缺配置都不算"调用失败"
+    const skip = err instanceof LlmError && (err.kind === "abort" || err.kind === "config");
+    if (!skip) await addUsage(0, 0, true);
+    const f = await report(err, config, {
+      source: "ask",
+      request: { text: req.text, question: req.question, articleTitle: req.articleTitle, turns: req.history.length },
+    });
+    return { ok: false, error: f.error, needsConfig: f.needsConfig };
+  }
 }
 
 export interface AssistOutcome {
