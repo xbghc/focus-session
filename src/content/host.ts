@@ -11,6 +11,11 @@ import type { TrackController } from "./track.ts";
  * 页面同一条收尾路径（结算最后一段、摘掉全部监听、收掉角标），新的一轮按新地址重抽正文。
  * 效果等同刷新一次，只是不用真刷新。
  *
+ * 同一个文档还有第二种「重来」：从 bfcache 回来。后退/前进时浏览器把整页原样端回来，
+ * 文档不重新加载，content script 也不会再跑一次——而离开这一页时 pagehide 已经把那一轮
+ * 收摊了（见 track.ts 的 finish），不重起的话回到的这一页从此既不计时也不划词翻译。
+ * 地址没变，urlChanged 那条路认不出该重来，所以另给一个入口。
+ *
  * 从 index.ts 里拆出来是为了能单独测：它只认一个「按地址起一轮」的函数，不碰 chrome
  * 也不碰 DOM。安卓 App 的阅读器没有这个问题（自己渲染正文），所以不经过这里。
  */
@@ -30,6 +35,11 @@ export interface PageHost {
    * （#section）正是这个工具最常见的用法。判定口径与后台一致（normalizeUrl）。
    */
   urlChanged(url: string): void;
+  /**
+   * 从 bfcache 回来（后退/前进）。地址一样也要原地再起一轮：离开时那一轮已经收摊，
+   * 而文档不重新加载，没有第二个人会把它拉起来。
+   */
+  restored(url: string): void;
 }
 
 export function createPageHost(begin: Begin): PageHost {
@@ -47,7 +57,8 @@ export function createPageHost(begin: Begin): PageHost {
   /** 还没就绪时 popup 看到的说法。 */
   let reason = "初始化中";
 
-  const run = (url: string): void => {
+  /** translateHere：新的一轮就绪后替用户再点一次「本页启用划词翻译」，见 restored。 */
+  const run = (url: string, translateHere = false): void => {
     const gen = ++round;
     pending?.abort(); // 上一轮若还在抽正文，让它就地收手
     ctl?.stop("unload"); // 已经开张的，走和离开页面同一条收尾路径
@@ -65,6 +76,7 @@ export function createPageHost(begin: Begin): PageHost {
         }
         pending = null;
         ctl = next;
+        if (translateHere) next.translateHere();
       },
       (err: unknown) => {
         if (gen !== round) return;
@@ -81,6 +93,14 @@ export function createPageHost(begin: Begin): PageHost {
     urlChanged: (url) => {
       if (articleId !== null && normalizeUrl(url) === articleId) return;
       run(url);
+    },
+    restored: (url) => {
+      /*
+       * 非文章页上的「本页启用划词翻译」是用户亲手点出来的，而新起的一轮默认不挂
+       * （见 track.ts 的 translateOnly）。bfcache 回来还是同一次加载——那句
+       * 「只对本次加载有效」在这里的意思是它该跟着回来，不能被这次重起悄悄关掉。
+       */
+      run(url, ctl?.state().translateHere === "on");
     },
   };
 }

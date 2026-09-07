@@ -558,11 +558,23 @@ ActivityWatch 之类的跨应用统计：
 scroll，一段阅读记两遍），以及**抽正文那几秒里可能再换页**（最长重试到 4 秒，其间到达的通知
 只认最后一次，被顶掉的那几轮由 `AbortSignal` 就地作废，免得替旧那篇留下没人读过的孤儿卡）。
 
+还有一种「同一个文档、必须重来」的情形和地址无关：**从 bfcache 回来**。在文章页上点开一个
+链接、再按后退，浏览器把整页原样端回来——文档不重新加载，content script 不会再跑一次，而
+离开那一下的 `pagehide` 早把这一轮收摊了（结算最后一段、摘掉全部监听）。后台推来的
+`page:url-changed` 救不了：地址压根没变，按 `normalizeUrl` 判就是「还是这一篇」。所以
+`content/index.ts` 另听一个 `pageshow`，`persisted` 为真时请 `host.restored()` 无条件重起一轮
+（`pageshow` 头一次加载也发，不判 `persisted` 就会开张两次）。没有这一下，后退回来的那一页
+从此既不计时、划词也不翻译，只有刷新才能恢复。跳回上次位置那一跳不会跟着来第二次——
+`planRestore` 见页面已经不在顶部就不跳，而 bfcache 端回来的滚动位置原样保留。
+
+非文章页上用户点过的「本页启用划词翻译」跟着一起回来：新起的一轮默认不挂，而 bfcache
+回来还是同一次加载，「只对本次加载有效」在这里的意思是它不该被这次重起悄悄关掉。
+
 ## 开发
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test，466 项
+npm test            # node --test，468 项
 npm run build       # esbuild → dist/
 npm run watch       # 增量构建
 MINIMAX_API_KEY=... node --experimental-strip-types scripts/live-check.ts   # 打真实 API 看讲解质量
@@ -628,7 +640,7 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 
 ## 已验证 / 未验证
 
-**已验证（466 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
+**已验证（468 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
 静默上限随视口文字量放宽、被 `maxQuiet` 封顶、关闭自适应后退回固定阈值、没什么字时固定阈值照旧 /
 两种走神各自的恢复条件 / 半小时晃鼠标只产生一个 session / 只在翻屏时才有信号时不丢失阅读时间 / 重启后的阈值重置 / 碎片丢弃 /
 阈值热更新）；混合语言字数统计；URL 归一化与域名排除；分位数计算；段落可见性公式；
@@ -649,7 +661,8 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 读完角标（判定边界、挂载与重复挂载、两个按钮的回调、`markFinished` 的幂等与 no-op、
 页内换文章时连同追踪一起收摊）；页内换文章后重来一轮（收摊之后活动信号与可见性都只喂给新那轮、
 目录锚点与跟踪参数不算换页、抽正文期间连换两页只认最后一次、被顶掉的轮就地作废、起不来时
-popup 说得出原因）；
+popup 说得出原因）；从 bfcache 回来（地址一模一样也重起一轮、用户点过的「本页启用划词翻译」
+跟着回来）；
 密钥隔离（不出现在 settings、不出现在导出文件、清空数据时保留）。
 
 生词讲解：三种粒度各要哪几个字段（整句不要 usage、单词不要 vocab、关掉开关后 prompt 里
