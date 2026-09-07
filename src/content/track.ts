@@ -1,5 +1,7 @@
 import type {
   Article,
+  AskReply,
+  AskRequest,
   ContentToBg,
   EndReason,
   PageState,
@@ -621,20 +623,27 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 }
 
 /**
- * 发起一次流式翻译。
+ * 走 port 发一次请求：把增量喂给调用方，拿到最终结果就收线。
  *
- * 走 port 而不是 sendMessage：一次翻译要推多次增量（译文先到，语境解释后到），
- * 而 sendMessage 一个请求只允许一次应答。请求本身仍必须由 background 代发——
- * MiniMax 端点没有 CORS 头，而且 API key 不能出现在与网页共享进程的 content script 里。
+ * 走 port 而不是 sendMessage：一次请求要推多次增量（翻译是译文先到、语境解释后到，
+ * 追问是答案一路往外冒），而 sendMessage 一个请求只允许一次应答。请求本身仍必须由
+ * background 代发——MiniMax 端点没有 CORS 头，而且 API key 不能出现在与网页共享
+ * 进程的 content script 里。
+ *
+ * 翻译和追问共用这一段：两者的差别只在发什么、怎么认增量、怎么认最终结果，
+ * 而 port 的生命周期（取消、断线、重复 resolve）三处都一样，抄一遍就要错一遍。
  */
-function streamTranslate(
-  req: TranslateRequest,
-  onPartial: (p: PartialTranslation) => void,
+function onPort<R>(
+  req: TranslatePortIn,
   signal: AbortSignal,
-): Promise<TranslateResponse> {
+  /** 消化一条后台消息：是增量就自己处理并返回 null，是最终结果就把它返回。 */
+  read: (m: TranslatePortOut) => R | null,
+  /** 连不上、被取消、连接中断时给调用方的结果。 */
+  failed: (error: string) => R,
+): Promise<R> {
   return new Promise((resolve) => {
     if (signal.aborted) {
-      resolve({ ok: false, error: "已取消", needsConfig: false });
+      resolve(failed("已取消"));
       return;
     }
     let port: chrome.runtime.Port;
@@ -642,7 +651,7 @@ function streamTranslate(
       port = chrome.runtime.connect({ name: PORT_TRANSLATE });
     } catch (err) {
       // 扩展刚被重载时连不上，不该把页面搞崩
-      resolve({ ok: false, error: `后台未就绪：${String(err)}`, needsConfig: false });
+      resolve(failed(`后台未就绪：${String(err)}`));
       return;
     }
 
@@ -656,9 +665,9 @@ function streamTranslate(
     };
     const onAbort = (): void => {
       close(); // background 侧的 onDisconnect 会顺手中止请求
-      finish({ ok: false, error: "已取消", needsConfig: false });
+      finish(failed("已取消"));
     };
-    const finish = (res: TranslateResponse): void => {
+    const finish = (res: R): void => {
       if (settled) return;
       settled = true;
       signal.removeEventListener("abort", onAbort);
@@ -667,18 +676,47 @@ function streamTranslate(
     signal.addEventListener("abort", onAbort, { once: true });
 
     port.onMessage.addListener((m: TranslatePortOut) => {
-      if (m.type === "partial") onPartial(m.partial);
-      else if (m.type === "done") {
-        finish(m.res);
-        close();
-      }
+      const res = read(m);
+      if (res === null) return;
+      finish(res);
+      close();
     });
     port.onDisconnect.addListener(() => {
       // 正常收尾时 finish 已经落定，这里只兜住 SW 中途挂掉的情况
-      finish({ ok: false, error: "与后台的连接中断", needsConfig: false });
+      finish(failed("与后台的连接中断"));
     });
-    port.postMessage({ type: "start", req } satisfies TranslatePortIn);
+    port.postMessage(req);
   });
+}
+
+/** 一次流式翻译。 */
+function streamTranslate(
+  req: TranslateRequest,
+  onPartial: (p: PartialTranslation) => void,
+  signal: AbortSignal,
+): Promise<TranslateResponse> {
+  return onPort<TranslateResponse>(
+    { type: "start", req },
+    signal,
+    (m) => {
+      if (m.type === "partial") onPartial(m.partial);
+      return m.type === "done" ? m.res : null;
+    },
+    (error) => ({ ok: false, error, needsConfig: false }),
+  );
+}
+
+/** 浮层里的一次追问。增量是**到目前为止的全部答案**，不是新增的那几个字。 */
+function streamAsk(req: AskRequest, onDelta: (text: string) => void, signal: AbortSignal): Promise<AskReply> {
+  return onPort<AskReply>(
+    { type: "ask", req },
+    signal,
+    (m) => {
+      if (m.type === "ask-partial") onDelta(m.text);
+      return m.type === "ask-done" ? m.res : null;
+    },
+    (error) => ({ ok: false, error, needsConfig: false }),
+  );
 }
 
 /** 划词翻译器的接线。文章页和临时开启的非文章页用同一份，别让两边的依赖悄悄分叉。 */
@@ -690,6 +728,7 @@ function makeTranslator(articleId: string, url: string, title: string, settings:
     settings,
     contextOf: paragraphContext,
     translate: streamTranslate,
+    ask: streamAsk,
     warm: () => send({ type: "sw:ping" }),
     openOptions: () => void chrome.runtime.sendMessage({ type: "options:open" }),
   });

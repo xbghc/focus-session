@@ -12,7 +12,7 @@ import type {
 import { buildOverview } from "../lib/stats.ts";
 import { samePosition } from "../lib/position.ts";
 import { dueCards, reviewStats } from "../lib/review.ts";
-import { type StreamHandle, handleAssist, streamTranslate, testConnection } from "./translate.ts";
+import { handleAssist, streamAsk, streamTranslate, testConnection } from "./translate.ts";
 import { clearLlmLog, llmLogBundle } from "./llmLog.ts";
 import {
   articleReviewState,
@@ -407,7 +407,8 @@ export interface PortLike {
  * 附带一个好处：port 开着期间 service worker 不会被回收，流不会被腰斩。
  */
 export function attachTranslatePort(port: PortLike): void {
-  let handle: StreamHandle | null = null;
+  /** 这条 port 手上那件事。断开时只需要能把它掐掉，所以只认 cancel。 */
+  let handle: { cancel: () => void } | null = null;
   let closed = false;
 
   const post = (msg: TranslatePortOut): void => {
@@ -425,19 +426,36 @@ export function attachTranslatePort(port: PortLike): void {
     handle?.cancel();
   });
 
-  port.onMessage.addListener((msg: TranslatePortIn) => {
-    if (msg?.type !== "start" || handle) return;
-    const h = streamTranslate(msg.req, (partial) => post({ type: "partial", partial }));
+  /** 一问一答，答完就断——两种请求走的是同一套收尾。 */
+  const settle = <T>(h: { done: Promise<T>; cancel: () => void }, reply: (res: T) => TranslatePortOut, fail: (error: string) => TranslatePortOut): void => {
     handle = h;
     void h.done.then(
       (res) => {
-        post({ type: "done", res });
+        post(reply(res));
         if (!closed) port.disconnect();
       },
       (err: unknown) => {
-        post({ type: "done", res: { ok: false, error: String(err), needsConfig: false } });
+        post(fail(String(err)));
         if (!closed) port.disconnect();
       },
     );
+  };
+
+  port.onMessage.addListener((msg: TranslatePortIn) => {
+    // 一条 port 只做一件事：浮层每次翻译、每次追问都新连一条
+    if (handle) return;
+    if (msg?.type === "start") {
+      settle(
+        streamTranslate(msg.req, (partial) => post({ type: "partial", partial })),
+        (res) => ({ type: "done", res }),
+        (error) => ({ type: "done", res: { ok: false, error, needsConfig: false } }),
+      );
+    } else if (msg?.type === "ask") {
+      settle(
+        streamAsk(msg.req, (text) => post({ type: "ask-partial", text })),
+        (res) => ({ type: "ask-done", res }),
+        (error) => ({ type: "ask-done", res: { ok: false, error, needsConfig: false } }),
+      );
+    }
   });
 }

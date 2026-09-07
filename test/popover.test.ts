@@ -53,9 +53,18 @@ const SNIPPET = {
 };
 
 let pop: PopoverT;
+/** 浮层递出来的追问。断言"点了发送之后外面收到的是哪一句"。 */
+let asked: string[] = [];
+let optionsOpened = 0;
 beforeEach(() => {
   document.documentElement.querySelectorAll("#focus-session-popover").forEach((n) => n.remove());
-  pop = new Popover({ onConfirm: () => {}, onOpenOptions: () => {} });
+  asked = [];
+  optionsOpened = 0;
+  pop = new Popover({
+    onConfirm: () => {},
+    onOpenOptions: () => void optionsOpened++,
+    onAsk: (q) => void asked.push(q),
+  });
   spoken.length = 0;
   cancels = 0;
 });
@@ -254,4 +263,159 @@ test("没念过东西时收起浮层不去动网页自己的朗读", () => {
   pop.showResult(RECT, SNIPPET);
   pop.hide();
   assert.equal(cancels, 0);
+});
+
+/* ---- 追问：译文出来之后，就着这一段再问一句 ---- */
+
+/** 走一遍「翻完 → 点问一句」，返回输入框。 */
+function openAsk(): HTMLInputElement {
+  pop.showResult(RECT, SNIPPET);
+  pop.enableAsk();
+  click(root().querySelector('[data-act="ask"]'));
+  return root().querySelector(".qin") as HTMLInputElement;
+}
+
+/** 在输入框里敲一句并发送。 */
+function ask(input: HTMLInputElement, q: string): void {
+  input.value = q;
+  click(root().querySelector('[data-act="send"]'));
+}
+
+test("译文还没到就没有追问入口——没有译文可倚，追问问的是空气", () => {
+  pop.showStreaming(RECT, "leaks");
+  assert.equal(root().querySelector('[data-act="ask"]'), null);
+  assert.equal(pop.asking, false);
+});
+
+test("翻完之后挂上追问入口，但那时选区还在，浮层照常该关就关", () => {
+  pop.showResult(RECT, SNIPPET);
+  pop.enableAsk();
+  const entry = root().querySelector('[data-act="ask"]')!;
+  assert.equal(entry.textContent, "问", "一个字符当图标，不写文字标签");
+  assert.equal(root().querySelector(".qin"), null, "先只给按钮，别一上来就摆个表单");
+  assert.equal(pop.asking, false, "还没点开，选区还作数");
+});
+
+test("纯图标按钮必须带无障碍名字——不然读屏软件读出来是空的", () => {
+  const input = openAsk();
+  for (const act of ["ask", "send"]) {
+    // 收起态只有 ask，展开态只有 send；各查各的那一刻
+    const btn = root().querySelector(`[data-act="${act}"]`);
+    if (!btn) continue;
+    assert.ok((btn.getAttribute("aria-label") ?? "").length > 0, `${act} 缺 aria-label`);
+    assert.ok((btn.getAttribute("title") ?? "").length > 0, `${act} 缺 title`);
+  }
+  assert.equal(root().querySelector('[data-act="send"]')!.textContent, "↵");
+  assert.notEqual(input, null);
+});
+
+test("点开输入框之后 asking 为真——此后选区塌了也不能关浮层", () => {
+  const input = openAsk();
+  assert.notEqual(input, null);
+  assert.equal(pop.asking, true);
+});
+
+test("发出一问：外面收到原话，问题挂上去，答案位先转圈", () => {
+  const input = openAsk();
+  ask(input, "  它和 leak 有什么区别？  ");
+  assert.deepEqual(asked, ["它和 leak 有什么区别？"], "两头的空白要去掉");
+  assert.equal(txt(".qq"), "它和 leak 有什么区别？");
+  assert.ok(root().querySelector(".aa .spin"), "答案到达前应当有加载指示");
+  assert.equal(input.value, "", "发出去之后输入框要清空");
+  assert.equal(input.disabled, true, "上一问还没答完，别让人接着发");
+});
+
+test("空白问题不发", () => {
+  const input = openAsk();
+  ask(input, "   ");
+  assert.deepEqual(asked, []);
+  assert.equal(root().querySelector(".qa"), null);
+});
+
+test("答案流式填进来，答完解禁输入框", () => {
+  const input = openAsk();
+  ask(input, "为什么用复数？");
+  pop.updateAnswer("主语是");
+  assert.equal(txt(".aa"), "主语是");
+  pop.updateAnswer("主语是 abstraction");
+  assert.equal(txt(".aa"), "主语是 abstraction", "增量是累积值，直接覆盖");
+  pop.finishAnswer("主语是 abstraction，复数指每一次抽象。");
+  assert.equal(txt(".aa"), "主语是 abstraction，复数指每一次抽象。");
+  assert.equal(input.disabled, false, "答完了要能接着问");
+});
+
+test("一个字都没答出来时也不留个空框在那儿转", () => {
+  const input = openAsk();
+  ask(input, "?");
+  pop.finishAnswer("");
+  assert.equal(root().querySelector(".aa .spin"), null);
+  assert.ok(txt(".aa").length > 0);
+});
+
+test("接着问第二问：前一轮留在上面，不被顶掉", () => {
+  const input = openAsk();
+  ask(input, "第一问");
+  pop.finishAnswer("第一答");
+  ask(input, "第二问");
+  pop.finishAnswer("第二答");
+  const qs = [...root().querySelectorAll(".qq")].map((n) => n.textContent);
+  const as = [...root().querySelectorAll(".aa")].map((n) => n.textContent);
+  assert.deepEqual(qs, ["第一问", "第二问"]);
+  assert.deepEqual(as, ["第一答", "第二答"]);
+});
+
+test("上一问还没答完，第二问按不出去", () => {
+  const input = openAsk();
+  ask(input, "第一问");
+  ask(input, "第二问");
+  assert.deepEqual(asked, ["第一问"]);
+});
+
+test("回车发送；输入法选词时的那一下回车不算", () => {
+  const input = openAsk();
+  const enter = (isComposing: boolean): void => {
+    input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", isComposing, bubbles: true }));
+  };
+
+  input.value = "选词中按的回车";
+  enter(true);
+  assert.deepEqual(asked, [], "中文输入第一下就会撞上：那是确认候选，不是发送");
+
+  input.value = "真的要问";
+  enter(false);
+  assert.deepEqual(asked, ["真的要问"]);
+});
+
+test("追问失败：缺配置时给一个「去设置」", () => {
+  const input = openAsk();
+  ask(input, "为什么？");
+  pop.failAnswer("尚未填写 MiniMax API Key", true);
+  assert.ok(txt(".aa").includes("API Key"));
+  click(root().querySelector('[data-act="opt"]'));
+  assert.equal(optionsOpened, 1);
+  assert.equal(input.disabled, false, "失败之后也要能再问");
+});
+
+test("追问失败：一般错误照原样显示，不给「去设置」", () => {
+  const input = openAsk();
+  ask(input, "为什么？");
+  pop.failAnswer("网络错误：Failed to fetch", false);
+  assert.ok(txt(".aa").includes("网络错误"));
+  assert.equal(root().querySelector('[data-act="opt"]'), null);
+});
+
+test("收起浮层之后 asking 回到假——不然换一段选区就再也关不掉了", () => {
+  openAsk();
+  assert.equal(pop.asking, true);
+  pop.hide();
+  assert.equal(pop.asking, false);
+});
+
+test("重新划一个词：追问那块跟着整块作废", () => {
+  const input = openAsk();
+  ask(input, "上一段的问题");
+  pop.finishAnswer("上一段的答案");
+  pop.showStreaming(RECT, "another");
+  assert.equal(root().querySelector(".qa"), null, "上一段的问答不能留在新的一段上");
+  assert.equal(pop.asking, false);
 });

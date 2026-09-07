@@ -11,7 +11,8 @@ import { createPageHost } from "../src/content/host.ts";
  * 两头各盯一段。track.ts 那头盯的是收摊收不收得干净：读完角标挂在 document.documentElement
  * 上、活动信号挂在 document 上，只有 pagehide 会走收尾路径，而页内导航根本不触发 pagehide。
  * 收不干净的话新起的那一轮会和旧的一起听着同一个 scroll，同一段阅读记两遍。
- * host.ts 那头盯的是什么时候该重来：目录锚点不算换页，抽正文那几秒里换的要认最后一次。
+ * host.ts 那头盯的是什么时候该重来：目录锚点不算换页，抽正文那几秒里换的要认最后一次，
+ * 从 bfcache 回来（后退/前进）则地址一模一样也得重来——那一轮在 pagehide 时就收摊了。
  */
 
 const FIRST = "https://news.example.com/a/first";
@@ -296,6 +297,58 @@ test("抽正文那几秒里连换两页：只认最后一次，中间那些就�
   await rounds[2]!.ready();
   assert.equal(host.state().articleId, THIRD);
   assert.equal(rounds[2]!.stops, 0);
+});
+
+test("从 bfcache 回来：地址一模一样也要重起一轮", async () => {
+  const { host, rounds } = harness();
+  host.start(FIRST);
+  await rounds[0]!.ready();
+
+  // 后台的 page:url-changed 救不了：后退回来地址压根没变，这条路认成「还是这一篇」
+  host.urlChanged(FIRST);
+  assert.equal(rounds.length, 1);
+
+  // 而离开这一页时 pagehide 已经把那一轮收摊了（stopped 之后它不会再醒），
+  // 没有这一下，回到的这一页就再也不计时、划词也不翻译
+  host.restored(FIRST);
+  assert.equal(rounds.length, 2, "同一个地址也要重起——离开时那一轮已经收摊了");
+  assert.equal(rounds[1]!.url, FIRST);
+  await rounds[1]!.ready();
+  assert.equal(host.state().articleId, FIRST);
+});
+
+test("从 bfcache 回来：非文章页上用户点开的划词翻译要跟着回来", async () => {
+  /** 照着 track.ts 的 translateOnly 来：默认不挂，收摊即关，只认用户亲手点的那一下。 */
+  const rounds: Array<{ on: boolean }> = [];
+  const host = createPageHost(async () => {
+    const r = { on: false };
+    rounds.push(r);
+    return {
+      state: (): PageState => ({ tracked: false, reason: "未识别为文章页", translateHere: r.on ? "on" : "available" }),
+      setVisible: () => undefined,
+      stop: () => {
+        r.on = false;
+      },
+      translateHere: () => {
+        r.on = true;
+      },
+    };
+  });
+
+  host.start(FIRST);
+  await new Promise((r) => setImmediate(r));
+  host.translateHere();
+  assert.equal(host.state().translateHere, "on");
+
+  host.restored(FIRST);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rounds.length, 2);
+  assert.equal(rounds[0]!.on, false, "旧的一轮照常收摊");
+  assert.equal(
+    host.state().translateHere,
+    "on",
+    "bfcache 回来还是同一次加载：用户点过的「本页启用」不该被这次重起悄悄关掉",
+  );
 });
 
 test("这一轮起不来：popup 要说得出原因，换一页还能再试", async () => {

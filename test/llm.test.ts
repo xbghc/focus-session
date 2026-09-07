@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ASK_HISTORY_TURNS,
   LlmError,
+  buildAskPrompt,
   buildAssistPrompt,
   buildTranslatePrompt,
   callMessages,
@@ -9,7 +11,7 @@ import {
   normalizeTranslation,
   translate,
 } from "../src/lib/llm.ts";
-import type { LlmConfig, TranslateRequest } from "../src/types.ts";
+import type { AskRequest, LlmConfig, TranslateRequest } from "../src/types.ts";
 import { DEFAULT_LLM } from "../src/types.ts";
 
 const CFG: LlmConfig = { ...DEFAULT_LLM, apiKey: "test-key", timeoutMs: 1_000 };
@@ -157,6 +159,55 @@ test("assist prompt 三种模式各不相同且都带原句", () => {
   const modes = (["example", "explain", "quiz"] as const).map((m) => buildAssistPrompt(m, input));
   assert.equal(new Set(modes).size, 3);
   for (const m of modes) assert.ok(m.includes("Every abstraction leaks."));
+});
+
+/* ---------- 浮层里的追问 ---------- */
+
+const ASK: AskRequest = {
+  text: "leaks",
+  kind: "word",
+  translation: "泄漏",
+  contextNote: "本文里指抽象挡不住底层细节。",
+  context: "Every abstraction leaks.",
+  articleTitle: "The Hidden Cost of Abstraction",
+  question: "它和 leak 有什么区别？",
+  history: [],
+};
+
+test("追问 prompt 带上已给出的译文和语境解释——模型不该把用户看过的再说一遍", () => {
+  const p = buildAskPrompt(ASK);
+  assert.ok(p.includes("leaks"));
+  assert.ok(p.includes("泄漏"));
+  assert.ok(p.includes("本文里指抽象挡不住底层细节。"));
+  assert.ok(p.includes("Every abstraction leaks."));
+  // 问题排在最后：前面全是材料，模型该照着最后这一句答
+  assert.ok(p.trimEnd().endsWith("它和 leak 有什么区别？"));
+});
+
+test("空的语境解释 / 段落不占位", () => {
+  const p = buildAskPrompt({ ...ASK, contextNote: "", context: "", articleTitle: "" });
+  assert.equal(p.includes("语境解释"), false);
+  assert.equal(p.includes("段落"), false);
+  assert.equal(p.includes("出处"), false);
+});
+
+test("历史只带最近几轮，超出的丢掉", () => {
+  const history = Array.from({ length: ASK_HISTORY_TURNS + 2 }, (_, i) => ({
+    question: `第${i}问`,
+    answer: `第${i}答`,
+  }));
+  const p = buildAskPrompt({ ...ASK, history });
+  // 前两轮被挤掉，最后三轮留着
+  assert.equal(p.includes("第0问"), false);
+  assert.equal(p.includes("第1问"), false);
+  for (let i = 2; i < history.length; i++) assert.ok(p.includes(`第${i}问`), `第${i}问 应当带上`);
+});
+
+test("历史里的长答案只留梗概，不整段抄回去", () => {
+  const answer = "答".repeat(500);
+  const p = buildAskPrompt({ ...ASK, history: [{ question: "上一问", answer }] });
+  assert.equal(p.includes(answer), false, "整段照抄等于每问一次就把前面全付一遍钱");
+  assert.ok(p.includes("上一问"));
 });
 
 /* ---------- HTTP 层 ---------- */
