@@ -23,6 +23,27 @@ import { MAX_VOCAB } from "../types.ts";
 /** 便于单测注入。 */
 export interface LlmDeps {
   fetch: typeof fetch;
+  /** 重试前的退避时长，默认 `RETRY_DELAY_MS`。单测拿它跳过那 1.2 秒的真实等待。 */
+  retryDelayMs?: number;
+  /** 取当前时刻，默认 `Date.now`。单测拿它把耗时钉死，不必依赖真实时间。 */
+  now?: () => number;
+}
+
+/**
+ * 一次调用的耗时切片。分成几个数字是因为"慢"不止一种：
+ * **排队慢**（`firstTextMs` 大，模型迟迟不开口）、**生成慢**（`firstFieldMs` 到 `totalMs` 拉得长）、
+ * 还有**重试导致的慢**（`attempts > 1`，其中一段是自己退避掉的）。
+ * 只记一个总时长的话，这三种在日志里长得一模一样。
+ */
+export interface CallTiming {
+  /** 用户实际等的时长，含退避与重试。 */
+  totalMs: number;
+  /** 第一个文本增量到达。非流式为 null——那条路在整段生成完之前什么都没有。 */
+  firstTextMs: number | null;
+  /** 译文字段闭合、浮层第一次真显示出东西。只有流式翻译有。 */
+  firstFieldMs: number | null;
+  /** 实际发出去几次请求。>1 说明撞上过 429/529，`totalMs` 里有一段是退避。 */
+  attempts: number;
 }
 
 /** `abort` 是用户主动取消（关掉浮层、又选了别的），不该计入失败统计。 */
@@ -41,6 +62,11 @@ export class LlmError extends Error {
    * service worker 的控制台，下一次失败才有得查。
    */
   raw: { text: string; stopReason: string } | undefined;
+  /**
+   * 这次调用花了多久。缺配置那类"根本没发出去"的失败没有——
+   * 和 `raw` 同一个思路：能挂上去的现场都挂上，日志才看得出"慢到超时"和"秒失败"的区别。
+   */
+  timing: CallTiming | undefined;
 
   constructor(message: string, kind: LlmErrorKind, status?: number) {
     super(message);
@@ -48,6 +74,7 @@ export class LlmError extends Error {
     this.kind = kind;
     this.status = status;
     this.raw = undefined;
+    this.timing = undefined;
   }
 }
 
@@ -62,6 +89,75 @@ export interface CallResult {
   /** 原样的 stop_reason，进日志用；`truncated` 是从它推出来的。 */
   stopReason: string;
   truncated: boolean;
+  timing: CallTiming;
+}
+
+/**
+ * 值得重试的状态码。529 是 MiniMax 的"集群负载较高，请稍后重试"，429 是限流——
+ * 两者都不是这次请求本身有问题，隔一会儿再发就好。
+ */
+const RETRY_STATUS = new Set([429, 529]);
+
+/**
+ * 退避多久再重试。只重试一次：用户正盯着浮层等，第二次还过载就该老实报错，
+ * 让他自己决定要不要再划一遍，而不是替他把 timeout 熬完。
+ */
+const RETRY_DELAY_MS = 1_200;
+
+/**
+ * 可被 `signal` 打断的等待。被打断时直接 resolve——超时和主动取消的区分留给调用方，
+ * 让它的下一次 fetch 去撞 abort，这里不重复判一遍。
+ */
+function backoff(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * 发一次 Messages 请求，过载/限流时退避重试一次。
+ *
+ * URL、鉴权头和重试规矩两条路径共用；流式与否只差请求体里的 `stream`。
+ * 重试整个发生在调用方那个 timeout 之内，所以用户设的超时仍然是总账。
+ *
+ * `count` 由调用方持有而不是当返回值：抛出去的时候（网络错误、超时）也得数得清发了几次，
+ * 不然日志里一次重试过的调用只会显示"慢了 1.5 秒"，看不出那 1.2 秒是自己退避掉的。
+ */
+async function postMessages(
+  config: LlmConfig,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+  deps: LlmDeps,
+  count: { n: number },
+): Promise<Response> {
+  const url = `${config.baseUrl.replace(/\/+$/, "")}/v1/messages`;
+  const init: RequestInit = {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": config.apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+    signal,
+  };
+  for (;;) {
+    count.n++;
+    const res = await deps.fetch(url, init);
+    if (res.ok || count.n > 1 || !RETRY_STATUS.has(res.status)) return res;
+    await res.body?.cancel().catch(() => undefined); // body 不读也得关掉，不然连接挂着
+    await backoff(deps.retryDelayMs ?? RETRY_DELAY_MS, signal);
+  }
 }
 
 /** 一次非流式 Messages 调用。只负责发出去和把文本取回来，不懂业务。 */
@@ -73,61 +169,73 @@ export async function callMessages(
 ): Promise<CallResult> {
   if (!config.apiKey) throw new LlmError("尚未填写 MiniMax API Key", "config");
 
+  // 计时从这里起：缺配置那次根本没发请求，不该占一格
+  const now = deps.now ?? Date.now;
+  const t0 = now();
+  const count = { n: 0 };
+  /** 非流式没有"第一个字"可言——整段生成完之前什么都没有，两个 first 恒为 null。 */
+  const timing = (): CallTiming => ({ totalMs: now() - t0, firstTextMs: null, firstFieldMs: null, attempts: count.n });
+
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), config.timeoutMs);
-  let res: Response;
+
+  // 外面这层只干一件事：把耗时挂到抛出去的 LlmError 上，一口气兜住下面所有出口
   try {
-    res = await deps.fetch(`${config.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": config.apiKey,
-        "anthropic-version": "2023-06-01",
+    let res: Response;
+    try {
+      res = await postMessages(
+        config,
+        {
+          model: config.model,
+          max_tokens: config.maxTokens,
+          system,
+          messages: [{ role: "user", content: userText }],
+        },
+        ctrl.signal,
+        deps,
+        count,
+      );
+    } catch (err) {
+      if (ctrl.signal.aborted) throw new LlmError(`请求超时（${config.timeoutMs}ms）`, "timeout");
+      throw new LlmError(`网络错误：${String(err)}`, "network");
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      // 错误体通常是 JSON，但 401/网关错误可能是 HTML，截断后原样带出更好排查
+      const body = await res.text().catch(() => "");
+      throw new LlmError(`HTTP ${res.status}：${body.slice(0, 300)}`, "http", res.status);
+    }
+
+    const data = (await res.json().catch(() => null)) as AnthropicResponse | null;
+    if (!data) throw new LlmError("响应不是合法 JSON", "parse");
+
+    // MiniMax 会在 HTTP 200 里用 base_resp 报业务错误（余额不足、鉴权失败等）
+    const br = data.base_resp;
+    if (br && typeof br.status_code === "number" && br.status_code !== 0) {
+      throw new LlmError(`MiniMax 错误 ${br.status_code}：${br.status_msg ?? ""}`, "http");
+    }
+
+    const text = (data.content ?? [])
+      .filter((b): b is { type: "text"; text: string } => b?.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("");
+
+    return {
+      text,
+      usage: {
+        inputTokens: data.usage?.input_tokens ?? 0,
+        outputTokens: data.usage?.output_tokens ?? 0,
       },
-      body: JSON.stringify({
-        model: config.model,
-        max_tokens: config.maxTokens,
-        system,
-        messages: [{ role: "user", content: userText }],
-      }),
-      signal: ctrl.signal,
-    });
+      stopReason: data.stop_reason ?? "",
+      truncated: data.stop_reason === "max_tokens",
+      timing: timing(),
+    };
   } catch (err) {
-    if (ctrl.signal.aborted) throw new LlmError(`请求超时（${config.timeoutMs}ms）`, "timeout");
-    throw new LlmError(`网络错误：${String(err)}`, "network");
-  } finally {
-    clearTimeout(timer);
+    if (err instanceof LlmError) err.timing = timing();
+    throw err;
   }
-
-  if (!res.ok) {
-    // 错误体通常是 JSON，但 401/网关错误可能是 HTML，截断后原样带出更好排查
-    const body = await res.text().catch(() => "");
-    throw new LlmError(`HTTP ${res.status}：${body.slice(0, 300)}`, "http", res.status);
-  }
-
-  const data = (await res.json().catch(() => null)) as AnthropicResponse | null;
-  if (!data) throw new LlmError("响应不是合法 JSON", "parse");
-
-  // MiniMax 会在 HTTP 200 里用 base_resp 报业务错误（余额不足、鉴权失败等）
-  const br = data.base_resp;
-  if (br && typeof br.status_code === "number" && br.status_code !== 0) {
-    throw new LlmError(`MiniMax 错误 ${br.status_code}：${br.status_msg ?? ""}`, "http");
-  }
-
-  const text = (data.content ?? [])
-    .filter((b): b is { type: "text"; text: string } => b?.type === "text" && typeof b.text === "string")
-    .map((b) => b.text)
-    .join("");
-
-  return {
-    text,
-    usage: {
-      inputTokens: data.usage?.input_tokens ?? 0,
-      outputTokens: data.usage?.output_tokens ?? 0,
-    },
-    stopReason: data.stop_reason ?? "",
-    truncated: data.stop_reason === "max_tokens",
-  };
 }
 
 interface AnthropicResponse {
@@ -204,6 +312,13 @@ export async function callMessagesStream(
   if (!config.apiKey) throw new LlmError("尚未填写 MiniMax API Key", "config");
   if (opts.signal?.aborted) throw new LlmError("已取消", "abort");
 
+  const now = deps.now ?? Date.now;
+  const t0 = now();
+  const count = { n: 0 };
+  let firstTextMs: number | null = null;
+  /** `firstFieldMs` 这一层看不见（字段闭合是 translateStream 的事），留给它填。 */
+  const timing = (): CallTiming => ({ totalMs: now() - t0, firstTextMs, firstFieldMs: null, attempts: count.n });
+
   const ctrl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -225,22 +340,19 @@ export async function callMessagesStream(
   try {
     let res: Response;
     try {
-      res = await deps.fetch(`${config.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": config.apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
+      res = await postMessages(
+        config,
+        {
           model: config.model,
           max_tokens: config.maxTokens,
           system,
           messages: [{ role: "user", content: userText }],
           stream: true,
-        }),
-        signal: ctrl.signal,
-      });
+        },
+        ctrl.signal,
+        deps,
+        count,
+      );
     } catch (err) {
       throw wrap(err);
     }
@@ -272,6 +384,8 @@ export async function callMessagesStream(
           case "content_block_delta": {
             const d = ev["delta"] as { type?: string; text?: string } | undefined;
             if (d?.type === "text_delta" && typeof d.text === "string") {
+              // 传输层的"第一个字"：模型开口了。和"浮层能显示了"是两回事，后者要等字段闭合
+              if (d.text && firstTextMs === null) firstTextMs = now() - t0;
               text += d.text;
               opts.onDelta(text);
             }
@@ -300,7 +414,12 @@ export async function callMessagesStream(
     }
 
     if (!text) throw new LlmError("流式响应里没有任何文本", "parse");
-    return { text, usage: { inputTokens, outputTokens }, stopReason, truncated: stopReason === "max_tokens" };
+    return { text, usage: { inputTokens, outputTokens }, stopReason, truncated: stopReason === "max_tokens", timing: timing() };
+  } catch (err) {
+    // `wrap` 造的是新的 LlmError，而上面 !res.ok / !res.body / !text 那几处压根不过 wrap，
+    // 所以耗时统一在这里挂，不在 wrap 里挂
+    if (err instanceof LlmError) err.timing = timing();
+    throw err;
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", relay);
@@ -323,9 +442,14 @@ export async function callMessagesStream(
 export function translateSystem(kind: SnippetKind, explainVocab: boolean): string {
   const lines = [
     "你是浏览器里的英语阅读助手，读者是中文母语者。",
-    "只输出一个 JSON 对象，不要代码块，不要前言。字段严格按此顺序：",
+    "只输出一个 JSON 对象，不要代码块，不要前言。",
+    // 模型写中文时爱拿半角引号引术语（…做"细致"的效果…）又不转义，一处就废掉整份输出。
+    // extractJson 那边有 repairJson 兜底，但能不坏最好。
+    "字符串值里不要出现半角双引号：要引用某个词就用「」。",
+    "字段严格按此顺序：",
     "- translation：中文翻译。单词只给本文语境下最贴合的那个义项，不罗列词典义项。",
-    "- phonetic：国际音标，含首尾斜杠；非英语词或整句为 null。",
+    // 只说"含首尾斜杠"，模型真出过 "phonetic": /frɔːt/ 这种连引号一起省掉的输出
+    '- phonetic：国际音标，连首尾斜杠一起写成字符串（"/frɔːt/"，不是裸的 /frɔːt/）；非英语词或整句为 null。',
     "- pos：词性（noun/verb/adj 等）；整句为 null。",
     "- lemma：原形（leaks→leak）；整句为 null。",
     "- context_note：一两句话，说明它在本文这个语境里指什么。要具体到本文，不写通用废话。",
@@ -405,6 +529,75 @@ function closeIndex(text: string, start: number): number {
   return -1;
 }
 
+/** 从 `at` 起跳过空白，看下一个字符能不能给一个字符串收尾。到头也算——末尾那个引号只可能是收尾。 */
+function closesString(src: string, at: number): boolean {
+  for (let i = at; i < src.length; i++) {
+    const c = src[i]!;
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") continue;
+    return c === "," || c === "}" || c === "]" || c === ":";
+  }
+  return true;
+}
+
+/** 值位置上裸着的音标：`"phonetic": /frɔːt/,`。要求后面跟着 `,` `}` `]`，免得错认。 */
+const BARE_SLASHED = /^(\s*)(\/[^/"\n]*\/)(?=\s*[,}\]])/;
+
+/**
+ * 修模型写坏的 JSON。只在严格解析失败之后跑，只修两类**在合法 JSON 里根本不可能出现**的写法：
+ *
+ * 1. 字符串里没转义的半角引号。模型写中文时爱拿它引术语——
+ *    `"context_note": "它能做"细致"的半透明效果"`——一处就废掉整份输出，实测这是头号死因。
+ * 2. 值位置上裸着的音标：`"phonetic": /frɔːt/`。prompt 里说"含首尾斜杠"，模型偶尔连引号一起省了。
+ *
+ * 判定收尾引号的规矩：一个 `"` 结束字符串，当且仅当它后面（跳过空白）是 `,` `}` `]` `:`
+ * 之一或者已经到头；否则它是正文里的引号，补成 `\"`。这条判断在合法 JSON 上永远成立，
+ * 所以修补改不坏对的输出；何况它只在解析失败之后才跑。
+ *
+ * **裸换行不修**：字符串里的换行同样非法，但那既可能是模型忘了写 `\n`，也可能是它压根
+ * 没在写 JSON（前面啰嗦了两段）。分不开就别猜，照旧报错，原文进诊断日志。
+ */
+export function repairJson(src: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]!;
+    if (inStr) {
+      if (c === "\\") {
+        out += c + (src[i + 1] ?? ""); // 已有的转义整对搬走，别把 \" 拆开重认
+        i++;
+      } else if (c === '"' && !closesString(src, i + 1)) {
+        out += '\\"';
+      } else {
+        if (c === '"') inStr = false;
+        out += c;
+      }
+      continue;
+    }
+    out += c;
+    if (c === '"') {
+      inStr = true;
+    } else if (c === ":") {
+      const m = BARE_SLASHED.exec(src.slice(i + 1));
+      if (m) {
+        out += m[1]! + JSON.stringify(m[2]!);
+        i += m[0]!.length;
+      }
+    }
+  }
+  return out;
+}
+
+/** 从 `start` 处的 `{` 起切出一个闭合对象并解析。切不出、或者切出来解析不了，都返回 undefined。 */
+function parseObjectAt(src: string, start: number): unknown {
+  const end = closeIndex(src, start);
+  if (end === -1) return undefined;
+  try {
+    return JSON.parse(src.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 从模型输出里抠出 JSON。
  * 即便 system 里说了别加围栏，模型偶尔仍会包一层 ```json，
@@ -413,6 +606,9 @@ function closeIndex(text: string, start: number): number {
  * 顶层对象没闭合的按截断报，**不看 stop_reason**：MiniMax 兼容层在那个字段上回什么
  * 并无保证，它不说截断不等于没截断。这种输出若拿 lastIndexOf("}") 去抠，抓到的是
  * 最后一条生词的花括号，报出来的 SyntaxError 完全看不出是截断。
+ *
+ * 扫描和解析都失败了才轮到 `repairJson`：没转义的引号成对时骗得过扫描（在解析处炸），
+ * 奇数个时让扫描停在字符串里（被误报成截断），两条路都得给它留出口。
  */
 export function extractJson(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
@@ -425,17 +621,27 @@ export function extractJson(text: string): unknown {
   }
   const start = trimmed.indexOf("{");
   if (start === -1) throw new LlmError(`模型输出里找不到 JSON：${text.slice(0, 200)}`, "parse");
+
   const end = closeIndex(trimmed, start);
+  let syntax: unknown;
+  if (end !== -1) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch (err) {
+      syntax = err; // 留着报出去：它的位置对得上原文，修补之后的位置对不上
+    }
+  }
+
+  const fixed = parseObjectAt(repairJson(trimmed.slice(start)), 0);
+  if (fixed !== undefined) return fixed;
+
+  const head = trimmed.slice(0, 160);
+  // 说"疑似"是因为没转义的引号也会让扫描停在字符串里；原文前缀照带，两种情况一眼能分
   if (end === -1) {
-    // 说"疑似"是因为没转义的引号也会让扫描停在字符串里；原文前缀照带，两种情况一眼能分
-    throw new LlmError(`输出疑似被截断（JSON 没有闭合），请在设置里调大 max_tokens｜${trimmed.slice(0, 160)}`, "parse");
+    throw new LlmError(`输出疑似被截断（JSON 没有闭合），请在设置里调大 max_tokens｜${head}`, "parse");
   }
-  try {
-    return JSON.parse(trimmed.slice(start, end + 1));
-  } catch (err) {
-    // 带上出错处附近的原文：没有它，线上只剩一句"JSON 解析失败"，无从查起
-    throw new LlmError(`JSON 解析失败：${String(err)}｜${trimmed.slice(0, 160)}`, "parse");
-  }
+  // 带上出错处附近的原文：没有它，线上只剩一句"JSON 解析失败"，无从查起
+  throw new LlmError(`JSON 解析失败：${String(syntax)}｜${head}`, "parse");
 }
 
 const str = (v: unknown): string | null => {
@@ -539,7 +745,12 @@ function finishTranslation(res: CallResult, req: TranslateRequest, config: LlmCo
     }
     return normalizeTranslation(extractJson(res.text), req.kind, req.text);
   } catch (err) {
-    if (err instanceof LlmError) err.raw = { text: res.text, stopReason: res.stopReason };
+    if (err instanceof LlmError) {
+      err.raw = { text: res.text, stopReason: res.stopReason };
+      // 这个错是调用成功**之后**才造出来的，身上没有耗时；补上，
+      // 不然日志里"生成了 40 秒最后解析失败"和"秒失败"分不开
+      err.timing = res.timing;
+    }
     throw err;
   }
 }
@@ -548,10 +759,10 @@ export async function translate(
   req: TranslateRequest,
   config: LlmConfig,
   deps?: LlmDeps,
-): Promise<{ result: TranslationResult; usage: RawUsage }> {
+): Promise<{ result: TranslationResult; usage: RawUsage; timing: CallTiming }> {
   const system = translateSystem(req.kind, req.explainVocab);
   const res = await callMessages(config, system, buildTranslatePrompt(req), deps);
-  return { result: finishTranslation(res, req, config), usage: res.usage };
+  return { result: finishTranslation(res, req, config), usage: res.usage, timing: res.timing };
 }
 
 /**
@@ -688,27 +899,43 @@ export async function translateStream(
   onPartial: (p: PartialTranslation) => void,
   signal?: AbortSignal,
   deps?: LlmDeps,
-): Promise<{ result: TranslationResult; usage: RawUsage }> {
+): Promise<{ result: TranslationResult; usage: RawUsage; timing: CallTiming }> {
+  const now = deps?.now ?? Date.now;
+  const t0 = now();
+  /** 浮层第一次真显示出译文的时刻——用户感知的"等了多久"就是这个数，不是 totalMs。 */
+  let firstFieldMs: number | null = null;
   let last = "";
-  const res = await callMessagesStream(
-    config,
-    translateSystem(req.kind, req.explainVocab),
-    buildTranslatePrompt(req),
-    {
-      signal,
-      onDelta: (full) => {
-        const p = partialOf(full, req.kind, req.text);
-        const key = JSON.stringify(p);
-        if (key === last) return; // 这几个 token 没让任何字段闭合
-        last = key;
-        // 头几个 token 还在写 `{"translation": "`，一个字段都没闭合，没什么可显示的
-        if (!p.translation && !p.phonetic && !p.pos && !p.contextNote && !p.usage && p.vocab.length === 0) return;
-        onPartial(p);
+  try {
+    const res = await callMessagesStream(
+      config,
+      translateSystem(req.kind, req.explainVocab),
+      buildTranslatePrompt(req),
+      {
+        signal,
+        onDelta: (full) => {
+          const p = partialOf(full, req.kind, req.text);
+          const key = JSON.stringify(p);
+          if (key === last) return; // 这几个 token 没让任何字段闭合
+          last = key;
+          // 头几个 token 还在写 `{"translation": "`，一个字段都没闭合，没什么可显示的
+          if (!p.translation && !p.phonetic && !p.pos && !p.contextNote && !p.usage && p.vocab.length === 0) return;
+          // 记在两道早退之后：走到这儿才是真推给了浮层
+          if (p.translation && firstFieldMs === null) firstFieldMs = now() - t0;
+          onPartial(p);
+        },
       },
-    },
-    deps,
-  );
-  return { result: finishTranslation(res, req, config), usage: res.usage };
+      deps,
+    );
+    return {
+      result: finishTranslation(res, req, config),
+      usage: res.usage,
+      timing: { ...res.timing, firstFieldMs },
+    };
+  } catch (err) {
+    // 底下那层填不了这个数，只有这里知道字段什么时候闭合的
+    if (err instanceof LlmError && err.timing) err.timing.firstFieldMs = firstFieldMs;
+    throw err;
+  }
 }
 
 /* ==================== 复习助手 ==================== */
@@ -742,9 +969,9 @@ export async function assist(
   input: AssistInput,
   config: LlmConfig,
   deps?: LlmDeps,
-): Promise<{ text: string; usage: RawUsage }> {
-  const { text, usage } = await callMessages(config, ASSIST_SYSTEM, buildAssistPrompt(mode, input), deps);
-  return { text: text.trim(), usage };
+): Promise<{ text: string; usage: RawUsage; timing: CallTiming }> {
+  const { text, usage, timing } = await callMessages(config, ASSIST_SYSTEM, buildAssistPrompt(mode, input), deps);
+  return { text: text.trim(), usage, timing };
 }
 
 /* ==================== 浮层里的追问 ==================== */
@@ -804,7 +1031,7 @@ export async function askStream(
   onDelta: (text: string) => void,
   signal?: AbortSignal,
   deps?: LlmDeps,
-): Promise<{ text: string; usage: RawUsage }> {
+): Promise<{ text: string; usage: RawUsage; timing: CallTiming }> {
   const res = await callMessagesStream(
     config,
     ASK_SYSTEM,
@@ -819,5 +1046,6 @@ export async function askStream(
     },
     deps,
   );
-  return { text: res.text.trim(), usage: res.usage };
+  // 追问没有"字段闭合"这回事，第一个字到了就在屏幕上：firstTextMs 就是它的可显示时间
+  return { text: res.text.trim(), usage: res.usage, timing: res.timing };
 }

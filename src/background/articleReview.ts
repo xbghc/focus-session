@@ -11,7 +11,7 @@ import { LlmError } from "../lib/llm.ts";
 import { MAX_REVIEW_CHARS, clipText, generateArticleReview } from "../lib/articleReview.ts";
 import { type GradeValue, dueCards, gradeFsrs, newFsrs, reviewStats } from "../lib/review.ts";
 import { addUsage, getLlmConfig } from "./vocab.ts";
-import { recordFailure } from "./llmLog.ts";
+import { recordFailure, recordTiming } from "./llmLog.ts";
 import { getArticles, serialize } from "./store.ts";
 
 /**
@@ -93,7 +93,7 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
       const article = (await getArticles())[articleId];
       const config = await getLlmConfig();
       try {
-        const { review, usage } = await generateArticleReview(
+        const { review, usage, timing } = await generateArticleReview(
           {
             title: article?.title ?? "",
             url: article?.url ?? articleId,
@@ -104,6 +104,7 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
           Date.now(),
         );
         await addUsage(usage.inputTokens, usage.outputTokens);
+        await recordTiming("articleReview", config, timing, usage);
         const full: ArticleReview = { articleId, ...review };
         await serialize(async () => {
           await local().set({ [reviewKey(articleId)]: full });

@@ -1,5 +1,5 @@
 import type { ArticleReview, LlmConfig } from "../types.ts";
-import { LlmError, type LlmDeps, type RawUsage, callMessages, extractJson } from "./llm.ts";
+import { LlmError, type CallTiming, type LlmDeps, type RawUsage, callMessages, extractJson } from "./llm.ts";
 
 /**
  * 文章级回顾材料的生成。
@@ -28,7 +28,7 @@ export const REVIEW_MAX_TOKENS = 1_500;
 export const REVIEW_TIMEOUT_MS = 60_000;
 
 const REVIEW_SYSTEM = `你在帮一位读者回顾他前些天读过的一篇文章。他要的是"全貌"——文章讲了什么、怎么一步步论证的、结论是什么。不是逐段翻译，也不是读后感。
-只输出一个 JSON 对象，不要代码块，不要前言。字段：
+只输出一个 JSON 对象，不要代码块，不要前言。字符串值里不要出现半角双引号：要引用某个词就用「」。字段：
 - outline: 中文字符串数组，4 到 6 条，按文章自己的脉络排。每条一句话，说清这一步在论证链条上做了什么：提出了什么、拿什么支撑、推出了什么。不要写"本文介绍了…"这类空话，也不要把小标题原样抄一遍。
 - questions: 中文字符串数组，正好 3 条，用来考读者还记不记得。问具体的东西——某个论点的依据、文中举过的例子、某个结论的适用边界。不要问"这篇文章讲了什么"这种怎么答都不算错的问题。`;
 
@@ -96,7 +96,7 @@ export async function generateArticleReview(
   config: LlmConfig,
   now: number,
   deps?: LlmDeps,
-): Promise<{ review: Omit<ArticleReview, "articleId">; usage: RawUsage }> {
+): Promise<{ review: Omit<ArticleReview, "articleId">; usage: RawUsage; timing: CallTiming }> {
   // 取大值而不是覆写：这两个常量是回顾材料的**下限**，
   // 不该把用户自己在设置里调宽的额度又收回去
   const cfg: LlmConfig = {
@@ -108,10 +108,13 @@ export async function generateArticleReview(
   try {
     if (res.truncated) throw new LlmError(`回顾材料被 max_tokens(${cfg.maxTokens}) 截断`, "parse");
     const { outline, questions } = normalizeArticleReview(extractJson(res.text));
-    return { review: { outline, questions, generatedTs: now, model: cfg.model }, usage: res.usage };
+    return { review: { outline, questions, generatedTs: now, model: cfg.model }, usage: res.usage, timing: res.timing };
   } catch (err) {
-    // 和 llm.ts 的 finishTranslation 同一条规矩：解析阶段的失败把完整原文挂上，给诊断日志
-    if (err instanceof LlmError) err.raw = { text: res.text, stopReason: res.stopReason };
+    // 和 llm.ts 的 finishTranslation 同一条规矩：解析阶段的失败把完整原文和耗时挂上，给诊断日志
+    if (err instanceof LlmError) {
+      err.raw = { text: res.text, stopReason: res.stopReason };
+      err.timing = res.timing;
+    }
     throw err;
   }
 }

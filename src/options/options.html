@@ -246,7 +246,8 @@
       <legend>诊断日志</legend>
       <p class="muted small">
         每次 LLM 调用失败（解析失败、超时、接口报错）都把现场记在本机：错误信息、模型的原始输出、
-        当时选中的文本。出问题时复制或下载它即可。不含 API Key，不进上面的数据导出，只留最近 10 条。
+        当时选中的文本，只留最近 10 条。另外每次调用（<strong>成功的也算</strong>）记一条耗时，留最近 50 条——
+        觉得"有时候有点慢"时，这里能看出慢在哪一段。都不含 API Key，也不进上面的数据导出。
       </p>
       <div class="row">
         <button id="log-copy">复制诊断日志</button>
@@ -256,6 +257,7 @@
         <span id="log-status" class="muted small"></span>
       </div>
       <p id="log-summary" class="muted small"></p>
+      <p id="log-timing" class="muted small"></p>
     </fieldset>
 
     <script src="options.js"></script>

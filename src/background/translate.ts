@@ -10,7 +10,7 @@ import type {
 import { LlmError, askStream, assist, translate, translateStream } from "../lib/llm.ts";
 import type { AssistMode } from "../types.ts";
 import { addSnippet, addUsage, getLlmConfig } from "./vocab.ts";
-import { type FailureContext, recordFailure } from "./llmLog.ts";
+import { type FailureContext, recordFailure, recordTiming } from "./llmLog.ts";
 
 /**
  * 翻译请求的门面：缓存、并发去重、用量记账都在这里，
@@ -87,7 +87,7 @@ export interface StreamHandle {
 async function runStream(req: TranslateRequest, key: string, e: Live): Promise<TranslateReply> {
   const config = await getLlmConfig();
   try {
-    const { result, usage } = await translateStream(
+    const { result, usage, timing } = await translateStream(
       req,
       config,
       (p) => {
@@ -103,6 +103,7 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
       e.ctrl.signal,
     );
     await addUsage(usage.inputTokens, usage.outputTokens);
+    await recordTiming("translate", config, timing, usage);
     const { snippet } = await addSnippet({
       articleId: req.articleId,
       url: req.url,
@@ -207,8 +208,9 @@ export function streamAsk(req: AskRequest, onDelta: (text: string) => void): Ask
 async function runAsk(req: AskRequest, onDelta: (text: string) => void, signal: AbortSignal): Promise<AskReply> {
   const config = await getLlmConfig();
   try {
-    const { text, usage } = await askStream(req, config, onDelta, signal);
+    const { text, usage, timing } = await askStream(req, config, onDelta, signal);
     await addUsage(usage.inputTokens, usage.outputTokens);
+    await recordTiming("ask", config, timing, usage);
     return { ok: true, text };
   } catch (err) {
     // 同 runStream：主动取消和缺配置都不算"调用失败"
@@ -236,8 +238,9 @@ export async function handleAssist(
 ): Promise<AssistOutcome> {
   const config = await getLlmConfig();
   try {
-    const { text, usage } = await assist(mode, input, config);
+    const { text, usage, timing } = await assist(mode, input, config);
     await addUsage(usage.inputTokens, usage.outputTokens);
+    await recordTiming("assist", config, timing, usage);
     return { ok: true, text };
   } catch (err) {
     if (!(err instanceof LlmError && err.kind === "config")) await addUsage(0, 0, true);
@@ -250,7 +253,7 @@ export async function handleAssist(
 export async function testConnection(): Promise<{ ok: boolean; error?: string; model?: string }> {
   const config = await getLlmConfig();
   try {
-    const { result } = await translate(
+    const { result, usage, timing } = await translate(
       // 测连通不需要讲解，别为了一次握手多烧半份输出
       {
         articleId: "test",
@@ -263,6 +266,8 @@ export async function testConnection(): Promise<{ ok: boolean; error?: string; m
       },
       config,
     );
+    // 测连通不记用量（见上），但耗时要记——它本来就是用来量延迟的那一下
+    await recordTiming("test", config, timing, usage);
     return { ok: true, model: `${config.model} → ${result.translation}` };
   } catch (err) {
     return { ok: false, error: (await report(err, config, { source: "test", request: { text: "hello" } })).error };

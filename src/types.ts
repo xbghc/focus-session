@@ -642,14 +642,40 @@ export interface LlmFailure {
   maxTokens: number;
 }
 
+/**
+ * 一次 LLM 调用花了多久。**成功的也记**——只记失败的话，"有时候有点慢"这件事
+ * 在日志里完全不可见：慢但成功的调用一点痕迹都不留，除非慢到撞上超时。
+ *
+ * 分成几个数字是因为"慢"不止一种，见 `CallTiming`。
+ */
+export interface LlmTiming {
+  ts: number;
+  source: LlmFailure["source"];
+  /** 成功为 null；失败时是 LlmError 的 kind。主动取消与缺配置两样都不记 */
+  failedKind: string | null;
+  /** 用户实际等的时长，含退避与重试 */
+  totalMs: number;
+  /** 模型开口的时刻；非流式为 null */
+  firstTextMs: number | null;
+  /** 浮层第一次显示出译文的时刻；只有流式翻译有 */
+  firstFieldMs: number | null;
+  /** 实际发出去几次请求。>1 说明撞上过 429/529，totalMs 里有一段是自己退避掉的 */
+  attempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+}
+
 /** 诊断日志的导出格式。和 ExportBundle 一样不含 apiKey。 */
 export interface LlmLogBundle {
-  schema: 1;
+  /** 2 起多了 `timings` */
+  schema: 2;
   exportedAt: number;
   /** 扩展版本，来自 manifest */
   version: string;
   llm: ExportBundle["llm"];
   failures: LlmFailure[];
+  timings: LlmTiming[];
 }
 
 /* ==================== 流式翻译 ==================== */

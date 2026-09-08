@@ -83,6 +83,74 @@ test("顶层对象没闭合时报截断，而不是一句看不出所以然的 S
   cut('{"translation":"泄漏","vocab":[{"word":"leaks","meaning":"泄漏"}');
 });
 
+/*
+ * 下面几条的原文都是 MiniMax 真吐出来过的坏 JSON，从 0.3.2 的诊断日志里搬来。
+ * 三种死法：中文里没转义的半角引号（最常见）、值位置上裸着的音标、以及它们混在正常转义之间。
+ */
+
+test("字符串里没转义的半角引号能修回来", () => {
+  const raw =
+    '{"translation": "能够实现细致的", "phonetic": null, "pos": null, "lemma": null,' +
+    ' "context_note": "这里说 masking 比 clipping 强大在于它能基于遮罩图的透明度做"细致"的半透明和混合效果，不是只能像剪刀一样非黑即白。",' +
+    ' "usage": "nuanced 强调"有细微差别的"，常和 distinction、understanding、approach 搭配。", "vocab": []}';
+  const o = extractJson(raw) as Record<string, unknown>;
+  assert.equal(o["translation"], "能够实现细致的");
+  assert.equal(
+    o["context_note"],
+    '这里说 masking 比 clipping 强大在于它能基于遮罩图的透明度做"细致"的半透明和混合效果，不是只能像剪刀一样非黑即白。',
+  );
+  assert.equal(o["usage"], 'nuanced 强调"有细微差别的"，常和 distinction、understanding、approach 搭配。');
+});
+
+test("修补只补引号，不替模型润色内容", () => {
+  // 日志里这条的 usage 值以一个多余的冒号开头。修补管的是"能不能解析"，
+  // 模型自己写歪的内容照旧原样交出去——猜它想写什么是另一码事。
+  const raw =
+    '{"translation":"可理解的", "phonetic":"/ˌʌndərˈstændəbl/", "pos": "adj", "lemma": "understandable",' +
+    ' "usage":":"understandable" 侧重"能被理解的"，区别于"understood"（已被理解的）。"}';
+  const o = extractJson(raw) as Record<string, unknown>;
+  assert.equal(o["lemma"], "understandable");
+  assert.equal(o["usage"], ':"understandable" 侧重"能被理解的"，区别于"understood"（已被理解的）。');
+});
+
+test("引号是奇数个时也修得回来，不再被误报成截断", () => {
+  // 成对的引号骗得过花括号扫描（在解析处炸），落单的这个会让扫描停在字符串里，收尾的 } 被吞掉
+  const o = extractJson('{"translation":"他说"你好，然后走开了"}') as Record<string, unknown>;
+  assert.equal(o["translation"], '他说"你好，然后走开了');
+});
+
+test("值位置上裸着的音标补上引号", () => {
+  const raw =
+    '{"translation":"充满困难的","phonetic":/frɔːt/,"pos":"adj","lemma":"fraught",' +
+    '"context_note":"在文中指处理 sizes 属性这件事并不轻松，潜藏不少难题。",' +
+    '"usage":"常与 with 连用，fraught with difficulty/problems 表示‘充满困难/问题’。"}';
+  const o = extractJson(raw) as Record<string, unknown>;
+  assert.equal(o["phonetic"], "/frɔːt/");
+  assert.equal(o["lemma"], "fraught");
+  // 字符串里的斜杠不能跟着遭殃
+  assert.equal(o["usage"], "常与 with 连用，fraught with difficulty/problems 表示‘充满困难/问题’。");
+});
+
+test("修补不碰模型已经转义好的引号——回顾材料那份原文里两种混在一起", () => {
+  const raw =
+    '{"outline":["先用一段引言把 Babel 定性为通用 JavaScript 编译器，引入"静态分析"概念，说明一切后续操作都围绕节点展开。",' +
+    '"过渡到插件实战：从签名（常见解构出 `types: t`，返回 `{ visitor }`），到第一个把 `===` 替换掉的插件。"],' +
+    '"questions":["babylon 的 `sourceType` 默认值是什么？不传 `sourceType: \\"module\\"` 会发生什么？"]}';
+  const o = extractJson(raw) as { outline: string[]; questions: string[] };
+  assert.equal(o.outline[0], '先用一段引言把 Babel 定性为通用 JavaScript 编译器，引入"静态分析"概念，说明一切后续操作都围绕节点展开。');
+  // 字符串里的花括号不能被当成对象收尾
+  assert.match(o.outline[1]!, /\{ visitor \}/);
+  assert.equal(o.questions[0], 'babylon 的 `sourceType` 默认值是什么？不传 `sourceType: "module"` 会发生什么？');
+});
+
+test("修不动的照旧报错，不把坏输出硬解释成对的", () => {
+  // 字符串里的裸换行：可能是模型忘了写 \n，也可能它压根没在写 JSON，分不开就别猜
+  assert.throws(
+    () => extractJson('{"translation": "第一行\n第二行"}'),
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && /JSON 解析失败/.test(e.message),
+  );
+});
+
 /* ---------- 结果规范化 ---------- */
 
 test("normalizeTranslation 保留完整字段", () => {
@@ -263,6 +331,98 @@ test("HTTP 错误带上状态码与响应体片段", async () => {
     }),
     (e: unknown) => e instanceof LlmError && e.kind === "http" && e.status === 401 && e.message.includes("unauthorized"),
   );
+});
+
+/* ---------- 耗时 ---------- */
+
+/**
+ * 每问一次时间就往前走 100ms 的假时钟。
+ *
+ * 这样耗时里的每个数字都对应"第几次取时间"，可以钉死断言——
+ * 用真实时钟只能断言"≥0"，那验不出首字到底记在了哪一刻。
+ */
+function stepClock(step = 100): () => number {
+  let t = -step;
+  return () => (t += step);
+}
+
+test("非流式的耗时：总时长有，两个 first 没有", async () => {
+  // 取两次时间：起跑一次、收尾一次
+  const res = await callMessages(CFG, "s", "u", {
+    now: stepClock(),
+    fetch: (async () => okResponse('{"a":1}')) as unknown as typeof fetch,
+  });
+  assert.equal(res.timing.totalMs, 100);
+  // 非流式在整段生成完之前什么都没有，"第一个字"无从谈起
+  assert.equal(res.timing.firstTextMs, null);
+  assert.equal(res.timing.firstFieldMs, null);
+  assert.equal(res.timing.attempts, 1);
+});
+
+test("失败也带着耗时——慢到超时和秒失败在日志里得分得开", async () => {
+  await assert.rejects(
+    callMessages(CFG, "s", "u", {
+      now: stepClock(),
+      fetch: (async () => new Response("unauthorized", { status: 401 })) as unknown as typeof fetch,
+    }),
+    (e: unknown) => e instanceof LlmError && e.timing?.totalMs === 100 && e.timing.attempts === 1,
+  );
+});
+
+test("缺配置那次没发出去过，不该带耗时", async () => {
+  await assert.rejects(
+    callMessages({ ...CFG, apiKey: "" }, "s", "u", { fetch: (async () => okResponse("x")) as unknown as typeof fetch }),
+    (e: unknown) => e instanceof LlmError && e.kind === "config" && e.timing === undefined,
+  );
+});
+
+/* ---------- 过载重试 ---------- */
+
+/** 数一次调用发了几次请求。前 `fails` 次回 529，之后回正常响应。 */
+function overloadedThen(fails: number): { fetch: typeof fetch; calls: () => number } {
+  let calls = 0;
+  const fetchFn = async (): Promise<Response> => {
+    calls++;
+    return calls <= fails ? new Response("集群负载较高，请稍后重试", { status: 529 }) : okResponse('{"a":1}');
+  };
+  return { fetch: fetchFn as unknown as typeof fetch, calls: () => calls };
+}
+
+test("529 过载退避后重试一次", async () => {
+  const f = overloadedThen(1);
+  const res = await callMessages(CFG, "s", "u", { fetch: f.fetch, retryDelayMs: 0 });
+  assert.equal(f.calls(), 2);
+  assert.equal(res.text, '{"a":1}');
+});
+
+test("只重试一次——用户正等着，第二次还过载就老实报错", async () => {
+  const f = overloadedThen(99);
+  await assert.rejects(
+    callMessages(CFG, "s", "u", { fetch: f.fetch, retryDelayMs: 0 }),
+    (e: unknown) => e instanceof LlmError && e.kind === "http" && e.status === 529,
+  );
+  assert.equal(f.calls(), 2);
+});
+
+test("请求本身有问题的不重试——重发一遍还是同样的错", async () => {
+  let calls = 0;
+  await assert.rejects(
+    callMessages(CFG, "s", "u", {
+      retryDelayMs: 0,
+      fetch: (async () => {
+        calls++;
+        return new Response("bad request", { status: 400 });
+      }) as unknown as typeof fetch,
+    }),
+    (e: unknown) => e instanceof LlmError && e.status === 400,
+  );
+  assert.equal(calls, 1);
+});
+
+test("重试过的调用数得出来——不然那 1.2 秒退避会被当成模型慢", async () => {
+  const f = overloadedThen(1);
+  const res = await callMessages(CFG, "s", "u", { fetch: f.fetch, retryDelayMs: 0, now: stepClock() });
+  assert.equal(res.timing.attempts, 2);
 });
 
 test("HTTP 200 但 base_resp 报错也算失败", async () => {
