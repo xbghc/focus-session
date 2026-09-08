@@ -1,5 +1,6 @@
-import type { LlmConfig, LlmFailure, LlmLogBundle } from "../types.ts";
-import { LlmError } from "../lib/llm.ts";
+import type { LlmConfig, LlmFailure, LlmLogBundle, LlmTiming } from "../types.ts";
+import { type CallTiming, LlmError, type RawUsage } from "../lib/llm.ts";
+import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./appLog.ts";
 import { getLlmConfig } from "./vocab.ts";
 import { serialize } from "./store.ts";
 
@@ -55,8 +56,64 @@ export async function recordLlmFailure(entry: LlmFailure): Promise<void> {
   });
 }
 
+/** 清空按钮清的是整份诊断日志，不只 LLM 那两份。 */
 export async function clearLlmLog(): Promise<void> {
-  await serialize(() => local().remove(KEY_LLM_LOG));
+  // 四个键一次删完，而不是再叫 appLog 自己清一遍：serialize 是同一条链，套着调会死等
+  await serialize(() => local().remove([KEY_LLM_LOG, KEY_LLM_TIMING, KEY_READER_FETCH, KEY_APP_ERROR]));
+}
+
+/* ==================== 耗时 ==================== */
+
+export const KEY_LLM_TIMING = "llmTiming";
+
+/**
+ * 耗时留得比失败多。两者要看的东西不一样：失败看的是**单次现场**（模型吐了什么），
+ * 耗时看的是**分布**（多久慢一次、慢在哪一段），十条根本看不出分布。
+ * 一条记录十来个数字，五十条也就几 KB。
+ */
+export const MAX_TIMING_ENTRIES = 50;
+
+export async function getLlmTimings(): Promise<LlmTiming[]> {
+  const got = await local().get(KEY_LLM_TIMING);
+  const v = got[KEY_LLM_TIMING];
+  return Array.isArray(v) ? (v as LlmTiming[]) : [];
+}
+
+const NO_USAGE: RawUsage = { inputTokens: 0, outputTokens: 0 };
+
+/**
+ * 记一次调用的耗时。成功由各条路径自己调；失败由 `recordFailure` 顺手带上，
+ * 免得每个失败分支都写两行。
+ *
+ * 落盘失败吞掉，理由同 `recordFailure`：日志是附属品。
+ */
+export async function recordTiming(
+  source: LlmFailure["source"],
+  config: LlmConfig,
+  timing: CallTiming,
+  usage: RawUsage = NO_USAGE,
+  failedKind: string | null = null,
+): Promise<void> {
+  try {
+    await serialize(async () => {
+      const log = await getLlmTimings();
+      log.push({
+        ts: Date.now(),
+        source,
+        failedKind,
+        totalMs: timing.totalMs,
+        firstTextMs: timing.firstTextMs,
+        firstFieldMs: timing.firstFieldMs,
+        attempts: timing.attempts,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        model: config.model,
+      });
+      await local().set({ [KEY_LLM_TIMING]: log.slice(-MAX_TIMING_ENTRIES) });
+    });
+  } catch {
+    /* 同 recordFailure：日志不能反过来把主流程搞坏 */
+  }
 }
 
 /** 各条路径交给 recordFailure 的现场。 */
@@ -94,13 +151,16 @@ export async function recordFailure(err: unknown, config: LlmConfig, ctx: Failur
   } catch {
     /* 见上：日志不能影响主流程 */
   }
+  // 失败也占"最近 50 次调用"里的一格：只记成功会把耗时分布看成一片岁月静好。
+  // 缺配置那类没发出去的没有 timing，自然也就不记。
+  if (e?.timing) await recordTiming(ctx.source, config, e.timing, undefined, e.kind);
 }
 
 /** 导出格式。和数据导出同一条规矩：密钥只导出"设没设过"。 */
 export async function llmLogBundle(version: string): Promise<LlmLogBundle> {
   const llm = await getLlmConfig();
   return {
-    schema: 1,
+    schema: 2,
     exportedAt: Date.now(),
     version,
     llm: {
@@ -111,5 +171,8 @@ export async function llmLogBundle(version: string): Promise<LlmLogBundle> {
       apiKeySet: llm.apiKey.length > 0,
     },
     failures: await getLlmLog(),
+    timings: await getLlmTimings(),
+    fetches: await getFetchLog(),
+    errors: await getAppErrors(),
   };
 }

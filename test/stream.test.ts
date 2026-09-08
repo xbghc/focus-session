@@ -298,6 +298,63 @@ test("译文先于语境解释推送出去", async () => {
   assert.equal(result.lemma, "leak");
 });
 
+/* ---------- 耗时 ---------- */
+
+/**
+ * 每问一次时间就往前走 100ms 的假时钟。
+ *
+ * 这样每个数字都对应"第几次取时间"，能钉死断言——用真实时钟只断言得了"≥0"，
+ * 那验不出首字到底记在了流的哪一刻。
+ */
+function stepClock(step = 100): () => number {
+  let t = -step;
+  return () => (t += step);
+}
+
+test("首字的时刻记在流中途，不是收尾时补一个", async () => {
+  // 取时间三次：起跑、第一个 text_delta、收尾
+  const res = await callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, {
+    now: stepClock(),
+    fetch: fetchOf(textStream(FULL_JSON, 5)),
+  });
+  assert.equal(res.timing.firstTextMs, 100);
+  assert.equal(res.timing.totalMs, 200);
+  // 字段闭合是 translateStream 那层的事，这一层填不了
+  assert.equal(res.timing.firstFieldMs, null);
+});
+
+test("译文闭合的时刻单独记一个——用户感知的等待是它，不是整条流跑完", async () => {
+  const { timing } = await translateStream(REQ, CFG, () => {}, undefined, {
+    now: stepClock(),
+    fetch: fetchOf(textStream(FULL_JSON, 5)),
+  });
+  assert.ok(timing.firstFieldMs !== null, "译文闭合过，就该有这个数");
+  assert.ok(timing.firstTextMs !== null && timing.firstTextMs <= timing.firstFieldMs, "首字不可能晚于译文闭合");
+  assert.ok(timing.firstFieldMs <= timing.totalMs, "译文闭合不可能晚于整条流跑完");
+});
+
+test("译文没闭合就失败的，firstFieldMs 留 null——浮层确实什么都没显示", async () => {
+  await assert.rejects(
+    translateStream(REQ, CFG, () => {}, undefined, {
+      now: stepClock(),
+      fetch: fetchOf(textStream(`{"translation": "泄`, 4, "max_tokens")),
+    }),
+    (e: unknown) =>
+      e instanceof LlmError && e.timing !== undefined && e.timing.firstFieldMs === null && e.timing.totalMs > 0,
+  );
+});
+
+test("先显示了译文再失败的，那个时刻照样留着", async () => {
+  // 译文字段闭合了、浮层已经显示，坏在后面——这类和"一开始就报错"要分得开
+  await assert.rejects(
+    translateStream(REQ, CFG, () => {}, undefined, {
+      now: stepClock(),
+      fetch: fetchOf(textStream('{"translation": "泄漏", "pos": }', 4)),
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && e.timing?.firstFieldMs !== null,
+  );
+});
+
 test("只在字段新闭合时回调，不是每个 token 都推", async () => {
   let calls = 0;
   await translateStream(REQ, CFG, () => (calls += 1), undefined, { fetch: fetchOf(textStream(FULL_JSON, 1)) });

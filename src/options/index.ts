@@ -1,6 +1,7 @@
-import type { ExportBundle, ImportOutcome, LlmConfig, LlmFailure, LlmLogBundle, LlmUsage, Settings } from "../types.ts";
+import type { ExportBundle, ImportOutcome, LlmConfig, LlmLogBundle, LlmUsage, Settings } from "../types.ts";
 import { DEFAULT_LLM, DEFAULT_SETTINGS, MAX_AUTO_WORDS } from "../types.ts";
 import { saveTextFile } from "../lib/download.ts";
+import { SOURCE_LABEL, appLogLine, timingLine } from "../lib/llmStats.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -197,16 +198,14 @@ void loadLlm();
 
 const logStatus = $("log-status");
 const logSummary = $("log-summary");
+const logTiming = $("log-timing");
+const logApp = $("log-app");
 
-const SOURCE_LABEL: Record<LlmFailure["source"], string> = {
-  translate: "划词翻译",
-  test: "测试连接",
-  assist: "复习助手",
-  ask: "浮层追问",
-  articleReview: "文章回顾",
-};
-
-async function fetchLog(): Promise<LlmLogBundle> {
+/** 提示里报的条数。四份都要数：只报失败的话，用户不知道抓取记录也一起带出去了。 */
+const counts = (b: LlmLogBundle): string =>
+  `${b.failures.length} 条失败 + ${b.timings.length} 条耗时 + ${b.fetches.length} 条抓取 + ${b.errors.length} 条错误`;
+/** App 的设置页也要用它（分享日志），所以导出。 */
+export async function fetchLog(): Promise<LlmLogBundle> {
   return (await chrome.runtime.sendMessage({ type: "llm:log" })) as LlmLogBundle;
 }
 
@@ -214,8 +213,10 @@ async function loadLog(): Promise<void> {
   const bundle = await fetchLog();
   const last = bundle.failures.at(-1);
   logSummary.textContent = last
-    ? `${bundle.failures.length} 条记录，最近一次 ${new Date(last.ts).toLocaleString()}，${SOURCE_LABEL[last.source]}：${last.message.slice(0, 120)}`
+    ? `${bundle.failures.length} 条失败记录，最近一次 ${new Date(last.ts).toLocaleString()}，${SOURCE_LABEL[last.source]}：${last.message.slice(0, 120)}`
     : "还没有失败记录。";
+  logTiming.textContent = timingLine(bundle.timings);
+  logApp.textContent = appLogLine(bundle.fetches, bundle.errors);
 }
 
 $("log-copy").addEventListener("click", async () => {
@@ -223,7 +224,7 @@ $("log-copy").addEventListener("click", async () => {
   // 点击是用户手势，剪贴板写入不需要额外权限
   try {
     await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
-    logStatus.textContent = `已复制 ${bundle.failures.length} 条记录到剪贴板`;
+    logStatus.textContent = `已复制 ${counts(bundle)} 到剪贴板`;
   } catch {
     logStatus.textContent = "复制失败，改用下载吧";
   }
@@ -238,7 +239,7 @@ $("log-download").addEventListener("click", async () => {
     JSON.stringify(bundle, null, 2),
     $<HTMLAnchorElement>("log-file"),
   );
-  logStatus.textContent = `已下载 ${bundle.failures.length} 条记录${note ? "，" + note : ""}`;
+  logStatus.textContent = `已下载 ${counts(bundle)}${note ? "，" + note : ""}`;
 });
 
 $("log-clear").addEventListener("click", async () => {

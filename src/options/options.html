@@ -14,6 +14,7 @@
       .field { display: grid; grid-template-columns: 190px 100px 1fr; gap: 10px; align-items: center; margin: 10px 0; }
       .field label { color: var(--fg); }
       .field .hint { color: var(--muted); font-size: 11px; }
+      .field .wide { grid-column: 2 / 4; }
       input[type="number"], input[type="text"], input[type="password"], textarea {
         font: inherit; color: var(--fg); background: var(--bg);
         border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; width: 100%;
@@ -28,6 +29,35 @@
       .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       #status { color: var(--accent); font-size: 12px; min-height: 1.2em; }
       .field label { font-size: 13px; }
+
+      /*
+       * 手机。三列表单在 360px 宽的屏幕上光第一列就占掉一半，剩下两列挤成竖条，
+       * 提示文字一个字一行。窄屏改成一列堆叠。
+       *
+       * 断点写在这段内联样式里而不是 app.css：构建 App 时 app.css 被插在这段**之前**
+       * （见 build.mjs 的 copyStaticApp），同名规则压不住；何况扩展的窗口拖窄了也该管用。
+       */
+      @media (max-width: 560px) {
+        body { padding: 12px 14px calc(56px + env(safe-area-inset-bottom)); }
+        fieldset { padding: 12px 14px; margin: 14px 0; }
+        legend { font-size: 15px; }
+        .small { font-size: 12.5px; line-height: 1.6; }
+        .field { grid-template-columns: 1fr; gap: 5px; margin: 16px 0; }
+        .field .wide { grid-column: auto; }
+        .field label { font-size: 15px; }
+        .field .hint { font-size: 12px; line-height: 1.5; }
+        /* 开关不值得占三行：标签在左、勾在右，说明另起一行 */
+        .field.check { grid-template-columns: 1fr auto; align-items: center; column-gap: 12px; }
+        .field.check .hint { grid-column: 1 / -1; }
+        /* 按拇指的尺寸给；输入框 16px 还能免掉 WebView 聚焦时的自动放大 */
+        input[type="number"], input[type="text"], input[type="password"] { font-size: 16px; padding: 9px 10px; }
+        textarea { font-size: 13px; min-height: 110px; }
+        button { font-size: 15px; padding: 10px 14px; }
+        /* 一行四个按钮会碎成一堆窄条：让它们各占半行，状态文字独占一行 */
+        .row { gap: 8px; }
+        .row button { flex: 1 1 40%; }
+        .row > span { flex: 1 1 100%; }
+      }
     </style>
   </head>
   <body>
@@ -41,15 +71,15 @@
       <legend>MiniMax（翻译与复习都用它）</legend>
       <div class="field">
         <label for="apiKey">API Key</label>
-        <input id="apiKey" type="password" placeholder="留空则保持不变" style="grid-column: 2 / 4" />
+        <input id="apiKey" type="password" placeholder="留空则保持不变" class="wide" />
       </div>
       <div class="field">
         <label for="model">模型</label>
-        <input id="model" type="text" style="grid-column: 2 / 4" />
+        <input id="model" type="text" class="wide" />
       </div>
       <div class="field">
         <label for="baseUrl">Base URL</label>
-        <input id="baseUrl" type="text" style="grid-column: 2 / 4" />
+        <input id="baseUrl" type="text" class="wide" />
       </div>
       <div class="field">
         <label for="maxTokens">max_tokens</label>
@@ -74,7 +104,7 @@
 
     <fieldset>
       <legend>划词翻译</legend>
-      <div class="field">
+      <div class="field check">
         <label for="translateEnabled">启用划词翻译</label>
         <input id="translateEnabled" type="checkbox" style="width: auto" />
         <span class="hint">关掉后文章页不再监听选区</span>
@@ -94,7 +124,7 @@
         <input id="ctxChars" type="number" min="0" max="2000" step="50" />
         <span class="hint">随选中文本一起发出的段落，用于判断词义</span>
       </div>
-      <div class="field">
+      <div class="field check">
         <label for="explainVocab">像老师那样讲解</label>
         <input id="explainVocab" type="checkbox" style="width: auto" />
         <span class="hint">除译文外再补一句用法；选中句子时逐个讲里面的生词</span>
@@ -127,7 +157,7 @@
         或浏览器刷新时已经恢复了滚动位置，都说明落点已经有人安排了，插件不抢。
         抽取正文期间你要是已经自己滚了，这次也不跳。
       </p>
-      <div class="field">
+      <div class="field check">
         <label for="restorePositionEnabled">跳回上次位置</label>
         <input id="restorePositionEnabled" type="checkbox" style="width: auto" />
         <span class="hint">跳完左下角会给一行说明和「回到顶部」</span>
@@ -140,7 +170,7 @@
         读到上面的比例时，会把正文存下来并让 LLM 先生成一份大纲和三个回想问题，
         等你读完最后那点，材料已经备好了。读两眼就走的页面不会被保存。
       </p>
-      <div class="field">
+      <div class="field check">
         <label for="articleReviewEnabled">启用文章回顾</label>
         <input id="articleReviewEnabled" type="checkbox" style="width: auto" />
         <span class="hint">这是唯一无需你动手就会花 token 的地方</span>
@@ -246,7 +276,10 @@
       <legend>诊断日志</legend>
       <p class="muted small">
         每次 LLM 调用失败（解析失败、超时、接口报错）都把现场记在本机：错误信息、模型的原始输出、
-        当时选中的文本。出问题时复制或下载它即可。不含 API Key，不进上面的数据导出，只留最近 10 条。
+        当时选中的文本，只留最近 10 条。另外每次调用（<strong>成功的也算</strong>）记一条耗时，留最近 50 条——
+        觉得"有时候有点慢"时，这里能看出慢在哪一段。App 里还记阅读器每次抓取的现场
+        （编码是谁定的、有没有掉字节）和没被接住的运行时错误，各留最近 30 条。
+        都不含 API Key，也不进上面的数据导出。
       </p>
       <div class="row">
         <button id="log-copy">复制诊断日志</button>
@@ -256,6 +289,8 @@
         <span id="log-status" class="muted small"></span>
       </div>
       <p id="log-summary" class="muted small"></p>
+      <p id="log-timing" class="muted small"></p>
+      <p id="log-app" class="muted small"></p>
     </fieldset>
 
     <script src="options.js"></script>
