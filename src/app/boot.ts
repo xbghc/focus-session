@@ -1,6 +1,7 @@
 import type { AnyMessage } from "../types.ts";
 import { PORT_TRANSLATE } from "../types.ts";
 import { attachTranslatePort, boot as bootBackground, handle } from "../background/handle.ts";
+import { recordAppError } from "../background/appLog.ts";
 import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";
 import { installNative } from "./native.ts";
 
@@ -56,6 +57,34 @@ export const shim: ChromeShim = installChromeShim({
 });
 
 installNative();
+
+/*
+ * 没被接住的错误。手机上没有开发者工具：不落下来的话，出了岔子除了界面上那一句
+ * 什么都不剩。写进诊断日志，随设置页的「分享日志」一起发出去。
+ *
+ * 装在 shim 之后——写入要走 chrome.storage。只登记冒泡到 window 的脚本错误：
+ * 图片之类的资源加载失败不冒泡，正文里挂掉几张图不该把日志刷满。
+ */
+window.addEventListener("error", (e) => {
+  void recordAppError({
+    ts: Date.now(),
+    kind: "error",
+    message: e.message || String(e.error ?? "未知错误"),
+    at: e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : null,
+    stack: e.error instanceof Error ? (e.error.stack ?? null) : null,
+  });
+});
+
+window.addEventListener("unhandledrejection", (e) => {
+  const reason: unknown = e.reason;
+  void recordAppError({
+    ts: Date.now(),
+    kind: "rejection",
+    message: reason instanceof Error ? reason.message : String(reason),
+    at: null,
+    stack: reason instanceof Error ? (reason.stack ?? null) : null,
+  });
+});
 
 /*
  * 网页链接一律进阅读器：文章卡片上的标题、回顾里的「打开原文」、正文里的链接。

@@ -666,9 +666,66 @@ export interface LlmTiming {
   model: string;
 }
 
-/** 诊断日志的导出格式。和 ExportBundle 一样不含 apiKey。 */
+/** 一次解码的编码是从哪定下来的。见 lib/charset.ts。 */
+export type CharsetSource = "header" | "meta" | "default";
+
+/**
+ * 阅读器抓一篇网页的现场。**成功的也记**：编码这类问题里，猜对了的那些长什么样
+ * 和出问题的那一条同样有用——一列记录摆在一起才看得出是这个站特殊，还是一直如此。
+ *
+ * 只有 App 会写。扩展的 content script 跑在浏览器已经解码好的页面上，没有这一步。
+ */
+export interface ReaderFetch {
+  ts: number;
+  /** 用户给的地址 */
+  url: string;
+  /** 跟完重定向之后的地址；没抓到就是 null */
+  finalUrl: string | null;
+  status: number | null;
+  /** 响应头里的 content-type，原样 */
+  contentType: string | null;
+  /** 最终用来解码的编码，以及它是谁给的 */
+  charset: string | null;
+  charsetFrom: CharsetSource | null;
+  bytes: number | null;
+  /** 开头三个字节是不是 UTF-8 的 BOM。有 BOM 却声明了 GBK，问题多半就在这 */
+  bom: boolean;
+  /** TextDecoder 不认那个编码名，退回了 UTF-8 */
+  fellBack: boolean;
+  /** 解码后有多少个 U+FFFD。编码挑错时这个数会很大 */
+  replacementChars: number | null;
+  /** Readability 认出来的标题；失败为 null */
+  title: string | null;
+  /** 洗完的正文长度（字符） */
+  chars: number | null;
+  /** 抓取或抽取失败的原因；成功为 null */
+  error: string | null;
+  ms: number;
+}
+
+/**
+ * App 里没被接住的运行时错误。手机上没有开发者工具，出了岔子除了界面上那一句
+ * 什么都留不下——这里把 window 上的 error 与 unhandledrejection 落到本机。
+ */
+export interface AppError {
+  ts: number;
+  /** "error" 是同步抛出的，"rejection" 是没人接的 Promise */
+  kind: "error" | "rejection";
+  message: string;
+  /** 出错的位置 source:line:col，拿不到为 null */
+  at: string | null;
+  /** 调用栈，截断过 */
+  stack: string | null;
+}
+
+/**
+ * 诊断日志的导出格式。和 ExportBundle 一样不含 apiKey。
+ *
+ * 抓取现场与运行时错误也塞在这一份里，而不是各出一个文件：出问题时要看的是
+ * "当时这台机器上都发生了什么"，分成三个文件只会让人少发过来两个。
+ */
 export interface LlmLogBundle {
-  /** 2 起多了 `timings` */
+  /** 2 起多了 `timings`、`fetches`、`errors` */
   schema: 2;
   exportedAt: number;
   /** 扩展版本，来自 manifest */
@@ -676,6 +733,10 @@ export interface LlmLogBundle {
   llm: ExportBundle["llm"];
   failures: LlmFailure[];
   timings: LlmTiming[];
+  /** 阅读器抓取现场。只有 App 会往里写，扩展恒为空数组 */
+  fetches: ReaderFetch[];
+  /** 没被接住的运行时错误。同上，只有 App */
+  errors: AppError[];
 }
 
 /* ==================== 流式翻译 ==================== */

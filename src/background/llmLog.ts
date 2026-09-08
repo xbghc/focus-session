@@ -1,5 +1,6 @@
 import type { LlmConfig, LlmFailure, LlmLogBundle, LlmTiming } from "../types.ts";
 import { type CallTiming, LlmError, type RawUsage } from "../lib/llm.ts";
+import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./appLog.ts";
 import { getLlmConfig } from "./vocab.ts";
 import { serialize } from "./store.ts";
 
@@ -55,8 +56,10 @@ export async function recordLlmFailure(entry: LlmFailure): Promise<void> {
   });
 }
 
+/** 清空按钮清的是整份诊断日志，不只 LLM 那两份。 */
 export async function clearLlmLog(): Promise<void> {
-  await serialize(() => local().remove([KEY_LLM_LOG, KEY_LLM_TIMING]));
+  // 四个键一次删完，而不是再叫 appLog 自己清一遍：serialize 是同一条链，套着调会死等
+  await serialize(() => local().remove([KEY_LLM_LOG, KEY_LLM_TIMING, KEY_READER_FETCH, KEY_APP_ERROR]));
 }
 
 /* ==================== 耗时 ==================== */
@@ -169,5 +172,7 @@ export async function llmLogBundle(version: string): Promise<LlmLogBundle> {
     },
     failures: await getLlmLog(),
     timings: await getLlmTimings(),
+    fetches: await getFetchLog(),
+    errors: await getAppErrors(),
   };
 }

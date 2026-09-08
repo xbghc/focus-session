@@ -1,7 +1,7 @@
-import type { LlmTiming } from "../types.ts";
+import type { AppError, CharsetSource, LlmTiming, ReaderFetch } from "../types.ts";
 
 /**
- * 诊断日志里那两行摘要的文案。
+ * 诊断日志里那几行摘要的文案。
  *
  * 放在 lib 而不是设置页里，是因为"怎么概括一堆耗时"是有判断的（见 median），
  * 而设置页那个模块一 import 就往 DOM 上挂监听，测不了。
@@ -51,3 +51,30 @@ export function timingLine(ts: LlmTiming[]): string {
   return parts.join("，") + "。";
 }
 
+/** 编码是谁定的，给人看的说法。 */
+const FROM_LABEL: Record<CharsetSource, string> = {
+  header: "响应头",
+  meta: "页面声明",
+  default: "兜底",
+};
+
+/**
+ * 阅读器抓取与运行时错误那一行。只有 App 会有记录，扩展里这两样恒为空。
+ *
+ * 挑出来说的是"不对劲的次数"而不是总数：一切正常时这行不该占人注意力，
+ * 一旦有掉字节的就得显眼——那正是编码挑错了的样子。
+ */
+export function appLogLine(fetches: ReaderFetch[], errors: AppError[]): string {
+  if (fetches.length === 0 && errors.length === 0) return "还没有抓取或运行时错误记录（这两样只有 App 会记）。";
+  const parts: string[] = [];
+  const last = fetches.at(-1);
+  if (last) {
+    const failed = fetches.filter((f) => f.error !== null).length;
+    const garbled = fetches.filter((f) => (f.replacementChars ?? 0) > 0).length;
+    const bad = [failed > 0 ? `${failed} 次没抓到` : "", garbled > 0 ? `${garbled} 次掉字节` : ""].filter(Boolean);
+    const how = last.charset ? `，最近一次按 ${last.charset} 解（${FROM_LABEL[last.charsetFrom ?? "default"]}）` : "";
+    parts.push(`抓取 ${fetches.length} 次${bad.length > 0 ? "，" + bad.join("、") : "，都正常"}${how}`);
+  }
+  parts.push(errors.length > 0 ? `运行时错误 ${errors.length} 条` : "没有未接住的运行时错误");
+  return parts.join("；") + "。";
+}

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { LlmTiming } from "../src/types.ts";
-import { secs, timingLine } from "../src/lib/llmStats.ts";
+import type { AppError, LlmTiming, ReaderFetch } from "../src/types.ts";
+import { appLogLine, secs, timingLine } from "../src/lib/llmStats.ts";
 
 function t(over: Partial<LlmTiming> = {}): LlmTiming {
   return {
@@ -68,3 +68,65 @@ test("一次都没重试就不提重试", () => {
   assert.ok(!timingLine([t(), t()]).includes("重试"));
 });
 
+/* ---------- App 侧：抓取与运行时错误 ---------- */
+
+function f(over: Partial<ReaderFetch> = {}): ReaderFetch {
+  return {
+    ts: 1,
+    url: "https://e.com/a",
+    finalUrl: "https://e.com/a",
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    charset: "utf-8",
+    charsetFrom: "header",
+    bytes: 4096,
+    bom: false,
+    fellBack: false,
+    replacementChars: 0,
+    title: "t",
+    chars: 900,
+    error: null,
+    ms: 300,
+    ...over,
+  };
+}
+
+const e = (over: Partial<AppError> = {}): AppError => ({
+  ts: 1,
+  kind: "error",
+  message: "boom",
+  at: null,
+  stack: null,
+  ...over,
+});
+
+test("两样都空时说清楚是只有 App 才记，免得在扩展里以为坏了", () => {
+  assert.match(appLogLine([], []), /只有 App 会记/);
+});
+
+test("全都正常时不制造噪音，但要说明最近一次是按什么解的", () => {
+  const line = appLogLine([f(), f()], []);
+  assert.match(line, /抓取 2 次，都正常/);
+  assert.match(line, /按 utf-8 解（响应头）/);
+  assert.match(line, /没有未接住的运行时错误/);
+});
+
+test("掉字节要点出来——那正是编码挑错了的样子", () => {
+  const line = appLogLine([f(), f({ replacementChars: 812, charset: "utf-8", charsetFrom: "default" })], []);
+  assert.match(line, /1 次掉字节/);
+  assert.match(line, /兜底/);
+  assert.doesNotMatch(line, /都正常/);
+});
+
+test("抓取失败和掉字节分开数，两样都有就都报", () => {
+  const line = appLogLine([f({ error: "网页返回了 HTTP 403" }), f({ replacementChars: 5 })], [e()]);
+  assert.match(line, /1 次没抓到/);
+  assert.match(line, /1 次掉字节/);
+  assert.match(line, /运行时错误 1 条/);
+});
+
+test("只有运行时错误、一次都没抓过时，不硬编一句抓取", () => {
+  const line = appLogLine([], [e(), e({ kind: "rejection" })]);
+  assert.doesNotMatch(line, /抓取/);
+  assert.match(line, /运行时错误 2 条/);
+});

@@ -1,6 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import type { LlmFailure } from "../src/types.ts";
+import type { AppError, LlmFailure, ReaderFetch } from "../src/types.ts";
 import { DEFAULT_LLM } from "../src/types.ts";
 import { type CallTiming, LlmError } from "../src/lib/llm.ts";
 import {
@@ -17,6 +17,7 @@ import {
   recordLlmFailure,
   recordTiming,
 } from "../src/background/llmLog.ts";
+import { getAppErrors, getFetchLog, recordAppError, recordFetch } from "../src/background/appLog.ts";
 import { setLlmConfig } from "../src/background/vocab.ts";
 import { clearData } from "../src/background/store.ts";
 
@@ -48,6 +49,26 @@ beforeEach(() => {
 });
 
 const CFG = { ...DEFAULT_LLM, apiKey: "k", model: "M-test" };
+
+/** App 那两份各一条，够验证它们跟着一起清、一起导出。字段本身在 appLog.test.ts 里测。 */
+const FETCH: ReaderFetch = {
+  ts: 1,
+  url: "https://e.com",
+  finalUrl: "https://e.com",
+  status: 200,
+  contentType: "text/html",
+  charset: "utf-8",
+  charsetFrom: "header",
+  bytes: 10,
+  bom: false,
+  fellBack: false,
+  replacementChars: 0,
+  title: "t",
+  chars: 5,
+  error: null,
+  ms: 1,
+};
+const APP_ERROR: AppError = { ts: 1, kind: "error", message: "boom", at: null, stack: null };
 
 function entry(over: Partial<LlmFailure> = {}): LlmFailure {
   return {
@@ -193,24 +214,33 @@ test("耗时落盘失败同样不抛给调用方", async () => {
   await recordTiming("translate", CFG, TIMING);
 });
 
-test("清空日志两样一起清", async () => {
+test("清空日志四样一起清——按钮清的是整份诊断日志，不只 LLM 那两份", async () => {
   await recordTiming("translate", CFG, TIMING);
   await recordLlmFailure(entry());
+  await recordFetch(FETCH);
+  await recordAppError(APP_ERROR);
   await clearLlmLog();
   assert.deepEqual(await getLlmTimings(), []);
   assert.deepEqual(await getLlmLog(), []);
+  assert.deepEqual(await getFetchLog(), []);
+  assert.deepEqual(await getAppErrors(), []);
 });
 
 test("导出包带版本与配置，不含 apiKey", async () => {
   await setLlmConfig({ apiKey: "secret-key", model: "M-x" });
   await recordLlmFailure(entry());
   await recordTiming("translate", CFG, TIMING);
+  await recordFetch(FETCH);
+  await recordAppError(APP_ERROR);
   const b = await llmLogBundle("0.3.0");
-  assert.equal(b.schema, 2); // 2 起多了 timings
+  assert.equal(b.schema, 2); // 2 起多了 timings、fetches、errors
   assert.equal(b.version, "0.3.0");
   assert.equal(b.llm.model, "M-x");
   assert.equal(b.llm.apiKeySet, true);
   assert.equal(b.failures.length, 1);
   assert.equal(b.timings.length, 1); // 失败日志和耗时环一起导出
+  // 抓取与运行时错误也在同一份里：分成三个文件只会让人少发过来两个
+  assert.equal(b.fetches.length, 1);
+  assert.equal(b.errors.length, 1);
   assert.ok(!JSON.stringify(b).includes("secret-key"));
 });

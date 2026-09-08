@@ -1,6 +1,6 @@
 import "./boot.ts";
 import { Readability } from "@mozilla/readability";
-import type { Snippet } from "../types.ts";
+import type { ReaderFetch, Snippet } from "../types.ts";
 import { navigation, readerUrl, shim } from "./boot.ts";
 import { hostHooks, inApp, native } from "./native.ts";
 import { sanitizeArticle } from "./sanitize.ts";
@@ -9,6 +9,8 @@ import { startTracking, type TrackController } from "../content/track.ts";
 import { formatEstimate } from "../lib/readingTime.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { hostnameOf, normalizeUrl } from "../lib/url.ts";
+import { decodeWith, hasBom, pickCharset } from "../lib/charset.ts";
+import { recordFetch } from "../background/appLog.ts";
 import { READER_PREFIX } from "../background/store.ts";
 
 /**
@@ -48,49 +50,73 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-/** Content-Type 里的 charset。 */
-function charsetOf(contentType: string | null): string | null {
-  const m = /charset\s*=\s*"?([\w.-]+)"?/i.exec(contentType ?? "");
-  return m?.[1]?.toLowerCase() ?? null;
-}
-
-/** 头部没说编码时看 `<meta charset>`：国内不少站点还在用 GBK，按 UTF-8 解出来全是问号。 */
-function sniffCharset(bytes: Uint8Array): string | null {
-  const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
-  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.-]+)/i.exec(head);
-  return m?.[1]?.toLowerCase() ?? null;
-}
-
-function decode(bytes: Uint8Array, charset: string): string {
-  try {
-    return new TextDecoder(charset).decode(bytes);
-  } catch {
-    return new TextDecoder("utf-8").decode(bytes);
-  }
-}
-
+/**
+ * 抓一页回来，解码、抽正文、洗干净。
+ *
+ * 成功失败都往诊断日志里记一条现场（编码是谁定的、掉了多少字节、抽出多长）：
+ * 手机上没有控制台，不记的话出了岔子只剩界面上那一句话。
+ */
 async function fetchAndExtract(url: string): Promise<CachedArticle> {
-  const res = await fetch(url, { headers: { Accept: ACCEPT } });
-  if (!res.ok) throw new Error(`网页返回了 HTTP ${res.status}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const charset = charsetOf(res.headers.get("content-type")) ?? sniffCharset(bytes) ?? "utf-8";
-  const html = decode(bytes, charset);
-  // 宿主跟随重定向后把最终地址放在这个头里；相对链接要按它补全
-  const finalUrl = res.headers.get("x-fs-final-url") || res.url || url;
-
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const base = doc.createElement("base");
-  base.href = finalUrl;
-  doc.head.prepend(base);
-  const parsed = new Readability(doc).parse();
-  if (!parsed?.content) throw new Error("没能从这一页里认出正文。它可能不是文章，或者需要登录才能看。");
-  return {
+  const started = Date.now();
+  const log: ReaderFetch = {
+    ts: started,
     url,
-    finalUrl,
-    title: (parsed.title || doc.title || url).replace(/\s+/g, " ").trim(),
-    html: sanitizeArticle(parsed.content, finalUrl),
-    savedTs: Date.now(),
+    finalUrl: null,
+    status: null,
+    contentType: null,
+    charset: null,
+    charsetFrom: null,
+    bytes: null,
+    bom: false,
+    fellBack: false,
+    replacementChars: null,
+    title: null,
+    chars: null,
+    error: null,
+    ms: 0,
   };
+  try {
+    const res = await fetch(url, { headers: { Accept: ACCEPT } });
+    log.status = res.status;
+    log.contentType = res.headers.get("content-type");
+    if (!res.ok) throw new Error(`网页返回了 HTTP ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    log.bytes = bytes.length;
+    log.bom = hasBom(bytes);
+    const pick = pickCharset(log.contentType, bytes);
+    log.charset = pick.charset;
+    log.charsetFrom = pick.from;
+    const decoded = decodeWith(bytes, pick.charset);
+    log.fellBack = decoded.fellBack;
+    log.replacementChars = decoded.replacementChars;
+    // 宿主跟随重定向后把最终地址放在这个头里；相对链接要按它补全
+    const finalUrl = res.headers.get("x-fs-final-url") || res.url || url;
+    log.finalUrl = finalUrl;
+
+    const doc = new DOMParser().parseFromString(decoded.text, "text/html");
+    const base = doc.createElement("base");
+    base.href = finalUrl;
+    doc.head.prepend(base);
+    const parsed = new Readability(doc).parse();
+    if (!parsed?.content) throw new Error("没能从这一页里认出正文。它可能不是文章，或者需要登录才能看。");
+    const article: CachedArticle = {
+      url,
+      finalUrl,
+      title: (parsed.title || doc.title || url).replace(/\s+/g, " ").trim(),
+      html: sanitizeArticle(parsed.content, finalUrl),
+      savedTs: Date.now(),
+    };
+    log.title = article.title;
+    log.chars = article.html.length;
+    return article;
+  } catch (err) {
+    log.error = err instanceof Error ? err.message : String(err);
+    throw err;
+  } finally {
+    log.ms = Date.now() - started;
+    // 不 await：这一条记不下来也不该拖住正文显示
+    void recordFetch(log);
+  }
 }
 
 function showStatus(text: string, retry?: () => void): void {
