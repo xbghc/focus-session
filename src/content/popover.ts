@@ -311,7 +311,10 @@ export class Popover {
   }
 
   /**
-   * 定位到选区下方；空间不够时翻到上方，左右两侧夹进视口。
+   * 定位到选区上方；空间不够时落到下方，左右两侧夹进视口。
+   *
+   * 优先放上方：选区上面的字通常已经读过了，压住无所谓；放下方会挡住接着往下
+   * 读、往下选的那片。上下都放不下就贴顶，同样是把下面让出来。
    * 用 fixed 定位 + viewport 坐标，页面滚动时浮层会关掉，不需要跟随。
    */
   private place(rect: DOMRect): void {
@@ -336,10 +339,10 @@ export class Popover {
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
 
-    let top = rect.bottom + MARGIN;
-    if (top + height > vh - MARGIN) {
-      const above = rect.top - height - MARGIN;
-      top = above >= MARGIN ? above : Math.max(MARGIN, vh - height - MARGIN);
+    let top = rect.top - height - MARGIN;
+    if (top < MARGIN) {
+      const below = rect.bottom + MARGIN;
+      top = below + height <= vh - MARGIN ? below : MARGIN;
     }
     const left = Math.min(Math.max(MARGIN, rect.left), Math.max(MARGIN, vw - width - MARGIN));
 

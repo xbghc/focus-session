@@ -419,3 +419,54 @@ test("重新划一个词：追问那块跟着整块作废", () => {
   assert.equal(root().querySelector(".qa"), null, "上一段的问答不能留在新的一段上");
   assert.equal(pop.asking, false);
 });
+
+/*
+ * 定位。jsdom 不排版，getBoundingClientRect 一律返回全零，所以视口尺寸和浮层
+ * 自身的尺寸都得手动喂进去——量的是浮层，锚点 rect 是外面传进来的普通对象，
+ * 不走原型，不受这里的替换影响。
+ */
+const realRect = dom.window.HTMLElement.prototype.getBoundingClientRect;
+const layout = (vh: number, boxH: number): void => {
+  const num = (v: number) => ({ value: v, configurable: true });
+  Object.defineProperty(document.documentElement, "clientHeight", num(vh));
+  Object.defineProperty(document.documentElement, "clientWidth", num(1000));
+  dom.window.HTMLElement.prototype.getBoundingClientRect = () =>
+    ({ width: 300, height: boxH, top: 0, left: 0, right: 300, bottom: boxH, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+};
+const unlayout = (): void => {
+  dom.window.HTMLElement.prototype.getBoundingClientRect = realRect;
+  Reflect.deleteProperty(document.documentElement, "clientHeight");
+  Reflect.deleteProperty(document.documentElement, "clientWidth");
+};
+const rectAt = (top: number): DOMRect => ({ ...RECT, top, bottom: top + 20, y: top }) as DOMRect;
+const boxTop = (): string => (root().querySelector(".box") as HTMLElement).style.top;
+
+test("上方放得下就放上方：让开选区下面还没读的那片", () => {
+  layout(800, 200);
+  try {
+    pop.showStreaming(rectAt(400), "leaks");
+    assert.equal(boxTop(), "192px"); // 400 - 200 - 8
+  } finally {
+    unlayout();
+  }
+});
+
+test("上方放不下才落到下方", () => {
+  layout(800, 200);
+  try {
+    pop.showStreaming(rectAt(100), "leaks"); // 上方只有 100px，塞不下 200px
+    assert.equal(boxTop(), "128px"); // 120 + 8
+  } finally {
+    unlayout();
+  }
+});
+
+test("上下都放不下就贴顶——同样是把下面让出来", () => {
+  layout(300, 200);
+  try {
+    pop.showStreaming(rectAt(100), "leaks");
+    assert.equal(boxTop(), "8px");
+  } finally {
+    unlayout();
+  }
+});
