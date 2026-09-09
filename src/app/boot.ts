@@ -3,7 +3,9 @@ import { PORT_TRANSLATE } from "../types.ts";
 import { attachTranslatePort, boot as bootBackground, handle } from "../background/handle.ts";
 import { recordAppError } from "../background/appLog.ts";
 import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";
-import { installNative } from "./native.ts";
+import { installNative, native, captureVisible, recognizeNative } from "./native.ts";
+import { setOcrBackend } from "../background/ocr.ts";
+import { cleanOcrLines } from "../lib/ocrText.ts";
 
 /**
  * App 每个页面的第一件事：把 chrome.* 垫片和宿主桥装好。
@@ -47,6 +49,7 @@ export async function go(url: string): Promise<void> {
 }
 
 export const shim: ChromeShim = installChromeShim({
+  ...(native()?.captureStart ? { capture: captureVisible } : {}),
   storage: idbBackend(),
   handle: (msg, sender) => handle(msg as AnyMessage, sender),
   connect: (name, port) => {
@@ -57,6 +60,18 @@ export const shim: ChromeShim = installChromeShim({
 });
 
 installNative();
+const bridge = native();
+if (bridge?.ocrStart) setOcrBackend({
+  async recognize(png) {
+    try {
+      const text = cleanOcrLines(await recognizeNative(png));
+      return text ? { ok: true, text } : { ok: false, error: "图里没认出英文" };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+  async warm() { bridge.ocrWarm?.(); },
+});
 
 /*
  * 没被接住的错误。手机上没有开发者工具：不落下来的话，出了岔子除了界面上那一句

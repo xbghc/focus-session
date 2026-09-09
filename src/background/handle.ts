@@ -10,6 +10,7 @@ import type {
   TranslatePortOut,
 } from "../types.ts";
 import { buildOverview } from "../lib/stats.ts";
+import { recognize, warm } from "./ocr.ts";
 import { samePosition } from "../lib/position.ts";
 import { dueCards, reviewStats } from "../lib/review.ts";
 import { handleAssist, streamAsk, streamTranslate, testConnection } from "./translate.ts";
@@ -75,7 +76,7 @@ export function boot(): void {
 
 /** 发消息的一方。扩展里是 chrome.runtime.MessageSender，App 里由垫片造一个带 tab id 的。 */
 export interface Sender {
-  tab?: { id?: number };
+  tab?: { id?: number; windowId?: number };
 }
 
 /** 进行中的 session。存在 storage.session 里：SW 被回收后仍在，浏览器关闭即弃。 */
@@ -280,6 +281,24 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       return await getSettings();
     case "settings:set":
       return await setSettings((msg as Extract<PopupToBg, { type: "settings:set" }>).settings);
+
+    /* ---- 截图翻译 ---- */
+    case "page:capture": {
+      try {
+        const windowId = sender.tab?.windowId;
+        const dataUrl = windowId === undefined
+          ? await chrome.tabs.captureVisibleTab({ format: "png" })
+          : await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+        return { ok: true, dataUrl };
+      } catch (err) {
+        return { ok: false, error: String(err) };
+      }
+    }
+    case "ocr:warm":
+      await warm();
+      return { ok: true };
+    case "ocr:recognize":
+      return await recognize(msg.png);
 
     /* ---- 划词翻译 ---- */
     // 翻译本身走 port（见 attachTranslatePort），这里只剩两条轻消息

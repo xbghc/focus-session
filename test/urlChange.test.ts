@@ -228,6 +228,7 @@ function harness(): { host: ReturnType<typeof createPageHost>; rounds: Round[] }
           stop: () => {
             round.stops++;
           },
+          screenshot: () => undefined,
           translateHere: () => {
             round.translates++;
           },
@@ -329,6 +330,7 @@ test("从 bfcache 回来：非文章页上用户点开的划词翻译要跟着�
       stop: () => {
         r.on = false;
       },
+      screenshot: () => undefined,
       translateHere: () => {
         r.on = true;
       },
@@ -361,6 +363,7 @@ test("这一轮起不来：popup 要说得出原因，换一页还能再试", as
       state: (): PageState => ({ tracked: true, articleId: url }),
       setVisible: () => undefined,
       stop: () => undefined,
+      screenshot: () => undefined,
       translateHere: () => undefined,
     };
   });

@@ -4,6 +4,7 @@ import type {
   AskRequest,
   ContentToBg,
   EndReason,
+  OcrReply,
   PageState,
   ParagraphRecord,
   PartialTranslation,
@@ -20,6 +21,7 @@ import { isFinished } from "../lib/finish.ts";
 import { planRestore, type RestorePlan } from "../lib/position.ts";
 import { estimateReading, formatEstimate } from "../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, ParagraphTracker } from "./paragraphs.ts";
+import { selectRegion, cancelRegion } from "./screenshot.ts";
 import { FinishCard } from "./finishCard.ts";
 import { PositionCard } from "./positionCard.ts";
 import { SessionMachine } from "./session.ts";
@@ -92,6 +94,7 @@ export interface TrackController {
    * 追踪中的文章页本来就挂着，调它没有效果；被排除的域名上也不会挂。
    */
   translateHere(): void;
+  screenshot(): void;
 }
 
 /** chrome.storage.onChanged 的回调类型。具名注册才摘得掉，见 finish 与 translateOnly 的 stop。 */
@@ -102,6 +105,7 @@ const idle = (reason: string): TrackController => ({
   setVisible: () => undefined,
   stop: () => undefined,
   translateHere: () => undefined,
+  screenshot: () => undefined,
 });
 
 export async function startTracking(opts: TrackOptions): Promise<TrackController> {
@@ -421,6 +425,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   const state = (): PageState => ({
     tracked: true,
+    screenshot: "available",
     articleId,
     title,
     totalWords: article.totalWords,
@@ -507,6 +512,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     machine.stop(reason); // 先停：onEnd 里还要结算最后一段、判一次读完
     torn = true;
     tracker.destroy();
+    screenshot.stop();
     translator.stop();
     finishCard.hide();
     stopRestore();
@@ -542,6 +548,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   /* ---- 划词翻译 ----
    * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。 */
   const translator = makeTranslator(articleId, pageUrl, title, () => settings);
+  const screenshot = screenshotAction(() => translator, () => !torn && !isExcluded(host, settings.excludedDomains));
   let translatorOn = false;
   const syncTranslator = (): void => {
     const want = settings.translateEnabled;
@@ -580,6 +587,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       if (!torn) machine.setVisible(v);
     },
     stop: (reason = "unload") => finish(reason)(),
+    screenshot: screenshot.run,
     translateHere: () => undefined, // 文章页本来就挂着，跟着总开关走
   };
 
@@ -727,11 +735,48 @@ function makeTranslator(articleId: string, url: string, title: string, settings:
     articleTitle: title,
     settings,
     contextOf: paragraphContext,
+    recognize: async (png, signal): Promise<OcrReply> => {
+      if (signal.aborted) return { ok: false, error: "已取消" };
+      const reply = await chrome.runtime.sendMessage({ type: "ocr:recognize", png }) as OcrReply | undefined;
+      // Tesseract 不能中断；让后台那次跑完，前台只丢弃结果。
+      return signal.aborted ? { ok: false, error: "已取消" }
+        : reply ?? { ok: false, error: "识别失败：后台未就绪" };
+    },
     translate: streamTranslate,
     ask: streamAsk,
     warm: () => send({ type: "sw:ping" }),
     openOptions: () => void chrome.runtime.sendMessage({ type: "options:open" }),
   });
+}
+
+/** OCR 每次都要用户动手，不看划词总开关；排除域名仍然禁止，不能绕过用户对站点的选择。 */
+function screenshotAction(getTranslator: () => SelectionTranslator, allowed: () => boolean) {
+  let seq = 0;
+  const stop = (): void => { seq++; cancelRegion(); };
+  return {
+    stop,
+    run: (): void => {
+      if (!allowed()) return;
+      stop();
+      const mine = seq;
+      const translator = getTranslator();
+      translator.dismiss();
+      send({ type: "ocr:warm" });
+      void (async () => {
+        try {
+          const reply = await chrome.runtime.sendMessage({ type: "page:capture" }) as
+            { ok: boolean; dataUrl?: string; error?: string } | undefined;
+          if (mine !== seq || !allowed()) return;
+          if (!reply?.ok || !reply.dataUrl) throw new Error(reply?.error ?? "截图失败：后台未就绪或此页面不支持截图");
+          const result = await selectRegion(reply.dataUrl);
+          if (mine !== seq || !allowed() || !result) return;
+          await translator.translateImage(result.png, result.rect);
+        } catch (err) {
+          if (mine === seq && allowed()) translator.showCaptureError(String(err));
+        }
+      })();
+    },
+  };
 }
 
 /**
@@ -751,6 +796,11 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
   let excluded = false;
   let translator: SelectionTranslator | null = null;
   let on = false;
+  let stopped = false;
+  const screenshot = screenshotAction(() => {
+    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings);
+    return translator;
+  }, () => !stopped && !excluded);
 
   const sync = (): void => {
     const want = wanted && settings.translateEnabled && !excluded;
@@ -769,6 +819,7 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
     if (area !== "local" || !changes["settings"]) return;
     settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
     excluded = isExcluded(host, settings.excludedDomains);
+    if (excluded) { screenshot.stop(); translator?.stop(); }
     sync();
   };
   chrome.storage.onChanged.addListener(onSettingsChanged);
@@ -776,16 +827,21 @@ function translateOnly(pageUrl: string, host: string, initial: Settings): TrackC
   return {
     state: () => {
       const st: PageState = { tracked: false, reason: excluded ? `${host} 在排除列表中` : "未识别为文章页" };
-      // 被排除、或总开关关着：不给字段，popup 就不会画一个点不动的按钮
+      if (!excluded) st.screenshot = "available";
+      // 划词被排除、或总开关关着：不给字段，popup 就不会画一个点不动的按钮
       if (!excluded && settings.translateEnabled) st.translateHere = on ? "on" : "available";
       return st;
     },
     setVisible: () => undefined,
     stop: () => {
+      stopped = true;
+      screenshot.stop();
+      translator?.stop();
       wanted = false;
       sync();
       chrome.storage.onChanged.removeListener(onSettingsChanged);
     },
+    screenshot: screenshot.run,
     translateHere: () => {
       wanted = true;
       sync();

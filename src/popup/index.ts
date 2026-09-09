@@ -73,6 +73,7 @@ function renderCurrent(st: PageState | null): void {
   if (!st.tracked) {
     const box = el("div", { class: "empty" }, [el("div", {}, [st.reason ?? "未追踪"])]);
     if (st.translateHere) box.append(translateHereNode(st.translateHere));
+    if (st.screenshot === "available") box.append(screenshotNode());
     root.append(box);
     return;
   }
@@ -125,6 +126,7 @@ function renderCurrent(st: PageState | null): void {
   const est = st.estimate;
   if (est && est.words > 0) rows.push(["预计还需", formatEstimate(est.ms)]);
   root.append(kv(rows));
+  if (st.screenshot === "available") root.append(screenshotNode());
   if (est && est.words > 0) root.append(el("div", { class: "muted small basis" }, [describeBasis(est)]));
 
   if (st.articleId) void appendReviewLine(root, st.articleId);
@@ -137,6 +139,15 @@ function renderCurrent(st: PageState | null): void {
       .join("　");
     root.append(el("div", { class: "muted small" }, [legend]));
   }
+}
+
+function screenshotNode(): HTMLElement {
+  const btn = el("button", { type: "button", class: "btn", title: "截图翻译（也可按 Alt+Shift+S 或使用右键菜单）" }, ["截图翻译"]);
+  btn.addEventListener("click", () => {
+    void askPage({ type: "page:screenshot" });
+    window.close();
+  });
+  return btn;
 }
 
 /**

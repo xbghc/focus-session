@@ -6,20 +6,34 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.speech.tts.TextToSpeech;
 import android.util.Base64;
+import android.view.PixelCopy;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
 
 import androidx.core.content.FileProvider;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -64,6 +78,8 @@ public class NativeBridge {
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> live = new ConcurrentHashMap<>();
     private final Set<String> aborted = ConcurrentHashMap.newKeySet();
+    private TextRecognizer recognizer;
+    private boolean closed;
 
     /**
      * 系统栏 / 刘海压在 WebView 上的那几条边，"上,右,下,左"，单位 CSS px。
@@ -81,6 +97,122 @@ public class NativeBridge {
     NativeBridge(MainActivity activity, WebView web) {
         this.activity = activity;
         this.web = web;
+    }
+
+    /* ==================== 截图翻译 ==================== */
+
+    @JavascriptInterface
+    public void captureStart(String id) {
+        activity.runOnUiThread(() -> {
+            Bitmap bitmap = null;
+            try {
+                int[] at = new int[2];
+                web.getLocationInWindow(at);
+                int w = web.getWidth(), h = web.getHeight();
+                if (w <= 0 || h <= 0) throw new IllegalStateException("阅读器还没有可截图的画面");
+                bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                final Bitmap frame = bitmap;
+                // 硬件加速下 View.draw 不可靠；PixelCopy 拿窗口 surface 上真正显示的像素。
+                PixelCopy.request(activity.getWindow(), new Rect(at[0], at[1], at[0] + w, at[1] + h), frame, result -> {
+                    if (result != PixelCopy.SUCCESS) {
+                        frame.recycle();
+                        imageError("__fsCapture", id, "截图失败：PixelCopy " + result);
+                        return;
+                    }
+                    try {
+                        pool.execute(() -> {
+                            try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                                if (!frame.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                                    throw new IllegalStateException("截图 PNG 编码失败");
+                                }
+                                String b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+                                // 一次几 MB 的 evaluateJavascript 对这个一次性动作可以接受；
+                                // README 反对的是 APK 按小块推几百次，还得在网页重新拼接的做法。
+                                js("window.__fsCapture&&window.__fsCapture.done(" + JSONObject.quote(id) + ","
+                                        + JSONObject.quote("data:image/png;base64," + b64) + ")");
+                            } catch (Exception e) {
+                                imageError("__fsCapture", id, "截图失败：" + e.getMessage());
+                            } finally {
+                                frame.recycle();
+                            }
+                        });
+                    } catch (Exception e) {
+                        frame.recycle();
+                        imageError("__fsCapture", id, "截图失败：" + e.getMessage());
+                    }
+                }, new Handler(Looper.getMainLooper()));
+            } catch (Exception e) {
+                if (bitmap != null) bitmap.recycle();
+                imageError("__fsCapture", id, "截图失败：" + e.getMessage());
+            }
+        });
+    }
+
+    /** 绑定线程、识别线程与 shutdown 共用同一把锁，避免重复建模型或关掉后重新创建。 */
+    @JavascriptInterface
+    public synchronized void ocrWarm() {
+        if (closed) throw new IllegalStateException("识别器已关闭");
+        if (recognizer == null) recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+    }
+
+    @JavascriptInterface
+    public void ocrStart(String id, String pngBase64) {
+        try {
+            pool.execute(() -> {
+                Bitmap bitmap = null;
+                try {
+                    byte[] bytes = Base64.decode(pngBase64, Base64.DEFAULT);
+                    bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (bitmap == null) throw new IllegalArgumentException("无法解码待识别图片");
+                    final Bitmap frame = bitmap;
+                    InputImage image = InputImage.fromBitmap(frame, 0);
+                    synchronized (this) {
+                        ocrWarm();
+                        // 完成回调不用 Activity 作用域或线程池：退出时也必须执行，才能释放位图。
+                        recognizer.process(image).addOnCompleteListener(Runnable::run, task -> {
+                            try {
+                                if (!task.isSuccessful()) {
+                                    Exception error = task.getException();
+                                    imageError("__fsOcr", id, error == null ? "识别已取消" : "识别失败：" + error.getMessage());
+                                    return;
+                                }
+                                JSONArray lines = new JSONArray();
+                                boolean first = true;
+                                // 保留 ML Kit 的 block 阅读顺序；按坐标全局排序会把多列的行穿插在一起。
+                                for (Text.TextBlock block : task.getResult().getTextBlocks()) {
+                                    if (!first) lines.put(new JSONObject().put("text", ""));
+                                    first = false;
+                                    for (Text.Line line : block.getLines()) {
+                                        JSONObject value = new JSONObject().put("text", line.getText());
+                                        Float confidence = line.getConfidence();
+                                        if (confidence != null) value.put("confidence", confidence.doubleValue());
+                                        lines.put(value);
+                                    }
+                                }
+                                js("window.__fsOcr&&window.__fsOcr.done(" + JSONObject.quote(id) + ","
+                                        + JSONObject.quote(lines.toString()) + ")");
+                            } catch (Exception e) {
+                                imageError("__fsOcr", id, "识别失败：" + e.getMessage());
+                            } finally {
+                                frame.recycle();
+                            }
+                        });
+                    }
+                    bitmap = null; // 异步识别还要读它，由完成回调回收。
+                } catch (Exception e) {
+                    imageError("__fsOcr", id, "识别失败：" + e.getMessage());
+                } finally {
+                    if (bitmap != null) bitmap.recycle();
+                }
+            });
+        } catch (Exception e) {
+            imageError("__fsOcr", id, "识别失败：" + e.getMessage());
+        }
+    }
+
+    private void imageError(String callback, String id, String message) {
+        js("window." + callback + "&&window." + callback + ".error("
+                + JSONObject.quote(id) + "," + JSONObject.quote(message) + ")");
     }
 
     /* ==================== HTTP ==================== */
@@ -453,7 +585,12 @@ public class NativeBridge {
         activity.runOnUiThread(() -> Toast.makeText(activity, msg, Toast.LENGTH_LONG).show());
     }
 
-    void shutdown() {
+    synchronized void shutdown() {
+        closed = true;
+        if (recognizer != null) {
+            recognizer.close();
+            recognizer = null;
+        }
         pool.shutdownNow();
         if (tts != null) {
             tts.stop();

@@ -470,3 +470,33 @@ test("上下都放不下就贴顶——同样是把下面让出来", () => {
     unlayout();
   }
 });
+
+test("识别标题转圈，译文空着；切换流式沿用同一骨架", () => {
+  pop.showRecognizing(RECT);
+  assert.equal(txt(".term"), "正在识别图中文字… ");
+  assert.ok(root().querySelector(".term .spin"));
+  assert.equal(root().querySelector(".tr")!.childNodes.length, 0);
+  const tr = root().querySelector(".tr");
+  pop.setTerm("hello");
+  assert.equal(txt(".term"), "hello");
+  assert.equal(root().querySelector(".term .spin"), null);
+  pop.showStreaming(RECT, "hello");
+  assert.equal(root().querySelector(".tr"), tr);
+  assert.ok(root().querySelector(".tr .spin"));
+});
+
+test("setTerm 与流式标题使用相同的 90 字截断", () => {
+  const text = "a".repeat(120);
+  pop.showStreaming(RECT, text);
+  const expected = txt(".term");
+  pop.showRecognizing(RECT);
+  pop.setTerm(text);
+  assert.equal(txt(".term"), expected);
+});
+
+test("长文本确认按来源区分选中和识别", () => {
+  pop.showConfirm(RECT, "hello", 201);
+  assert.equal(txt(".meta"), "选中了 201 个词，较长，确认后再翻译");
+  pop.showConfirm(RECT, "hello", 201, "image");
+  assert.equal(txt(".meta"), "识别出 201 个词，较长，确认后再翻译");
+});

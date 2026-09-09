@@ -8,7 +8,7 @@
    阅读速度是多少，哪些文章真正读完了，以及上次读到了哪一段——重新打开时跳回去。
 2. **划词翻译与讲解、复习** —— 在被识别为文章的页面上选中英文即调用 MiniMax 翻译，
    给出结合本文语境的解释，再像老师那样补一句用法、把句子里的生词逐个讲开并存档；
-   之后在面板里用 FSRS 间隔重复复习。
+   之后在面板里用 FSRS 间隔重复复习。图片里的字可以截图翻译。
 
 ## 数据去哪了
 
@@ -27,6 +27,9 @@ IndexedDB 里。两边**不经过任何服务器**：手机上读的、划的，
 请求里除了「最新的一次发布是哪个版本」什么都没有——不带 API Key、不带阅读记录，
 连当前版本号都不带（比较在本机做）。设置页的「更新」里能关掉，关掉之后只有手按「检查更新」才联网。
 扩展那边没有这回事，浏览器的商店管升级。
+
+**截图翻译的识别在本机做**：扩展用 Tesseract 的 wasm，App 用 ML Kit，截图不联网。
+识别出来的文本和划词一样发给 MiniMax；截图翻译由人每次主动触发，不受划词总开关控制，排除域名仍然有效。
 
 API Key 存在独立的 storage key 里，**不会**进入 content script（它与网页共享渲染进程），
 也**不会**随导出文件带出。所有 LLM 请求都由 background service worker 代发。
@@ -290,6 +293,40 @@ popup 的当前页、历史列表、dashboard 的文章卡，以及跳回上次�
   走浏览器自带的 `speechSynthesis`，不联网、不花 token、不需要额外权限。
   几处讲究见 [朗读](#朗读)。
 
+### 截图翻译
+
+图片里的英文选不中时，用截图翻译。扩展有三个入口：popup 的「截图翻译」按钮、
+`Alt+Shift+S`、页面右键菜单；App 点阅读器顶栏的「截」。OCR 不看划词总开关，
+因为每次都得人动手框选；但仍看排除域名，不能绕过用户对站点的选择。
+
+流程是**先拍后选**：先截下可见区，把冻结帧画在覆盖层上，再用鼠标或手指拖一个矩形。
+这样选的就是刚才看到的那一帧，网页继续动也不会错位。按实际截图尺寸换算裁剪范围，
+小图放大到等效 2x（大选区限制继续放大的尺寸），深底浅字反色后交给识别器。
+Esc、右键或 App 系统返回键取消框选；覆盖层隔离页面快捷键，但保留 F5、Ctrl+R 等浏览器默认行为。
+
+分两阶段：**先识别文本，再走划词那条翻译路径**。长文本的确认闸、缓存、入库、追问全都一样，
+识别出的文字同时作原文和语境；太长就提示缩小框选范围，没认出英文就停在识别错误，不发翻译。
+
+为什么不让 MiniMax 直接识别？M3 其实收图，前期实测却要 **4–8 秒**，一次流式用了 **22 秒**，
+用户正框着一行字等答案，这个延迟太慢。OCR 留在本机，只把文本交给它翻译。
+
+两端引擎不同也是宿主约束：Tesseract 的 wasm 需要 Worker，service worker 起不了 Worker，
+content script 起的 Worker 又受宿主页 CSP 管，只能放进扩展的 **offscreen document**。
+App 用手机上快约十倍的 ML Kit，bundled 拉丁模型随 APK 打包，没有 Google Play 服务也能用，
+不等首次下载模型。速度差是选型依据，具体手机上的冷启动和识别耗时仍要真机验证。
+
+CSP 还绊过另一脚：宿主页的 `img-src` 管得到 content script 放的 `<img>`，`fetch(data:)`
+也会被宿主页的 CSP 拦住。所以截图用 **atob → Blob → createImageBitmap** 解码，
+冻结帧画在 canvas 上，不借 `<img>` 或 `fetch(data:)` 绕一圈。
+
+体积代价：`dist/` 增加约 **10MB**，包括 worker、两个 lstm wasm 变体、tessdata_fast 英文数据；
+APK 从 2.8MB 涨到 **17.2MB**：ML Kit 的原生库 `libmlkit_google_ocr_pipeline.so` 一份 11MB（现代打包方式下它在 APK 里不压缩）、
+未经 R8 裁剪的 dex 多出约 10MB（压缩后 3.9MB）、模型文件约 1.6MB；只留 `arm64-v8a`，四个 ABI 就是 40MB 以上。
+想再小，两个杠杆都还没动：release 开 `isMinifyEnabled`（要在真机上确认 R8 没裁掉 `@JavascriptInterface`），或 `jniLibs.useLegacyPackaging` 让原生库在 APK 里压缩（装机时解压，占的空间不变）。
+Tesseract 对花体、极小字、非英文有局限，1x 屏补到 2x 就是为了让它看清笔画，放大也救不了所有图。
+前期 `scripts/ocr-check.ts` 在 Node 里的实测是初始化 **164ms**、识别 **142ms**，
+这两个数不包含截图、框选、翻译，也不代表手机或浏览器的端到端延迟。
+
 ### 就着这一段追问
 
 译文和讲解是模型主动给的那几样，剩下的想问什么只能自己开口。浮层底部因此有一个「问」字图标：
@@ -463,6 +500,10 @@ background 里发。
 阅读器、设置（= 扩展的设置页）。扩展的页面、content script、background 里的消息处理在 App 里
 原样复用，靠 `src/app/shim.ts` 把 `chrome.storage` 接到 IndexedDB、把 `chrome.runtime.sendMessage`
 直接接到 `src/background/handle.ts` 的 `handle()` 上——没有 service worker，接线不同而已。
+
+阅读器顶栏「截」用 **PixelCopy** 截 WebView 的可见区，硬件加速下直接 `View.draw` 不可靠。
+框选复用扩展的覆盖层，裁出的 PNG 交给宿主 **ML Kit** 离线识别，再接现有翻译。
+系统返回键先收截图覆盖层，再收本文生词单子，最后才离开阅读器。
 
 ### 文章从哪来
 
@@ -673,9 +714,10 @@ scroll，一段阅读记两遍），以及**抽正文那几秒里可能再换页
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test，543 项
+npm test            # node --test，623 项
 npm run build       # esbuild → dist/
 npm run watch       # 增量构建
+npm run ocr-check   # 本机 Tesseract 英文识别与耗时检查，不调用 MiniMax
 MINIMAX_API_KEY=... node --experimental-strip-types scripts/live-check.ts   # 打真实 API 看讲解质量
 npm run build:app   # esbuild → android/app/src/main/assets/www/（安卓 App 的网页部分）
 npm run check       # 类型检查、测试、两份构建一起跑
@@ -689,7 +731,7 @@ cd android && ./gradlew assembleDebug   # APK；preBuild 会自己跑一遍 buil
 `src/lib/llm.ts`**，测的就是线上跑的那段代码。改过 prompt 就该跑一次——单元测试只能证明
 「模型照格式输出时我们解析得对」，证明不了「模型会照格式输出」。`--only=整句` 可以只跑一条。
 
-无框架，运行时依赖只有 `@mozilla/readability` 和 `ts-fsrs`。测试用 Node 内置 test runner +
+无框架，运行时依赖是 `@mozilla/readability`、`ts-fsrs` 和扩展 OCR 用的 `tesseract.js`。测试用 Node 内置 test runner +
 类型擦除，不需要额外的测试框架或转译步骤。
 
 界面是纸墨配色（暖纸底 + 赭石 accent），配色 token 集中在 `src/popup/popup.css` 的 `:root`，
@@ -744,7 +786,7 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 
 ## 已验证 / 未验证
 
-**已验证（557 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
+**已验证（623 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
 静默上限随视口文字量放宽、被 `maxQuiet` 封顶、关闭自适应后退回固定阈值、没什么字时固定阈值照旧 /
 两种走神各自的恢复条件 / 半小时晃鼠标只产生一个 session / 只在翻屏时才有信号时不丢失阅读时间 / 重启后的阈值重置 / 碎片丢弃 /
 阈值热更新）；混合语言字数统计；URL 归一化与域名排除；分位数计算；段落可见性公式；
@@ -834,6 +876,13 @@ onChanged、port 两头收发与单侧断开、getURL 的别名、换页、flush
 认不出的版本号读成 0.0.0 因而不提示更新、只认 `focus-session-vX.Y.Z.apk` 而不拿 `-debug.apk`
 或扩展的 zip 当升级包、已经是最新时不提示、GitHub 的响应缺字段或整个不是那么回事时不炸）。
 
+截图翻译：裁剪的横纵比例、越界与取整、放大上限、深底反色；清洗的低置信度过滤、英文筛选、
+断行连词与空行段界；覆盖层的反向拖选、误触取消、指针捕获、滚动隔离、F5 默认行为、
+取消返回值、重复框选与迟到裁剪的资源清理；`translateImage` 的识别状态、确认闸、错误、取消与迟到结果；
+offscreen 消息过滤与初始化失败、后台截图错误、垫片有无截图能力；
+App 原生桥的 id 匹配、成功与失败回调、同步抛错、老宿主缺方法、坏 JSON、置信度换算。
+这些是自动化验证；PixelCopy 的实际画面、ML Kit 在真机的结果、触摸框选及系统返回键仍需装机检查。
+
 **已用真实 API 验证过**（不在自动化测试里，需要 key）：`src/lib/llm.ts` 对
 `https://api.minimaxi.com/anthropic/v1/messages` 的实际调用——词条返回音标/词性/词元、
 整句正确剔除这些字段、`assist` 例句生成正常。非流式单次约 3 秒。
@@ -915,7 +964,8 @@ popup 的实时刷新、在真实网站上的抽取成功率。
 这一条是**最需要先试的**，如果被 CORS 拦住，浮层会显示网络错误。
 建议先在几篇常读的文章上跑一天再看数据。
 
-**安卓 App 没有在真机上跑过**，只做到 `gradlew assembleDebug` 通过、网页部分的单元测试通过。
+**安卓 App 没有在真机上跑过**，只做到 `gradlew assembleDebug` 通过（含 ML Kit）、网页部分的单元测试通过。
+截图翻译在真机上的 PixelCopy 画面、ML Kit 的识别结果、手指框选与系统返回键都还没验证。
 WebView 里的每一件事都还是纸上的：长按选区能不能按预期触发浮层、`ReaderWebView` 清空菜单之后
 系统工具条是不是真的不画了、HttpURLConnection 分块经 `evaluateJavascript` 推回页面的吞吐够不够
 流式翻译用、换页前 `flush()` 等到的 IndexedDB 事务是否真的提交了、`onPause` 时 session 有没有结上、
@@ -924,6 +974,8 @@ WebView 里的每一件事都还是纸上的：长按选区能不能按预期触
 
 ## 当前不做的事
 
+- 不用 LLM 做图片识别：MiniMax 收图但实测 4–8 秒、一次流式 22 秒，框选查字等不起。
+- 不做「右键图片直接识别整张图」，先看框选够不够用。
 - 不做网站拦截或限时——这是记录工具，不是管束工具。
 - 不做服务器同步。手机用得少，导出 / 导入文件合并一次就够了，不值得为此维护一台服务器和一套账号。
   代价是两边各自复习过的同一张卡只能留一份排期（见[导入与合并](#导入与合并)）。

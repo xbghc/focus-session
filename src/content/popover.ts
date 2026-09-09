@@ -264,6 +264,7 @@ export class Popover {
   } | null = null;
   /** 同一帧里的多次贴位合并成一次，见 reposition。 */
   private repositioning = false;
+  private recognizing = false;
 
   constructor(actions: PopoverActions) {
     this.actions = actions;
@@ -352,6 +353,7 @@ export class Popover {
 
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void): void {
     const box = this.ensure();
+    this.recognizing = false;
     this.stream = null; // 整块重建，旧骨架的引用全作废
     this.ask = null;
     box.innerHTML = html;
@@ -359,11 +361,34 @@ export class Popover {
     this.place(rect);
   }
 
+  showRecognizing(rect: DOMRect): void {
+    this.showStreaming(rect, "正在识别图中文字…");
+    this.recognizing = true;
+    const n = this.stream!;
+    n.termEl.insertAdjacentHTML("beforeend", ' <span class="spin"></span>');
+    n.tr.textContent = "";
+  }
+
+  setTerm(text: string): void {
+    if (!this.stream) return;
+    this.stream.term = text;
+    this.stream.termEl.textContent = truncate(text, 90);
+    this.position();
+  }
+
   /**
    * 搭好最终形态的骨架，译文位置先放一个转圈。
    * 骨架和 showResult 完全同构，所以后面补内容不会引起整块跳动。
    */
   showStreaming(rect: DOMRect, term: string): void {
+    // 识别与翻译沿用同一骨架，避免识别刚结束就把整块浮层拆了重画。
+    if (this.recognizing && this.stream) {
+      this.recognizing = false;
+      this.setTerm(term);
+      this.stream.tr.innerHTML = '<span class="spin"></span>';
+      this.place(rect);
+      return;
+    }
     this.render(
       rect,
       `<div class="head"><span class="term"></span><span class="meta"></span></div>
@@ -424,11 +449,11 @@ export class Popover {
   }
 
   /** 长选区不自动翻译，先问一句——"选中即翻译"不该把整段几百字直接发出去。 */
-  showConfirm(rect: DOMRect, term: string, words: number): void {
+  showConfirm(rect: DOMRect, term: string, words: number, source: "selection" | "image" = "selection"): void {
     this.render(
       rect,
       `<div class="head"><span class="term"></span></div>
-       <div class="meta">选中了 ${words} 个词，较长，确认后再翻译</div>
+       <div class="meta">${source === "image" ? "识别出" : "选中了"} ${words} 个词，较长，确认后再翻译</div>
        <div class="ctx"><button data-act="go">翻译这段</button></div>`,
       (box) => {
         box.querySelector(".term")!.textContent = truncate(term, 80);
