@@ -20,10 +20,10 @@ jobs:
     name: 类型检查 · 测试 · 构建
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 测试靠 node --experimental-strip-types 跑 TypeScript，要 22.6+
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -32,7 +32,7 @@ jobs:
       - run: npm run check
 
       - name: 保存扩展产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: extension-dist
           path: dist
@@ -42,33 +42,35 @@ jobs:
     name: 安卓 APK
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Gradle 的 preBuild 会跑 npm run build:app，所以这里也要 node
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools platforms;android-36 build-tools;36.0.0
 
-      # 缓存 Gradle 分发包与依赖，并校验 wrapper jar
-      - uses: gradle/actions/setup-gradle@v4
+      # 缓存 Gradle 分发包与依赖，并校验 wrapper jar。
+      # 停在 v5：v6 起缓存那部分被拆成闭源的 gradle-actions-caching，升上去等于接受
+      # Gradle 的商业使用条款——那是另一个性质的决定，不该顺手做掉。
+      - uses: gradle/actions/setup-gradle@v5
 
       - name: assembleDebug
         working-directory: android
         run: ./gradlew assembleDebug --console=plain
 
       - name: 保存 APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: app-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
