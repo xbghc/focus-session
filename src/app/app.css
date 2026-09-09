@@ -112,6 +112,28 @@ body.app header h1 { font-size: 16px; }
 .topnav { font-family: var(--sans); font-size: 14px; padding: calc(10px + var(--sa-top)) 0 2px; }
 .topnav a { color: var(--accent); text-decoration: none; }
 
+/* 首页那条「有新版本」。是横幅不是弹窗：来这儿是为了读文章 */
+.update-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-family: var(--sans); font-size: 13px; margin: 0 0 12px;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--card);
+}
+.update-bar span { flex: 1 1 auto; }
+.update-bar a { color: var(--accent); text-decoration: none; }
+
+/*
+ * 「更新」里的发布说明。是 <pre>，因为那串 markdown 原文的换行和缩进就是它的全部结构；
+ * pre-wrap 让长行在窄屏上折回来，限高是怕某次发布的说明写了三十行，
+ * 底下那两句「怎么装」被顶出屏幕。
+ */
+.update-notes {
+  font-family: var(--sans); white-space: pre-wrap; word-break: break-word;
+  max-height: 40vh; overflow-y: auto; margin: 10px 0 0;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--bg);
+}
+/* 那串地址是要长按复制的，窄屏上得能折行 */
+.update-link { word-break: break-all; user-select: text; }
+
 /* ---------- 阅读器 ---------- */
 body.reader {
   width: auto; max-width: none; margin: 0; padding: 0;

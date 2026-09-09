@@ -1,6 +1,7 @@
 import "./boot.ts";
 import "../dashboard/index.ts";
-import { readerUrl } from "./boot.ts";
+import { go, readerUrl } from "./boot.ts";
+import { autoCheck, skipVersion } from "./update.ts";
 
 /**
  * App 首页 = 扩展的 dashboard（文章 / 复习 / 生词本），外加一个"文章从哪来"的入口：
@@ -36,3 +37,36 @@ if (shared) {
     hint.textContent = "分享过来的内容里没有网址。";
   }
 }
+
+/*
+ * 开 App 时问一次有没有新版本（一天最多一次，设置页能关，详见 update.ts）。
+ *
+ * 只在页首挂一条能划掉的横幅，不弹窗：来这儿是为了读文章，
+ * 「有新版本」永远不比手头这篇要紧。真要更新在设置页里点。
+ */
+void (async () => {
+  const update = await autoCheck();
+  if (!update) return;
+  const bar = document.createElement("div");
+  bar.className = "update-bar";
+  const text = document.createElement("span");
+  text.textContent = `有新版本 ${update.version}`;
+  const open = document.createElement("a");
+  open.href = "options.html#update";
+  open.textContent = "去更新";
+  open.addEventListener("click", (e) => {
+    e.preventDefault();
+    void go("options.html#update");
+  });
+  const no = document.createElement("button");
+  no.type = "button";
+  no.className = "mini";
+  no.textContent = "不用了";
+  no.addEventListener("click", () => {
+    // 只跳过这一个版本；下一个照常提示
+    skipVersion(update.version);
+    bar.remove();
+  });
+  bar.append(text, open, no);
+  document.querySelector("header")?.after(bar);
+})();

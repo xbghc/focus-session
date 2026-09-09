@@ -2,7 +2,9 @@ package com.focussession.app;
 
 import android.app.Activity;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Build;
@@ -50,6 +52,12 @@ public class NativeBridge {
                     + "Chrome/124.0.0.0 Mobile Safari/537.36";
     private static final int MAX_REDIRECTS = 6;
     private static final int CHUNK = 16 * 1024;
+
+    /** 升级包下在 cacheDir/update/ 下，交给安装器时走 FileProvider（见 res/xml/file_paths.xml）。 */
+    private static final String UPDATE_DIR = "update";
+    private static final String UPDATE_APK = "update.apk";
+    /** 每下这么多字节往页面报一次进度。报太密的话那点进度数字还不够 evaluateJavascript 的开销。 */
+    private static final long PROGRESS_STEP = 256 * 1024;
 
     private final MainActivity activity;
     private final WebView web;
@@ -233,6 +241,130 @@ public class NativeBridge {
         } catch (Exception e) {
             toast(activity.getString(R.string.save_failed, e.getMessage()));
         }
+    }
+
+    /* ==================== 自动更新 ==================== */
+
+    /**
+     * 这个安装是不是 debug 签名的。buildConfig 关着（build.gradle.kts），没有 BuildConfig.DEBUG，
+     * 看 manifest 里那个由构建类型翻出来的 debuggable 标志。
+     *
+     * 网页据此把「下载并安装」换成一句说明：debug 包和正式签名的发布版签名不一致，
+     * 覆盖安装会被系统直接拒掉，而它给的只有一句没头没尾的「应用未安装」。
+     */
+    @JavascriptInterface
+    public boolean isDebugBuild() {
+        return (activity.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+
+    /**
+     * 下载升级包。APK 的字节**不**走 HTTP 代发那条路：一个几兆的包按 16KB 一块 base64
+     * 推回页面是几百次 evaluateJavascript，还要在 JS 那边再拼一遍。这里直接写进缓存目录，
+     * 只把进度数字推回去。
+     */
+    @JavascriptInterface
+    public void updateDownload(String url, long expectedBytes) {
+        pool.execute(() -> download(url, expectedBytes));
+    }
+
+    /** 升级包的落点。MainActivity 恢复「刚才正等着装」时也要认得这个路径。 */
+    static File updateApk(Context ctx) {
+        return new File(new File(ctx.getCacheDir(), UPDATE_DIR), UPDATE_APK);
+    }
+
+    private void download(String url, long expectedBytes) {
+        File apk = updateApk(activity);
+        HttpURLConnection c = null;
+        try {
+            URL target = new URL(url);
+            /*
+             * 升级包只从 github.com 的 https 地址下——这是唯一一个下下来就要交给系统安装器的文件，
+             * 而这个地址来自一段网络响应。跟随的重定向不再查（GitHub 会跳到自己的对象存储上，
+             * 那个域名换过几次，钉死它等于哪天悄悄断掉升级），所以这条挡的是
+             * 「响应里的 URL 字段被换成了别处」，不是「TLS 被破了」——后者出现时这里挡什么都晚了。
+             */
+            if (!"https".equals(target.getProtocol()) || !"github.com".equals(target.getHost())) {
+                throw new IllegalStateException("升级包的地址不对：" + target.getProtocol() + "://" + target.getHost());
+            }
+
+            File dir = apk.getParentFile();
+            // 上一次下到一半的残包留着只会碍事，每次从干净的目录开始
+            deleteRecursively(dir);
+            if (dir == null || (!dir.mkdirs() && !dir.isDirectory())) {
+                throw new IllegalStateException("建不了缓存目录");
+            }
+
+            c = (HttpURLConnection) target.openConnection();
+            // browser_download_url 会 302 到 objects.githubusercontent.com，两头都是 https，
+            // 交给 HttpURLConnection 自己跟就行——上面 run() 里那个手写的循环是为了 http↔https，
+            // 这里用不上
+            c.setInstanceFollowRedirects(true);
+            c.setConnectTimeout(20_000);
+            c.setReadTimeout(120_000);
+            c.setRequestMethod("GET");
+            c.setRequestProperty("User-Agent", USER_AGENT);
+            int status = c.getResponseCode();
+            if (status != HttpURLConnection.HTTP_OK) throw new IllegalStateException("服务器返回 " + status);
+
+            // 对方没报长度时退回 Release 里写的那个大小，两个都没有就报 0（页面只显示已下多少）
+            long total = c.getContentLengthLong();
+            if (total <= 0) total = Math.max(expectedBytes, 0);
+
+            long received = 0;
+            long reported = 0;
+            try (InputStream in = c.getInputStream(); FileOutputStream os = new FileOutputStream(apk)) {
+                byte[] buf = new byte[CHUNK];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    os.write(buf, 0, n);
+                    received += n;
+                    if (received - reported >= PROGRESS_STEP) {
+                        reported = received;
+                        progress(received, total);
+                    }
+                }
+                // 安装器是另一个进程，读之前得确保字节真的落盘了
+                os.getFD().sync();
+            }
+            progress(received, total);
+
+            // Release 上写着多大就该收到多大。对不上多半是下断了，这种包送进安装器只会白弹一次框
+            if (expectedBytes > 0 && received != expectedBytes) {
+                throw new IllegalStateException("收到 " + received + " 字节，应该是 " + expectedBytes);
+            }
+            js("window.__fsUpdate&&window.__fsUpdate.done()");
+        } catch (Exception e) {
+            //noinspection ResultOfMethodCallIgnored
+            apk.delete(); // 半个包不能留在那儿等着被装
+            String message = e.getMessage();
+            js("window.__fsUpdate&&window.__fsUpdate.error("
+                    + JSONObject.quote(message == null || message.isEmpty() ? e.getClass().getSimpleName() : message) + ")");
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private void progress(long received, long total) {
+        js("window.__fsUpdate&&window.__fsUpdate.progress(" + received + "," + total + ")");
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null || !f.exists()) return;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File kid : kids) deleteRecursively(kid);
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    /** 把下好的包交给系统安装器。装不装、什么时候装，从这儿起就是系统和用户的事了。 */
+    @JavascriptInterface
+    public void updateInstall() {
+        File apk = updateApk(activity);
+        if (!apk.isFile()) {
+            toast(activity.getString(R.string.update_missing));
+            return;
+        }
+        activity.runOnUiThread(() -> activity.installUpdate(apk));
     }
 
     /* ==================== 朗读 ==================== */

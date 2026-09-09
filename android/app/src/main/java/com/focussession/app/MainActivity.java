@@ -6,6 +6,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
+import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
@@ -15,11 +16,13 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -27,6 +30,7 @@ import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewFeature;
 
+import java.io.File;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,11 +48,16 @@ public class MainActivity extends ComponentActivity {
     static final String ROOT = ORIGIN + "/www/";
     static final String INDEX = ROOT + "index.html";
     private static final Pattern URL_IN_TEXT = Pattern.compile("https?://[^\\s<>\"']+");
+    /** 进程被杀之前记一句「刚才正等着装」，见 onCreate 里恢复它的地方。 */
+    private static final String STATE_PENDING_UPDATE = "pendingUpdate";
 
     private ReaderWebView web;
     private NativeBridge bridge;
     private ValueCallback<Uri[]> pendingFile;
     private ActivityResultLauncher<Intent> filePicker;
+    /** 送用户去开「安装未知应用」时先把包记在这儿，回来接着装。 */
+    private File pendingUpdate;
+    private ActivityResultLauncher<Intent> installPermission;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -179,6 +188,29 @@ public class MainActivity extends ComponentActivity {
             cb.onReceiveValue(uris);
         });
 
+        /*
+         * Android 11 起，用户在「安装未知应用」那一页把开关拨开的**那一瞬间**，
+         * 系统会 force-stop 掉刚被授权的这个应用——也就是我们自己。等他返回时进程是新的，
+         * pendingUpdate 早没了，于是「授权 → 回来 → 什么都没发生」，而这正好是他第一次
+         * 试这个功能的时刻。包一直躺在缓存目录里，把「刚才正等着装」记进 Bundle 就能接上。
+         *
+         * 必须赶在下面 registerForActivityResult 之前恢复：ActivityResultRegistry 会在
+         * 注册那一刻就把攒着的结果派发出去，那时回调里得已经能看见这个文件。
+         */
+        if (state != null && state.getBoolean(STATE_PENDING_UPDATE)) {
+            File apk = NativeBridge.updateApk(this);
+            if (apk.isFile()) pendingUpdate = apk;
+        }
+
+        installPermission = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            File apk = pendingUpdate;
+            pendingUpdate = null;
+            if (apk == null) return;
+            // 结果码不看：那一页多半回 RESULT_CANCELED，开没开成得自己再问一次
+            if (getPackageManager().canRequestPackageInstalls()) installUpdate(apk);
+            else Toast.makeText(this, R.string.update_needs_permission, Toast.LENGTH_LONG).show();
+        });
+
         // 返回键先问网页：阅读器要先结算 session、等写入落盘，再让我们回退
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -212,6 +244,38 @@ public class MainActivity extends ComponentActivity {
             startActivity(new Intent(Intent.ACTION_VIEW, u));
         } catch (Exception ignored) {
             /* 没有能处理的应用 */
+        }
+    }
+
+    /**
+     * 把下好的升级包交给系统安装器（NativeBridge.updateInstall 在主线程调过来）。
+     *
+     * Android 8 起「安装未知应用」是按应用授权的。没授权时直接发安装 Intent 也不是走不通——
+     * 系统安装器会自己弹一句「不允许从此来源安装」，底下有个去设置的入口——但那是走到一半
+     * 被拦下来，不如先把人送到那一页，回来接着装。
+     *
+     * 安装器是另一个进程，读文件要 FileProvider 的 content:// 地址加一条读权限；
+     * `file://` 从 Android 7 起会直接抛 FileUriExposedException。
+     */
+    void installUpdate(File apk) {
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            pendingUpdate = apk;
+            try {
+                installPermission.launch(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())));
+                return;
+            } catch (Exception ignored) {
+                // 有的定制系统没有这一页，那就直接试，让安装器自己去说
+                pendingUpdate = null;
+            }
+        }
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", apk);
+            startActivity(new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            Toast.makeText(this, getString(R.string.update_install_failed, e.getMessage()), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -273,6 +337,7 @@ public class MainActivity extends ComponentActivity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         web.saveState(outState);
+        outState.putBoolean(STATE_PENDING_UPDATE, pendingUpdate != null);
     }
 
     @Override
