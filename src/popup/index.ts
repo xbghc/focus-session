@@ -126,8 +126,9 @@ function renderCurrent(st: PageState | null): void {
   const est = st.estimate;
   if (est && est.words > 0) rows.push(["预计还需", formatEstimate(est.ms)]);
   root.append(kv(rows));
-  if (st.screenshot === "available") root.append(screenshotNode());
+  // 依据那句靠负外边距贴着「预计还需」的数字（popup.css 的 .basis），它和 kv 表之间不能插东西——插了就叠在一起
   if (est && est.words > 0) root.append(el("div", { class: "muted small basis" }, [describeBasis(est)]));
+  if (st.screenshot === "available") root.append(el("div", { class: "actions" }, [screenshotNode()]));
 
   if (st.articleId) void appendReviewLine(root, st.articleId);
 
