@@ -5,6 +5,7 @@
   "description": "浏览器扩展 + 安卓 App：记录每篇文章的阅读专注片段与进度，并用 MiniMax 划词翻译 + FSRS 间隔重复复习；两端靠导出/导入文件合并数据",
   "type": "module",
   "scripts": {
+    "ocr-check": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/ocr-check.ts",
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "tesseract.js": "^7.0.0",
     "ts-fsrs": "^5.4.2"
   },
   "devDependencies": {

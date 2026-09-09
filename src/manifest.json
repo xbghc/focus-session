@@ -7,7 +7,10 @@
     "storage",
     "unlimitedStorage",
     "sidePanel",
-    "tabs"
+    "tabs",
+    "offscreen",
+    "contextMenus",
+    "activeTab"
   ],
   "host_permissions": [
     "http://*/*",
@@ -15,6 +18,15 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "commands": {
+    "screenshot-translate": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "截图翻译：框选图片里的文字并翻译"
+    }
   },
   "action": {
     "default_popup": "popup.html",

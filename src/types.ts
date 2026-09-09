@@ -225,6 +225,8 @@ export interface PageState {
    * popup 不该画一个点不动的按钮。
    */
   translateHere?: "available" | "on";
+  /** 被排除的域名不给入口，避免绕过用户对该站点的选择。 */
+  screenshot?: "available";
   articleId?: string;
   title?: string;
   totalWords?: number;
@@ -247,6 +249,10 @@ export interface PageState {
 /* ---------- 消息协议 ---------- */
 
 export type ContentToBg =
+  | { type: "page:capture" }
+  | { type: "ocr:warm" }
+  /** 只传 PNG 的 base64，两个宿主各自决定如何交给识别器。 */
+  | { type: "ocr:recognize"; png: string }
   | { type: "article:meta"; meta: ArticleMeta }
   | { type: "session:start"; articleId: string; url: string; title: string; startTs: number }
   /** `position` 捎在心跳上而不另开一条消息：这样它天然享有 session 的补记链路。 */
@@ -308,9 +314,12 @@ export type PopupToBg =
   | { type: "llm:log-clear" };
 
 export type PopupToContent =
+  | { type: "page:screenshot" }
   | { type: "page:state" }
   /** 「本页启用划词翻译」：只对本次加载有效。应答和 page:state 一样是更新后的 PageState。 */
   | { type: "page:translate-here" };
+
+export type OcrReply = { ok: true; text: string } | { ok: false; error: string };
 
 /**
  * 后台推给 content script 的消息。

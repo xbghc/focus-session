@@ -19,6 +19,8 @@ export interface KvBackend {
 }
 
 export interface ShimOptions {
+  /** 宿主自己截图，网页层不依赖某个平台的图像 API。 */
+  capture?: () => Promise<string>;
   storage: KvBackend;
   handle: (msg: unknown, sender: Sender) => Promise<unknown>;
   /** 有人 chrome.runtime.connect 时，把服务端那一头交给它（划词翻译的流式 port）。 */
@@ -216,7 +218,7 @@ function makePorts(name: string): { client: chrome.runtime.Port; server: PortLik
 const URL_ALIAS: Record<string, string> = { "dashboard.html": "index.html" };
 
 /** 消息的发送方：App 里只有一个"标签页"。session:start 等消息要求有 tab id。 */
-const SENDER: Sender = { tab: { id: 1 } };
+const SENDER: Sender = { tab: { id: 1, windowId: 1 } };
 
 export function installChromeShim(opts: ShimOptions): ChromeShim {
   const changeListeners = new Set<ChangeListener>();
@@ -303,6 +305,10 @@ export function installChromeShim(opts: ShimOptions): ChromeShim {
       onInstalled: noop(),
     },
     tabs: {
+      captureVisibleTab: async (): Promise<string> => {
+        if (!opts.capture) throw new Error("宿主不支持截图");
+        return await opts.capture();
+      },
       create: async (info: { url?: string }): Promise<{ id: number }> => {
         if (info.url) opts.navigate(info.url);
         return { id: 1 };

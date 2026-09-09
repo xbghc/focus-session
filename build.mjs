@@ -14,6 +14,9 @@ import { join } from "node:path";
  * 是任意的，子集必然漏字，漏掉的那个字跳成系统宋体反而比整体用系统宋体更难看；
  * 全量中文衬线又是 10MB 起。系统宋体（SimSun / Songti SC / Noto Serif CJK）
  * 到处都有，交给它。
+ *
+ * 扩展额外带约 10MB 的本地 OCR 资源（Worker、两个 LSTM wasm 变体和 fast 英文数据）。
+ * 包会变大，但截图不用离开本机，首次识别也不必依赖 CDN；App 用宿主识别器，不带这份。
  */
 const FONT_DIR = "node_modules/@fontsource/source-serif-4/files";
 const FONTS = [
@@ -36,6 +39,16 @@ function copyFonts() {
   for (const f of FONTS) copyFileSync(join(FONT_DIR, f), join(OUT, "fonts", f));
 }
 
+function copyTesseract() {
+  mkdirSync(join(OUT, "tesseract"), { recursive: true });
+  for (const [from, to] of [
+    ["node_modules/tesseract.js/dist/worker.min.js", "worker.min.js"],
+    ["node_modules/tesseract.js-core/tesseract-core-relaxedsimd-lstm.wasm.js", "tesseract-core-relaxedsimd-lstm.wasm.js"],
+    ["node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm.js", "tesseract-core-simd-lstm.wasm.js"],
+    ["vendor/tesseract/eng.traineddata.gz", "eng.traineddata.gz"],
+  ]) copyFileSync(from, join(OUT, "tesseract", to));
+}
+
 /** 扩展的静态资源：manifest 从 package.json 取版本号，html/css 原样拷贝。 */
 function copyStaticExtension() {
   mkdirSync(OUT, { recursive: true });
@@ -43,7 +56,9 @@ function copyStaticExtension() {
   manifest.version = pkg.version;
   writeFileSync(join(OUT, "manifest.json"), JSON.stringify(manifest, null, 2));
   copyFonts();
+  copyTesseract();
   for (const [from, to] of [
+    ["src/ocr/ocr.html", "ocr.html"],
     ["src/popup/popup.html", "popup.html"],
     ["src/popup/popup.css", "popup.css"],
     ["src/options/options.html", "options.html"],
@@ -105,6 +120,7 @@ const options = app
       entryPoints: {
         content: "src/content/index.ts",
         background: "src/background/index.ts",
+        ocr: "src/ocr/index.ts",
         popup: "src/popup/index.ts",
         options: "src/options/index.ts",
         dashboard: "src/dashboard/index.ts",
