@@ -43,7 +43,11 @@ async function screenshotFrame(dataUrl: string, crop?: CropFn) {
 
 let cancelActive: (() => void) | null = null;
 /** 换页或被排除时也得撤掉冻结帧，免得旧文章的选区落到新文章名下。 */
-export function cancelRegion(): void { cancelActive?.(); }
+export function cancelRegion(): boolean {
+  if (!cancelActive) return false;
+  cancelActive();
+  return true;
+}
 
 export function selectRegion(dataUrl: string, opts?: { crop?: CropFn }): Promise<{ png: string; rect: DOMRect } | null> {
   cancelRegion();
@@ -146,7 +150,12 @@ export function selectRegion(dataUrl: string, opts?: { crop?: CropFn }): Promise
       });
       on("pointercancel", (ev) => { swallow(ev); cancel(); });
       on("contextmenu", (ev) => { swallow(ev); cancel(); });
-      on("keydown", (ev) => { swallow(ev); if ((ev as KeyboardEvent).key === "Escape") cancel(); });
+      on("keydown", (ev) => {
+        ev.stopImmediatePropagation();
+        const key = (ev as KeyboardEvent).key;
+        if ([" ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Escape"].includes(key)) ev.preventDefault();
+        if (key === "Escape") cancel();
+      });
       // 连兼容鼠标事件和 keyup 一起隔离，免得框选结束顺手触发旧的划词选区。
       for (const type of ["wheel", "touchmove", "mousedown", "mouseup", "click", "keyup", "selectionchange"]) on(type, swallow);
       on("resize", cancel);

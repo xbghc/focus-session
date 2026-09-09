@@ -155,7 +155,7 @@ body.reader {
   flex: 0 0 auto; min-width: 40px; height: 40px; padding: 0 10px;
   font: 22px/1 var(--serif); color: var(--fg-soft); background: none; border: 0; border-radius: 3px;
 }
-.iconbtn.words { font: 600 14px/1 var(--sans); color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
+.iconbtn.words, .iconbtn.shot { font: 600 14px/1 var(--sans); color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
 .iconbtn .n { font-size: 11px; color: var(--muted); font-weight: 400; }
 .iconbtn:active { background: color-mix(in srgb, var(--line) 60%, transparent); }
 

@@ -74,10 +74,33 @@ for (const [w, h] of [[7, 20], [20, 7], [0, 0]]) test(`选区 ${w}×${h} 当误�
 test("wheel、touchmove 和滚动键被拦住", async () => {
   const pending = begin(); await tick();
   for (const type of ["wheel", "touchmove", "keydown"]) {
-    const e = new dom.window.Event(type, { bubbles: true, cancelable: true });
+    const e = type === "keydown" ? new dom.window.KeyboardEvent(type, { key: "ArrowDown", bubbles: true, cancelable: true })
+      : new dom.window.Event(type, { bubbles: true, cancelable: true });
     document.dispatchEvent(e); assert.equal(e.defaultPrevented, true);
   }
   cancelRegion(); assert.equal(await pending, null);
+});
+
+test("F5 保留浏览器默认行为，但不传到页面快捷键", async () => {
+  const pending = begin(); await tick();
+  let reached = false;
+  const listener = () => { reached = true; };
+  document.addEventListener("keydown", listener);
+  try {
+    const e = new dom.window.KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true });
+    document.dispatchEvent(e);
+    assert.equal(e.defaultPrevented, false);
+    assert.equal(reached, false);
+  } finally { document.removeEventListener("keydown", listener); cancelRegion(); }
+  assert.equal(await pending, null);
+});
+
+test("取消返回是否有框选在进行，供宿主返回键判断是否留在本页", async () => {
+  assert.equal(cancelRegion(), false);
+  const pending = begin(); await tick();
+  assert.equal(cancelRegion(), true);
+  assert.equal(await pending, null);
+  assert.equal(cancelRegion(), false);
 });
 
 test("第二次调用取消第一次且只留下一个覆盖层", async () => {

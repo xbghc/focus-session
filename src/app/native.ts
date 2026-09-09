@@ -12,7 +12,12 @@
  * 字节用 base64 传：一块的边界可能落在多字节字符中间，按文本传会出乱码。
  */
 
+import type { OcrLine } from "../lib/ocrText.ts";
+
 export interface NativeBridge {
+  captureStart(id: string): void;
+  ocrWarm(): void;
+  ocrStart(id: string, png: string): void;
   /** 发起请求；之后宿主回调 __fsHttp 的 head / chunk / end / error。 */
   httpStart(id: string, url: string, method: string, headersJson: string, body: string | null): void;
   httpAbort(id: string): void;
@@ -44,6 +49,14 @@ export interface NativeBridge {
 
 /** 宿主 → 页面的回调。宿主用 evaluateJavascript 调它们。 */
 export interface HostCallbacks {
+  capture: {
+    done(id: string, dataUrl: string): void;
+    error(id: string, message: string): void;
+  };
+  ocr: {
+    done(id: string, linesJson: string): void;
+    error(id: string, message: string): void;
+  };
   http: {
     head(id: string, status: number, statusText: string, headersJson: string): void;
     chunk(id: string, base64: string): void;
@@ -72,6 +85,8 @@ declare global {
     Native?: Partial<NativeBridge>;
     __fsHttp?: HostCallbacks["http"];
     __fsUpdate?: HostCallbacks["update"];
+    __fsCapture?: HostCallbacks["capture"];
+    __fsOcr?: HostCallbacks["ocr"];
     __fsHost?: Pick<HostCallbacks, "visibility" | "beforeBack" | "insets">;
   }
 }
@@ -95,6 +110,56 @@ interface Inflight {
 }
 
 const inflight = new Map<string, Inflight>();
+
+/* 截图和识别都是一问一答，按 id 收尾，迟到或重复的回调不碰下一次操作。 */
+interface PendingImage {
+  resolve(value: string): void;
+  reject(error: Error): void;
+}
+const captures = new Map<string, PendingImage>();
+const recognitions = new Map<string, PendingImage>();
+const imageCallbacks = (pending: Map<string, PendingImage>): HostCallbacks["capture"] => ({
+  done(id, value) {
+    const request = pending.get(id);
+    pending.delete(id);
+    request?.resolve(value);
+  },
+  error(id, message) {
+    const request = pending.get(id);
+    pending.delete(id);
+    request?.reject(new Error(message));
+  },
+});
+
+function requestImage(pending: Map<string, PendingImage>, start: (id: string) => void): Promise<string> {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    try { start(id); }
+    catch (err) { pending.delete(id); reject(err); }
+  });
+}
+
+export function captureVisible(): Promise<string> {
+  const bridge = native();
+  if (!bridge?.captureStart) return Promise.reject(new Error("这个版本的宿主不支持截图翻译"));
+  const start = bridge.captureStart.bind(bridge);
+  return requestImage(captures, start);
+}
+
+export async function recognizeNative(png: string): Promise<OcrLine[]> {
+  const bridge = native();
+  if (!bridge?.ocrStart) throw new Error("这个版本的宿主不支持截图翻译");
+  const start = bridge.ocrStart.bind(bridge);
+  const lines: unknown = JSON.parse(await requestImage(recognitions, (id) => start(id, png)));
+  if (!Array.isArray(lines) || !lines.every((line: unknown) => {
+    if (typeof line !== "object" || line === null || !("text" in line) || typeof line.text !== "string") return false;
+    return !("confidence" in line) || (typeof line.confidence === "number" && Number.isFinite(line.confidence));
+  })) throw new Error("宿主返回的识别结果格式无效");
+  // ML Kit 给 0–1，共用清洗器用 Tesseract 的 0–100 口径，否则正常文字也会被低于 30 的闸丢掉。
+  return (lines as OcrLine[]).map((line) => line.confidence === undefined ? line
+    : { ...line, confidence: line.confidence * 100 });
+}
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -312,6 +377,8 @@ export function installNative(): void {
   if (typeof window === "undefined") return;
   window.__fsHttp = callbacks;
   window.__fsUpdate = updateCallbacks;
+  window.__fsCapture = imageCallbacks(captures);
+  window.__fsOcr = imageCallbacks(recognitions);
   window.__fsHost = {
     visibility: (v) => hostHooks.visibility(v),
     beforeBack: () => hostHooks.beforeBack(),

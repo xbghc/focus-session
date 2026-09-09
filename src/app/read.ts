@@ -5,6 +5,7 @@ import { navigation, readerUrl, shim } from "./boot.ts";
 import { hostHooks, inApp, native } from "./native.ts";
 import { sanitizeArticle } from "./sanitize.ts";
 import { extractFromContainer } from "../content/paragraphs.ts";
+import { cancelRegion } from "../content/screenshot.ts";
 import { startTracking, type TrackController } from "../content/track.ts";
 import { formatEstimate } from "../lib/readingTime.ts";
 import { fillMeta } from "../lib/speak.ts";
@@ -215,6 +216,7 @@ async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const url = params.get("u")?.trim() ?? "";
   $("back").addEventListener("click", () => void leave());
+  $("shot").addEventListener("click", () => ctl?.screenshot());
 
   /* 本文生词那张单子的开合。返回键要先问它，所以在 beforeBack 之前就备好。 */
   const sheet = $("sheet");
@@ -226,6 +228,7 @@ async function main(): Promise<void> {
   backdrop.addEventListener("click", () => setSheet(false));
 
   hostHooks.beforeBack = () => {
+    if (cancelRegion()) return true;
     // 单子开着时先收单子：手机上"返回"关掉的是最上面那一层，不是整个页面
     if (!sheet.hidden) {
       setSheet(false);
