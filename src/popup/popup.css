@@ -104,9 +104,9 @@ h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
 .timeline .gap { flex: 0 1 auto; min-width: 2px; }
 
 .empty { color: var(--muted); text-align: center; padding: 26px 10px; }
-/* 非文章页上的临时划词翻译入口，跟在「未识别为文章页」那行下面 */
-.empty .btn {
-  display: inline-block; margin-top: 12px; padding: 5px 12px;
+/* 描边小按钮：非文章页上的「本页启用划词翻译」，以及两种页面都有的「截图翻译」 */
+.btn {
+  display: inline-block; padding: 5px 12px;
   border: 1px solid var(--accent); border-radius: 4px; background: none;
   color: var(--accent); font: inherit; font-size: 12px; cursor: pointer;
 }
@@ -117,10 +117,15 @@ h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
  * 按下去的反馈另交给 :active（见 app.css）——两件事必须成对，只去掉不补上按钮就成了死的。
  */
 @media (hover: hover) {
-  .empty .btn:hover { background: var(--line-soft); }
+  .btn:hover { background: var(--line-soft); }
 }
-.empty .btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+/* 非文章页：按钮跟在「未识别为文章页」那行下面；两个并排时留条缝，不然贴在一起像一个 */
+.empty .btn { margin-top: 12px; }
+.empty .btn + .btn { margin-left: 8px; }
 .empty .translate-on { margin-top: 12px; }
+/* 文章页：截图翻译自己一行，排在 kv 表和依据那句之后 */
+.actions { margin: 4px 0 2px; }
 
 .item { border-bottom: 1px solid var(--line); padding: 8px 0; }
 .item:last-child { border-bottom: 0; }
