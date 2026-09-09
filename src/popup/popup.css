@@ -110,7 +110,15 @@ h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
   border: 1px solid var(--accent); border-radius: 4px; background: none;
   color: var(--accent); font: inherit; font-size: 12px; cursor: pointer;
 }
-.empty .btn:hover { background: var(--line-soft); }
+/*
+ * 触屏上没有"悬停"，但 :hover 会在点过之后**粘住**：手指抬起，按钮仍描着悬停的样子，
+ * 直到点了别处才复原——看着像一直被按着。这一份、dashboard.css、popover.ts 里的 :hover
+ * 因此一律关进 (hover: hover)：鼠标那边一个字没变，触屏那边干脆不生效。
+ * 按下去的反馈另交给 :active（见 app.css）——两件事必须成对，只去掉不补上按钮就成了死的。
+ */
+@media (hover: hover) {
+  .empty .btn:hover { background: var(--line-soft); }
+}
 .empty .btn:disabled { opacity: 0.5; cursor: default; }
 .empty .translate-on { margin-top: 12px; }
 
@@ -136,7 +144,7 @@ table.sessions td:first-child { text-align: left; color: var(--muted); }
   padding: 7px 12px; border-top: 1px solid var(--line); font-size: 11px;
 }
 .foot a { color: var(--accent); text-decoration: none; }
-.foot a:hover { text-decoration: underline; }
+@media (hover: hover) { .foot a:hover { text-decoration: underline; } }
 
 /* popup 里「回顾材料备好了没」那一行。和 kv 表拉开一点距离，是提示不是数据。 */
 .review-line {
@@ -146,4 +154,4 @@ table.sessions td:first-child { text-align: left; color: var(--muted); }
 }
 .review-line a { color: var(--accent); text-decoration: none; margin-left: auto; }
 .review-line .hint-right { margin-left: auto; }
-.review-line a:hover { text-decoration: underline; }
+@media (hover: hover) { .review-line a:hover { text-decoration: underline; } }

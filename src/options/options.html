@@ -38,7 +38,9 @@
        * （见 build.mjs 的 copyStaticApp），同名规则压不住；何况扩展的窗口拖窄了也该管用。
        */
       @media (max-width: 560px) {
-        body { padding: 12px 14px calc(56px + env(safe-area-inset-bottom)); }
+        /* 左右下三边让开安全区。顶上不在这儿让——App 里页首那条 .topnav 已经让过了，
+           两处都算就空出两条状态栏。--sa-* 由 app.css 定义，扩展里没有它，退回 0。 */
+        body { padding: 12px max(14px, var(--sa-right, 0px)) calc(56px + var(--sa-bottom, 0px)) max(14px, var(--sa-left, 0px)); }
         fieldset { padding: 12px 14px; margin: 14px 0; }
         legend { font-size: 15px; }
         .small { font-size: 12.5px; line-height: 1.6; }

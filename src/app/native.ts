@@ -26,6 +26,8 @@ export interface NativeBridge {
   navigateBack(): void;
   /** 宿主的版本名。 */
   version(): string;
+  /** 系统栏 / 刘海压在 WebView 上的那几条边，"上,右,下,左"，单位 CSS px。 */
+  insets(): string;
 }
 
 /** 宿主 → 页面的回调。宿主用 evaluateJavascript 调它们。 */
@@ -43,13 +45,15 @@ export interface HostCallbacks {
    * false 表示宿主直接回退。
    */
   beforeBack(): boolean;
+  /** 安全区变了（转屏、进出分屏）。参数同 NativeBridge.insets()。 */
+  insets(csv: string): void;
 }
 
 declare global {
   interface Window {
     Native?: Partial<NativeBridge>;
     __fsHttp?: HostCallbacks["http"];
-    __fsHost?: Pick<HostCallbacks, "visibility" | "beforeBack">;
+    __fsHost?: Pick<HostCallbacks, "visibility" | "beforeBack" | "insets">;
   }
 }
 
@@ -210,6 +214,24 @@ function external(input: RequestInfo | URL): boolean {
 }
 
 /**
+ * 安全区。宿主量出系统栏 / 刘海压在 WebView 上的那几条边（"上,右,下,左"，CSS px），
+ * 这里写成 --inset-* 四个变量，app.css 拿它和 env(safe-area-inset-*) 取大的那个用。
+ *
+ * 为什么不直接信 env()：Android 15+ 强制把窗口铺满整块屏，网页画到系统栏底下，
+ * 而 WebView 的 env(safe-area-inset-*) 认不认系统栏（还是只认刘海）没有定论。
+ * 宿主那边是量出来的，确定。
+ */
+function applyInsets(csv: string): void {
+  const parts = csv.split(",");
+  const px = (i: number): string => `${Number(parts[i]) || 0}px`;
+  const s = document.documentElement.style;
+  s.setProperty("--inset-top", px(0));
+  s.setProperty("--inset-right", px(1));
+  s.setProperty("--inset-bottom", px(2));
+  s.setProperty("--inset-left", px(3));
+}
+
+/**
  * 装上宿主回调、接管跨域 fetch、补上朗读。
  * 不在宿主里（用普通浏览器打开 www/ 调试）时什么都不改，fetch 该被 CORS 拦还是会被拦。
  */
@@ -219,9 +241,14 @@ export function installNative(): void {
   window.__fsHost = {
     visibility: (v) => hostHooks.visibility(v),
     beforeBack: () => hostHooks.beforeBack(),
+    insets: applyInsets,
   };
   const bridge = native();
   if (!bridge) return;
+
+  // 开局先同步问一次，不等宿主推：首屏排版就要知道让开多少。
+  // 老版本的宿主没有这个方法，问不到就当 0——正是 Android 15 以前的情形。
+  if (bridge.insets) applyInsets(bridge.insets());
 
   if (bridge.httpStart) {
     const original = window.fetch.bind(window);

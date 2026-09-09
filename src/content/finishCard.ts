@@ -15,7 +15,8 @@ const CSS = `
 .card {
   position: fixed;
   right: 20px;
-  bottom: 20px;
+  /* Android 15+ 把窗口铺满整块屏，离底 20px 正落在手势条底下。扩展里两个来源都是 0 */
+  bottom: calc(20px + max(env(safe-area-inset-bottom), var(--inset-bottom, 0px)));
   z-index: 2147483646; /* 让翻译浮层压在上面：那个是当下的操作，这个只是常驻入口 */
   box-sizing: border-box;
   display: flex;

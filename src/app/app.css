@@ -1,10 +1,57 @@
 /*
- * App 专用的布局覆盖。配色 token 与字体都来自 popup.css，这里只管手机屏幕上怎么摆：
- * 导航贴底、正文放大、浮层不顶穿视口。
+ * App 专用的覆盖。配色 token 与字体都来自 popup.css，这里管的是手机屏幕上怎么摆
+ * （导航贴底、正文放大、浮层不顶穿视口），以及只有手机上才成立的那几件事：
+ * 让开系统栏、按下去要有反应、界面本身不该被长按选中。
  */
 html { -webkit-text-size-adjust: 100%; }
-body.app { padding: 0 14px calc(64px + env(safe-area-inset-bottom)); max-width: none; }
-body.app header { padding-top: calc(12px + env(safe-area-inset-top)); }
+
+/*
+ * 安全区。targetSdk 36 起，Android 15+ 一律把窗口铺满整块屏：网页画到状态栏和手势条
+ * **底下**，themes.xml 里那两个 barColor 从此是空话。而 WebView 的 env(safe-area-inset-*)
+ * 认不认系统栏（还是只认刘海）没有定论，所以宿主自己量一遍系统栏真正压在 WebView 上的
+ * 那几条边，写进 --inset-*（见 MainActivity 的 setOnApplyWindowInsetsListener
+ * 与 native.ts 的 applyInsets）。两个来源取大的那个：env() 本来就管用时两者相等，
+ * Android 15 以下、以及扩展里，两者都是 0。
+ */
+:root {
+  --sa-top: max(env(safe-area-inset-top), var(--inset-top, 0px));
+  --sa-right: max(env(safe-area-inset-right), var(--inset-right, 0px));
+  --sa-bottom: max(env(safe-area-inset-bottom), var(--inset-bottom, 0px));
+  --sa-left: max(env(safe-area-inset-left), var(--inset-left, 0px));
+}
+
+/*
+ * 触屏的反馈。系统默认的 tap highlight 是一块半透明的蓝，和这套纸墨配色对不上；
+ * 但光去掉它，按钮就成了死的——手机上没有悬停，按下这一下是唯一的"我收到了"。
+ * 去掉和补上必须成对，所以两件事写在一起。
+ */
+/* app.css 只在 App 里加载，所以这条 body 不会波及扩展的页面（设置页的 body 没有 class） */
+body { -webkit-tap-highlight-color: transparent; }
+body.app .tab:active, body.app .seg:active, body.app .grades button:active,
+button.mini:active {
+  background: color-mix(in srgb, var(--line) 55%, transparent);
+}
+.addrow button:active { background: color-mix(in srgb, var(--accent) 82%, #000); }
+.card .title a:active { text-decoration: underline; }
+/* 设置页那一排按钮没有 .mini，单列出来；primary / danger 各按自己的底色压暗 */
+.row button:active { background: color-mix(in srgb, var(--line) 55%, transparent); }
+.row button.primary:active { background: color-mix(in srgb, var(--accent) 82%, #000); }
+.row button.danger:active { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+/* 链接和可点的音标同理：去掉了 tap highlight，就得自己给按下的样子 */
+.article .body a:active, .topnav a:active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.ph:active { color: var(--accent); }
+
+/*
+ * 界面本身不该被选中。手机上"选中"是长按出来的，长按哪儿都能触发：在阅读器里长按顶栏
+ * 会连带弹出划词浮层，长按底部导航会跳出系统的复制条。正文和生词条目不在其列——
+ * 那儿的长按选中正是这个 App 的功能。
+ */
+body.app header, .rbar, .sheet-head, .segbar, .toolbar,
+button, .tab, .seg, .iconbtn { user-select: none; }
+/* 但输入框里要能选：这条属性会一路继承进 <input>，框里的字就再也拖不动了 */
+input, textarea { user-select: text; }
+body.app { padding: 0 max(14px, var(--sa-right)) calc(64px + var(--sa-bottom)) max(14px, var(--sa-left)); max-width: none; }
+body.app header { padding-top: calc(12px + var(--sa-top)); }
 body.app header h1 { font-size: 16px; }
 
 /* 手机：标签放到底部当导航栏，拇指够得着 */
@@ -13,14 +60,40 @@ body.app header h1 { font-size: 16px; }
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
     display: flex; gap: 0;
     background: var(--card); border-top: 1px solid var(--line);
-    padding: 4px max(8px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    padding: 4px max(8px, var(--sa-right)) max(4px, var(--sa-bottom)) max(8px, var(--sa-left));
   }
-  body.app header nav .tab { flex: 1; text-align: center; padding: 11px 4px; border-color: transparent; }
+  body.app header nav .tab { flex: 1; text-align: center; padding: 13px 4px; font-size: 14px; border-color: transparent; }
   body.app header nav .tab.active { border-color: transparent; }
   body.app header { gap: 10px; }
   .toolbar input[type="search"] { min-width: 0; }
   .reviewer { max-width: none; }
   .statbar { gap: 16px; }
+
+  /*
+   * 拇指的尺寸。这几个控件的 padding 都是照鼠标给的：button.mini 连字带边 22px 高、
+   * .seg 30px，而 Material 给触屏的最小可点区域是 48dp。字号一并抬起来——
+   * 11.5px 的无衬线在手机上是注脚的注脚。
+   */
+  button.mini { font-size: 13px; padding: 9px 14px; }
+  .segbar .seg { padding: 12px 2px; margin-right: 24px; font-size: 15px; }
+  .grades { gap: 6px; }
+  .grades button { padding: 13px 2px; }
+  .grades button small { font-size: 11px; }
+  /* 输入框 16px 起，WebView 才不会在聚焦时把整页放大 */
+  .toolbar input[type="search"], .toolbar select { font-size: 16px; padding: 9px 10px; }
+  .addrow input { font-size: 16px; }
+  .addrow button { font-size: 16px; padding: 10px 18px; }
+
+  /*
+   * 标题原本截成一行。手机上一行装不下几个字，截完常常只剩半个词，而在列表里认出
+   * 一篇文章全靠它——放到两行。行内对齐随之从 baseline 改成顶对齐：两行标题下
+   * baseline 会把右边那颗进度贴到第二行，右上角空一块。
+   */
+  .card .row1 { align-items: flex-start; }
+  .card .title {
+    white-space: normal;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
 }
 
 /* 粘贴地址那一行 */
@@ -36,7 +109,7 @@ body.app header h1 { font-size: 16px; }
 #add-hint { margin: -6px 0 10px; }
 
 /* 设置页顶部的返回 */
-.topnav { font-family: var(--sans); font-size: 14px; padding: calc(10px + env(safe-area-inset-top)) 0 2px; }
+.topnav { font-family: var(--sans); font-size: 14px; padding: calc(10px + var(--sa-top)) 0 2px; }
 .topnav a { color: var(--accent); text-decoration: none; }
 
 /* ---------- 阅读器 ---------- */
@@ -47,7 +120,7 @@ body.reader {
 .rbar {
   position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; gap: 6px;
-  padding: calc(6px + env(safe-area-inset-top)) 6px 6px;
+  padding: calc(6px + var(--sa-top)) max(6px, var(--sa-right)) 6px max(6px, var(--sa-left));
   background: var(--bg); border-bottom: 1px solid var(--line);
 }
 .rinfo { flex: 1; min-width: 0; }
@@ -64,7 +137,10 @@ body.reader {
 .iconbtn .n { font-size: 11px; color: var(--muted); font-weight: 400; }
 .iconbtn:active { background: color-mix(in srgb, var(--line) 60%, transparent); }
 
-.article { padding: 14px 18px calc(90px + env(safe-area-inset-bottom)); max-width: 42em; margin: 0 auto; overflow-wrap: break-word; }
+.article {
+  padding: 14px max(18px, var(--sa-right)) calc(90px + var(--sa-bottom)) max(18px, var(--sa-left));
+  max-width: 42em; margin: 0 auto; overflow-wrap: break-word;
+}
 .article .atitle { font-size: 24px; line-height: 1.3; letter-spacing: -0.01em; margin: 6px 0 8px; }
 .article .aline {
   font: 12px/1.5 var(--sans); color: var(--muted); display: flex; gap: 12px;
@@ -97,10 +173,22 @@ body.reader {
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
   max-height: 72vh; overflow-y: auto;
+  /* 单子滚到头之后不把滚动接力给底下的正文：那会在收起单子时发现已经不在原来那段了 */
+  overscroll-behavior: contain;
   background: var(--bg); border-top: 1px solid var(--line);
   box-shadow: 0 -8px 28px rgba(31, 27, 22, 0.14);
-  padding: 8px 14px calc(20px + env(safe-area-inset-bottom));
+  padding: 8px max(14px, var(--sa-right)) calc(20px + var(--sa-bottom)) max(14px, var(--sa-left));
   font-size: 14px; line-height: 1.6;
+}
+/*
+ * 单子背后的一层。手机上"点外面收起来"是浮层的通用出口——底部单子没有这一下，
+ * 就只剩右上角那颗"收起"可点。touch-action: none 顺带挡住穿透的滑动：
+ * 手指落在单子外面一划，底下的正文会跟着滚，收起来时已经不在原地了。
+ */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 19;
+  background: rgba(31, 27, 22, 0.32);
+  touch-action: none;
 }
 .sheet-head { display: flex; align-items: center; gap: 8px; padding: 4px 0 10px; font-weight: 600; }
 .sheet-head .grow { flex: 1; }

@@ -65,22 +65,6 @@ const CSS = `
   font: 14px/1.7 "Source Serif 4", Georgia, "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
   overflow-wrap: break-word;
 }
-@media (prefers-color-scheme: dark) {
-  .box { background: #262220; color: #e8e0d5; border-color: #332f2a; border-top-color: #e18d5a; }
-  .meta, .vm, .vn, .qq { color: #9a8f7f; }
-  .ph { border-bottom-color: #6b6053; }
-  .ph:hover { color: #e18d5a; border-bottom-color: #e18d5a; }
-  .note, .usage, .vd, .aa { color: #bdb3a4; }
-  .usage::before { color: #9a8f7f; }
-  .ctx, .vocab, .ask { border-top-color: #2b2724; }
-  button { background: #1c1917; color: #bdb3a4; border-color: #3d3833; }
-  button:hover { background: #332f2a; color: #e18d5a; border-color: #e18d5a; }
-  .qin { background: #1c1917; color: #e8e0d5; border-color: #3d3833; }
-  .qin:focus { border-color: #e18d5a; }
-  /* 图标按钮在深色下同样不要底和框，只换字色 */
-  .iconbtn { background: transparent; border-color: transparent; color: #9a8f7f; }
-  .iconbtn:hover { background: transparent; border-color: transparent; color: #e18d5a; }
-}
 .head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
 .term { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
 /* 注脚一律无衬线，和 popup / dashboard 同一套分工 */
@@ -114,7 +98,9 @@ const CSS = `
  * 而加个喇叭图标又会把这一行注脚顶成一行控件。
  */
 .ph { cursor: pointer; border-bottom: 1px dotted #b9ae9d; }
-.ph:hover { color: #a4551f; border-bottom-color: #a4551f; }
+/* :hover 一律关进 (hover: hover)，理由见 popup.css——这一份浮层在手机上也用 */
+@media (hover: hover) { .ph:hover { color: #a4551f; border-bottom-color: #a4551f; } }
+.ph:active { color: #a4551f; border-bottom-color: #a4551f; }
 .vd { font-size: 13px; line-height: 1.75; color: #4a4238; }
 .vn {
   font-size: 12px; line-height: 1.7; color: #6f6558;
@@ -126,7 +112,8 @@ button {
   padding: 4px 11px; border-radius: 3px;
   border: 1px solid #ddd5c8; background: #faf7f2; color: #4a4238;
 }
-button:hover { border-color: #a4551f; color: #a4551f; }
+@media (hover: hover) { button:hover { border-color: #a4551f; color: #a4551f; } }
+button:active { background: #eee7dc; border-color: #a4551f; color: #a4551f; }
 /*
  * 「还在写」的尾灯。译文约 800ms 就到，讲解还要两三秒——中间没有任何动静的话，
  * 浮层看起来就是已经完事了，人转头就走，正要出来的讲解白生成。
@@ -159,7 +146,8 @@ button:hover { border-color: #a4551f; color: #a4551f; }
   color: #9a8f7f; font-size: 15px; line-height: 1.3;
   font-family: "Source Serif 4", Georgia, "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
 }
-.iconbtn:hover { color: #a4551f; border-color: transparent; background: transparent; }
+@media (hover: hover) { .iconbtn:hover { color: #a4551f; border-color: transparent; background: transparent; } }
+.iconbtn:active { color: #a4551f; }
 .qin {
   flex: 1; min-width: 0; box-sizing: border-box;
   font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -177,6 +165,44 @@ button:hover { border-color: #a4551f; color: #a4551f; }
   border-radius: 50%; animation: r 0.7s linear infinite; vertical-align: -1px;
 }
 @keyframes r { to { transform: rotate(360deg); } }
+
+/*
+ * 手指。上面这些尺寸都是照鼠标给的：按钮 26px 高、追问框 12px 的字，
+ * 手机上够不着也看不清。浮层的宽度早按 100vw 收过了，这里只放大能点的那几个。
+ */
+@media (pointer: coarse) {
+  /* :host { all: initial } 把它一并复位了，页面 body 上那条到不了这里 */
+  .box { -webkit-tap-highlight-color: transparent; }
+  button { font-size: 13px; padding: 9px 14px; }
+  .iconbtn { padding: 6px 10px; font-size: 17px; }
+  .ctx, .askbar { gap: 8px; }
+  /* 16px 起，WebView 才不会在聚焦时把整页放大 */
+  .qin { font-size: 16px; padding: 8px 10px; }
+}
+
+/*
+ * 深色的一套覆盖必须排在最后。这些选择器和上面浅色那套**同名同权重**（button、.note、
+ * .qin…），@media 不加权重，靠的纯粹是后来居上：排在前面的话，浅色那份会在深色下把它压回去，
+ * 卡片是深的、字却还是 #4a4238，正文直接看不清。
+ */
+@media (prefers-color-scheme: dark) {
+  .box { background: #262220; color: #e8e0d5; border-color: #332f2a; border-top-color: #e18d5a; }
+  .meta, .vm, .vn, .qq { color: #9a8f7f; }
+  .ph { border-bottom-color: #6b6053; }
+  @media (hover: hover) { .ph:hover { color: #e18d5a; border-bottom-color: #e18d5a; } }
+  .note, .usage, .vd, .aa { color: #bdb3a4; }
+  .usage::before { color: #9a8f7f; }
+  .ctx, .vocab, .ask { border-top-color: #2b2724; }
+  button { background: #1c1917; color: #bdb3a4; border-color: #3d3833; }
+  @media (hover: hover) { button:hover { background: #332f2a; color: #e18d5a; border-color: #e18d5a; } }
+  .qin { background: #1c1917; color: #e8e0d5; border-color: #3d3833; }
+  .qin:focus { border-color: #e18d5a; }
+  /* 图标按钮在深色下同样不要底和框，只换字色 */
+  .iconbtn { background: transparent; border-color: transparent; color: #9a8f7f; }
+  @media (hover: hover) { .iconbtn:hover { background: transparent; border-color: transparent; color: #e18d5a; } }
+  button:active { background: #3d3833; border-color: #e18d5a; color: #e18d5a; }
+  .ph:active, .iconbtn:active { color: #e18d5a; }
+}
 `;
 
 /** 一问的长度上限。追问是「就这一段再问一句」，不是往这里贴一段材料。 */

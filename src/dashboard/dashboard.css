@@ -30,7 +30,10 @@ header .tab {
   font: inherit;
   cursor: pointer;
 }
-header .tab:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+/* :hover 一律关进 (hover: hover)，理由见 popup.css */
+@media (hover: hover) {
+  header .tab:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+}
 header .tab.active { color: var(--accent); border-color: var(--line); font-weight: 600; }
 
 .badge {
@@ -65,7 +68,7 @@ header .tab.active { color: var(--accent); border-color: var(--line); font-weigh
 .card .row1 { display: flex; align-items: baseline; gap: 8px; }
 .card .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .title a { color: inherit; text-decoration: none; }
-.card .title a:hover { text-decoration: underline; }
+@media (hover: hover) { .card .title a:hover { text-decoration: underline; } }
 .card .sub {
   color: var(--muted); font-size: 11.5px; margin-top: 4px;
   display: flex; gap: 12px; flex-wrap: wrap;
@@ -81,7 +84,7 @@ header .tab.active { color: var(--accent); border-color: var(--line); font-weigh
 .card .vm { color: var(--muted); font-size: 11.5px; margin-left: 7px; font-family: var(--sans); }
 /* 可点朗读的音标。虚线下划线是唯一的提示——注脚里塞个喇叭图标太吵。 */
 .ph { cursor: pointer; border-bottom: 1px dotted currentColor; }
-.ph:hover { color: var(--accent); }
+@media (hover: hover) { .ph:hover { color: var(--accent); } }
 .card .vd { font-size: 13px; line-height: 1.75; }
 .card .vn { color: var(--muted); font-size: 12px; line-height: 1.7; font-family: var(--sans); }
 
@@ -116,8 +119,10 @@ button.mini {
   padding: 3px 9px; border-radius: 3px;
   border: 1px solid var(--line); background: var(--bg); color: var(--muted);
 }
-button.mini:hover { border-color: var(--accent); color: var(--accent); }
-button.mini.danger:hover { border-color: var(--warn); color: var(--warn); }
+@media (hover: hover) {
+  button.mini:hover { border-color: var(--accent); color: var(--accent); }
+  button.mini.danger:hover { border-color: var(--warn); color: var(--warn); }
+}
 
 /* ---------- 复习 ---------- */
 /* 生词 / 文章两个队列的切换。做成下划线而不是按钮组，和顶部标签同一种语言。 */
@@ -127,7 +132,7 @@ button.mini.danger:hover { border-color: var(--warn); color: var(--warn); }
   padding: 6px 2px; margin-right: 22px; margin-bottom: -1px;
   color: var(--muted); border-bottom: 2px solid transparent;
 }
-.seg:hover { color: var(--fg-soft); }
+@media (hover: hover) { .seg:hover { color: var(--fg-soft); } }
 .seg.active { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
 .seg .n {
   font-family: var(--sans); font-size: 11px; color: var(--muted);
@@ -166,7 +171,7 @@ button.mini.danger:hover { border-color: var(--warn); color: var(--warn); }
   flex: 1; font: inherit; cursor: pointer; padding: 10px 4px;
   border: 1px solid var(--line); border-radius: 3px; background: var(--card); color: var(--fg);
 }
-.grades button:hover { border-color: var(--accent); }
+@media (hover: hover) { .grades button:hover { border-color: var(--accent); } }
 .grades button small { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; font-family: var(--sans); font-variant-numeric: tabular-nums; }
 
 .assist { margin-top: 14px; text-align: left; }
