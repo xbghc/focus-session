@@ -57,6 +57,13 @@ public class NativeBridge {
     private final Map<String, HttpURLConnection> live = new ConcurrentHashMap<>();
     private final Set<String> aborted = ConcurrentHashMap.newKeySet();
 
+    /**
+     * 系统栏 / 刘海压在 WebView 上的那几条边，"上,右,下,左"，单位 CSS px。
+     * @JavascriptInterface 的方法跑在 WebView 自己的绑定线程上，在那里碰视图是不行的，
+     * 所以由 MainActivity 在主线程量好塞进来，这里只存一份现成的。
+     */
+    private volatile String insets = "0,0,0,0";
+
     private TextToSpeech tts;
     private boolean ttsReady;
     private String pendingSpeech;
@@ -270,6 +277,34 @@ public class NativeBridge {
     @JavascriptInterface
     public void navigateBack() {
         activity.runOnUiThread(activity::goBack);
+    }
+
+    /* ==================== 安全区 ==================== */
+
+    /** 主线程调用。值没变就不推：转屏、软键盘、分屏都会重新派发一遍 insets。 */
+    void setInsets(int top, int right, int bottom, int left) {
+        final float density = activity.getResources().getDisplayMetrics().density;
+        final String v = px(top, density) + "," + px(right, density)
+                + "," + px(bottom, density) + "," + px(left, density);
+        if (v.equals(insets)) return;
+        insets = v;
+        web.evaluateJavascript(
+                "window.__fsHost&&window.__fsHost.insets&&window.__fsHost.insets('" + v + "')", null);
+    }
+
+    /**
+     * 物理像素 → CSS px。页面的 viewport 是 width=device-width, initial-scale=1，
+     * 那么 1 CSS px 就是 1dp。
+     */
+    private static String px(int raw, float density) {
+        // Locale.US：德语区的 %.2f 出来是 "12,00"，而逗号正是这串值的分隔符
+        return String.format(Locale.US, "%.2f", raw / density);
+    }
+
+    /** 页面首屏同步问一次，不必等宿主推。 */
+    @JavascriptInterface
+    public String insets() {
+        return insets;
     }
 
     @JavascriptInterface

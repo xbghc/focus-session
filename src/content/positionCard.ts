@@ -22,7 +22,8 @@ const CSS = `
 .card {
   position: fixed;
   left: 20px;
-  bottom: 20px;
+  /* 同读完角标：手势条底下那一条得让开 */
+  bottom: calc(20px + max(env(safe-area-inset-bottom), var(--inset-bottom, 0px)));
   z-index: 2147483645; /* 压在读完角标之下：那个是入口，这个只是一句交代 */
   box-sizing: border-box;
   display: flex;

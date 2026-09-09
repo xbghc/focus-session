@@ -6,6 +6,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
+import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -19,6 +20,9 @@ import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewFeature;
@@ -82,6 +86,31 @@ public class MainActivity extends ComponentActivity {
 
         bridge = new NativeBridge(this, web);
         web.addJavascriptInterface(bridge, "Native");
+
+        /*
+         * 安全区。targetSdk 36 起，Android 15+ 一律把窗口铺满整块屏：这个 WebView 从此
+         * 画到状态栏和手势条底下，themes.xml 里那两个 barColor 也不再起作用。页面自己排版
+         * （app.css 的 --sa-*）要知道让开多少。
+         *
+         * 量的是"系统栏真正压在 WebView 上的那部分"，而不是系统栏本身：Android 15 以下
+         * DecorView 已经把 WebView 让开了，直接报 bars 会让开两次，顶上白空一条。
+         * 算式放进 post：insets 是在 measure / layout **之前**派发的，那时 v 的尺寸还是上一轮的。
+         */
+        ViewCompat.setOnApplyWindowInsetsListener(web, (v, windowInsets) -> {
+            final Insets bars = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            v.post(() -> {
+                final int[] at = new int[2];
+                v.getLocationInWindow(at);
+                final View root = v.getRootView();
+                bridge.setInsets(
+                        Math.max(0, bars.top - at[1]),
+                        Math.max(0, bars.right - (root.getWidth() - (at[0] + v.getWidth()))),
+                        Math.max(0, bars.bottom - (root.getHeight() - (at[1] + v.getHeight()))),
+                        Math.max(0, bars.left - at[0]));
+            });
+            return windowInsets;
+        });
 
         web.setWebViewClient(new WebViewClient() {
             @Override

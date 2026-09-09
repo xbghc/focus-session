@@ -215,7 +215,22 @@ async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const url = params.get("u")?.trim() ?? "";
   $("back").addEventListener("click", () => void leave());
+
+  /* 本文生词那张单子的开合。返回键要先问它，所以在 beforeBack 之前就备好。 */
+  const sheet = $("sheet");
+  const backdrop = $("sheet-backdrop");
+  const setSheet = (open: boolean): void => {
+    sheet.hidden = !open;
+    backdrop.hidden = !open;
+  };
+  backdrop.addEventListener("click", () => setSheet(false));
+
   hostHooks.beforeBack = () => {
+    // 单子开着时先收单子：手机上"返回"关掉的是最上面那一层，不是整个页面
+    if (!sheet.hidden) {
+      setSheet(false);
+      return true;
+    }
     void leave();
     return true;
   };
@@ -287,14 +302,11 @@ async function main(): Promise<void> {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes["snippets"]) void refreshCount();
   });
-  const sheet = $("sheet");
   $("words").addEventListener("click", async () => {
     renderWords(await refreshCount());
-    sheet.hidden = false;
+    setSheet(true);
   });
-  $("sheet-close").addEventListener("click", () => {
-    sheet.hidden = true;
-  });
+  $("sheet-close").addEventListener("click", () => setSheet(false));
   $("refetch").addEventListener("click", () => {
     void (async () => {
       ctl?.stop("unload");
