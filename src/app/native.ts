@@ -28,6 +28,18 @@ export interface NativeBridge {
   version(): string;
   /** 系统栏 / 刘海压在 WebView 上的那几条边，"上,右,下,左"，单位 CSS px。 */
   insets(): string;
+  /**
+   * 这个安装是不是 debug 签名的。是的话装不了正式签名的升级包（见 lib/update.ts），
+   * 页面据此把「下载并安装」换成一句说明，而不是让用户去撞系统安装器那句「应用未安装」。
+   */
+  isDebugBuild(): boolean;
+  /**
+   * 下载升级包，之后宿主回调 __fsUpdate 的 progress / done / error。
+   * APK 的字节不经过这座桥：宿主自己写文件，页面只收进度数字。
+   */
+  updateDownload(url: string, expectedBytes: number): void;
+  /** 把下好的包交给系统安装器。没有「安装未知应用」的授权时先送用户去那一页。 */
+  updateInstall(): void;
 }
 
 /** 宿主 → 页面的回调。宿主用 evaluateJavascript 调它们。 */
@@ -47,12 +59,19 @@ export interface HostCallbacks {
   beforeBack(): boolean;
   /** 安全区变了（转屏、进出分屏）。参数同 NativeBridge.insets()。 */
   insets(csv: string): void;
+  /** 升级包的下载进度。total 为 0 表示对方没报长度。 */
+  update: {
+    progress(received: number, total: number): void;
+    done(): void;
+    error(message: string): void;
+  };
 }
 
 declare global {
   interface Window {
     Native?: Partial<NativeBridge>;
     __fsHttp?: HostCallbacks["http"];
+    __fsUpdate?: HostCallbacks["update"];
     __fsHost?: Pick<HostCallbacks, "visibility" | "beforeBack" | "insets">;
   }
 }
@@ -203,6 +222,60 @@ export function nativeFetch(input: RequestInfo | URL, init: RequestInit = {}): P
   });
 }
 
+/* ==================== 自动更新 ==================== */
+
+interface Downloading {
+  progress(received: number, total: number): void;
+  done(): void;
+  error(message: string): void;
+}
+
+/** 同一时刻只会有一个下载：设置页那个按钮按下去就禁用了。 */
+let downloading: Downloading | null = null;
+
+const updateCallbacks: HostCallbacks["update"] = {
+  progress: (received, total) => downloading?.progress(received, total),
+  done: () => downloading?.done(),
+  error: (message) => downloading?.error(message),
+};
+
+/**
+ * 让宿主把升级包下下来。resolve 表示文件已经落盘、大小对得上，可以调 Native.updateInstall()。
+ *
+ * 和 nativeFetch 不一样：APK 的字节不经过这座桥。一个五兆的包按 16KB 一块 base64 推回来
+ * 是三百多次 evaluateJavascript，还要在页面这边再拼一遍——宿主直接写进自己的缓存目录，
+ * 页面只需要知道下到哪儿了。
+ */
+export function downloadUpdate(
+  url: string,
+  expectedBytes: number,
+  onProgress: (received: number, total: number) => void,
+): Promise<void> {
+  const bridge = native();
+  if (!bridge?.updateDownload) return Promise.reject(new Error("这个版本的宿主不会自动更新"));
+  if (downloading) return Promise.reject(new Error("已经在下载了"));
+  const start = bridge.updateDownload.bind(bridge);
+  return new Promise<void>((resolve, reject) => {
+    downloading = {
+      progress: onProgress,
+      done: () => {
+        downloading = null;
+        resolve();
+      },
+      error: (message) => {
+        downloading = null;
+        reject(new Error(message || "下载失败"));
+      },
+    };
+    try {
+      start(url, expectedBytes);
+    } catch (err) {
+      downloading = null;
+      reject(new Error(`宿主拒绝了下载：${String(err)}`));
+    }
+  });
+}
+
 /** 与页面自己同源的地址（资源、字体）不必绕道宿主。 */
 function external(input: RequestInfo | URL): boolean {
   const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -238,6 +311,7 @@ function applyInsets(csv: string): void {
 export function installNative(): void {
   if (typeof window === "undefined") return;
   window.__fsHttp = callbacks;
+  window.__fsUpdate = updateCallbacks;
   window.__fsHost = {
     visibility: (v) => hostHooks.visibility(v),
     beforeBack: () => hostHooks.beforeBack(),

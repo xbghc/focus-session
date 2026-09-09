@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="share" path="share/" />
+    <!-- 升级包。安装器是另一个进程，要一个 content:// 地址才读得到 -->
+    <cache-path name="update" path="update/" />
 </paths>

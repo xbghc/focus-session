@@ -22,6 +22,12 @@ IndexedDB 里。两边**不经过任何服务器**：手机上读的、划的，
 （`https://api.minimaxi.com/anthropic`）。不希望被翻译的站点请加进设置页的排除域名，
 或直接关掉划词翻译——关掉后 content script 根本不会挂选区监听。
 
+**App 还会问 GitHub 有没有新版本**：安卓 App 不走应用商店，装出去的包只能自己管升级，
+所以每天最多一次向 `https://api.github.com/repos/xbghc/focus-session/releases/latest` 发一个匿名 GET。
+请求里除了「最新的一次发布是哪个版本」什么都没有——不带 API Key、不带阅读记录，
+连当前版本号都不带（比较在本机做）。设置页的「更新」里能关掉，关掉之后只有手按「检查更新」才联网。
+扩展那边没有这回事，浏览器的商店管升级。
+
 API Key 存在独立的 storage key 里，**不会**进入 content script（它与网页共享渲染进程），
 也**不会**随导出文件带出。所有 LLM 请求都由 background service worker 代发。
 
@@ -58,6 +64,8 @@ cd android && ./gradlew assembleDebug   # 会先跑 npm run build:app 生成网�
 
 [Releases](https://github.com/xbghc/focus-session/releases) 里也有打好的 APK，不装工具链也能用。
 签名不同的两个包不能互相覆盖安装（见[持续集成与发布](#持续集成与发布)），换包前先在 App 里导出数据。
+装的是 Releases 里那个正式签名的包时，之后的升级 App 自己管（见[更新](#更新)）：
+设置页能查、能装，首页每天自动问一次。
 
 装好后进「设置」填 MiniMax API Key。App 和扩展**各存各的密钥**，导出文件不带它。
 
@@ -531,6 +539,39 @@ measure / layout **之前**派发的，那时视图的尺寸还是上一轮的�
 - **长按到处都能选中**：在阅读器里长按顶栏，会连带把划词浮层弹出来。界面自身（顶栏、底部导航、
   单子的头）设 `user-select: none`；正文和生词条目不动，那儿的长按选中正是这个 App 的功能。
 
+### 更新
+
+扩展有商店管升级，App 是自己装的 APK，不问一声就没人告诉它有新版本。所以 App 自己问：
+设置页末尾的「更新」里有一个「检查更新」，首页开 App 时也自动问一次（**一天最多一次**，
+同一处的开关能关掉）。有新版本时首页顶上出一条能划掉的横幅——不是弹窗：来这儿是为了读文章，
+「有新版本」永远不比手头这篇要紧。划掉等于「跳过这个版本」，下一个版本照常提示。
+
+问的是 GitHub 的 `releases/latest`，发出去的东西见[数据去哪了](#数据去哪了)。比较在本机做
+（`src/lib/update.ts`）：按段取整数比大小，所以 `0.3.10` 大于 `0.3.9`——字典序会说反。
+认不出的版本号读成 `0.0.0`，也就是**不提示更新**：宁可漏报，也不能误报着让人去装一个来路不明的包。
+
+只认 `focus-session-vX.Y.Z.apk` 这一个附件名。同一次发布里可能还躺着 `-debug.apk`
+（仓库没配签名密钥时的产物），那个包是 runner 每次现生成的 debug 密钥签的，
+装不上任何已有的安装。这条规则让 Release 的**附件名成了接口**，改名字等于断掉老版本的升级路。
+
+下载不走 `NativeBridge` 那条 HTTP 代发的路：几兆的 APK 按 16KB 一块 base64 推回页面，
+是几百次 `evaluateJavascript` 加一次在 JS 里的重新拼装。宿主直接写进 `cacheDir/update/`，
+页面只收进度数字。下完核对字节数和 Release 上写的一致，然后经 `FileProvider` 把 `content://`
+地址交给系统安装器（`ACTION_VIEW` + APK 的 mime）——`file://` 从 Android 7 起会直接抛
+`FileUriExposedException`。Android 8 起「安装未知应用」是按应用授权的，没授权时先把用户送到
+那一页，回来再接着装；那一页多半回 `RESULT_CANCELED`，所以回来是重新问一次权限，不看结果码。
+
+第一次更新还要多绕一道：**Android 11 起，用户把那个开关拨开的一瞬间系统会 force-stop 掉刚被授权的
+应用**，也就是我们自己。等他返回时进程是新的，「刚才正等着装哪个包」已经没了——而这恰好是他
+第一次试这个功能的时刻，看到的会是「授权完回来，什么都没发生」。包一直躺在缓存目录里，
+所以把这一件事记进 `onSaveInstanceState`，重建时在 `registerForActivityResult` **之前**恢复：
+`ActivityResultRegistry` 在注册那一刻就把攒着的结果派发出去，那时回调里得已经能看见这个文件。
+
+**装着 debug 包时不给「下载并安装」**，换成一句说明。debug 签名和正式签名对不上，
+系统会拒掉覆盖安装，而它给的只有一句没头没尾的「应用未安装」——与其让人对着它猜，
+不如提前说清楚：导出数据、卸载、装正式包、再导入回来。宿主认自己是不是 debug 包靠
+`ApplicationInfo.FLAG_DEBUGGABLE`（`buildConfig` 关着，没有 `BuildConfig.DEBUG`）。
+
 ## 数据与导出
 
 设置页可导出 JSON（`schema: 4`），两个用途：给另一台设备导入合并（下一节），以及日后接入
@@ -692,13 +733,18 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 四个 Secret：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
 都在时 Release 工作流改出正式签名的 `focus-session-vX.Y.Z.apk`。密钥文件本身别进仓库，丢了就没法再给老安装升级。
 
+`focus-session-vX.Y.Z.apk` 这个名字是**接口**，不是随手起的：App 的自动更新（见
+[更新](#更新)）在 Release 的附件里只认它，认不出就当这次发布没有能装的包，
+用户那边看到的是「已经是最新的」。改附件名 = 断掉所有老版本的升级路。同理，
+一次发布里没有正式签名的包时（没配上面四个 Secret），装着的 App 不会去拿那个 `-debug.apk`。
+
 本地也能出正式签名的包：把 `FS_KEYSTORE_FILE`、`FS_KEYSTORE_PASSWORD`、`FS_KEY_ALIAS`、`FS_KEY_PASSWORD`
 四个环境变量指向同一把密钥，`cd android && ./gradlew assembleRelease`，产物在
 `android/app/build/outputs/apk/release/app-release.apk`。`*.jks` 已在 `.gitignore` 里。
 
 ## 已验证 / 未验证
 
-**已验证（543 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
+**已验证（557 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
 静默上限随视口文字量放宽、被 `maxQuiet` 封顶、关闭自适应后退回固定阈值、没什么字时固定阈值照旧 /
 两种走神各自的恢复条件 / 半小时晃鼠标只产生一个 session / 只在翻屏时才有信号时不丢失阅读时间 / 重启后的阈值重置 / 碎片丢弃 /
 阈值热更新）；混合语言字数统计；URL 归一化与域名排除；分位数计算；段落可见性公式；
@@ -783,7 +829,10 @@ popup 说得出原因）；从 bfcache 回来（地址一模一样也重起一�
 App 的接线：chrome 垫片（sendMessage 直达后台并带 tab id、后台抛错折成 ok:false、storage 的读写与
 onChanged、port 两头收发与单侧断开、getURL 的别名、换页、flush 等在途写入包括消息引发的写入）；
 正文白名单（脚本 / 样式 / iframe / svg / 表单整块丢掉、事件属性去掉、不认识的标签只留内容、
-链接补全并去掉 javascript:、图片只留网络与内嵌地址）；阅读器容器抽取与整页抽取得出同一批段落指纹。
+链接补全并去掉 javascript:、图片只留网络与内嵌地址）；阅读器容器抽取与整页抽取得出同一批段落指纹；
+自动更新的版本比较与附件挑选（`0.3.10` 大于 `0.3.9` 而不是按字典序、位数不同时短的补 0、
+认不出的版本号读成 0.0.0 因而不提示更新、只认 `focus-session-vX.Y.Z.apk` 而不拿 `-debug.apk`
+或扩展的 zip 当升级包、已经是最新时不提示、GitHub 的响应缺字段或整个不是那么回事时不炸）。
 
 **已用真实 API 验证过**（不在自动化测试里，需要 key）：`src/lib/llm.ts` 对
 `https://api.minimaxi.com/anthropic/v1/messages` 的实际调用——词条返回音标/词性/词元、

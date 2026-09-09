@@ -5,4 +5,7 @@
     <string name="saved_to_app_dir">已保存到 %1$s（旧系统写不进公共下载目录，用「分享」发出去）</string>
     <string name="save_failed">保存失败：%1$s</string>
     <string name="share_title">分享导出文件</string>
+    <string name="update_missing">升级包不在了，重新下一次</string>
+    <string name="update_needs_permission">没开「安装未知应用」，装不了；在设置里给本应用开一下再试</string>
+    <string name="update_install_failed">调不起安装器：%1$s</string>
 </resources>
