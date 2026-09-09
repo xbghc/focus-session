@@ -35,7 +35,7 @@ setOcrBackend({
   async warm() {
     await ensureOffscreen();
     const reply = await chrome.runtime.sendMessage({ target: "offscreen", type: "ocr:warm" });
-    if (!reply.ok) throw new Error(reply.error);
+    if (!reply?.ok) throw new Error(reply?.error ?? "识别器尚未就绪");
   },
 });
 
@@ -69,7 +69,8 @@ chrome.commands.onCommand.addListener((command) => {
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === "screenshot-translate") void screenshotTranslate();
 });
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
+  await chrome.contextMenus.removeAll();
   chrome.contextMenus.create({
     id: "screenshot-translate",
     title: "截图翻译",

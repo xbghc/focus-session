@@ -2,6 +2,7 @@ import type {
   AskReply,
   AskRequest,
   AskTurn,
+  OcrReply,
   PartialTranslation,
   Settings,
   Snippet,
@@ -68,6 +69,8 @@ export interface SelectionDeps {
   settings: () => Settings;
   /** 选区所在段落的文本，给 LLM 做语境判断。 */
   contextOf: (range: Range, limit: number) => string;
+  /** 识别与翻译共用取消信号，换选区后不再消费旧结果。 */
+  recognize: (png: string, signal: AbortSignal) => Promise<OcrReply>;
   /**
    * 发起翻译。`onPartial` 会在译文、音标、语境解释逐批到达时回调；
    * `signal` 一旦 abort 就该断开与 background 的连接，别让请求继续跑。
@@ -94,6 +97,7 @@ export class SelectionTranslator {
   private popover: Popover;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private detach: Array<() => void> = [];
+  private closeDetach: Array<() => void> = [];
   /** 递增的请求序号：慢响应回来时若已经不是最新一次选择，就丢弃。 */
   private seq = 0;
   private pending: { rect: DOMRect; req: TranslateRequest } | null = null;
@@ -118,36 +122,14 @@ export class SelectionTranslator {
 
   start(): void {
     if (this.detach.length > 0) return;
-    const on = <K extends keyof DocumentEventMap>(
-      target: Document | Window,
-      type: K,
-      fn: (ev: DocumentEventMap[K]) => void,
-      opts?: AddEventListenerOptions,
-    ): void => {
-      target.addEventListener(type, fn as EventListener, opts);
-      this.detach.push(() => target.removeEventListener(type, fn as EventListener, opts));
-    };
+    this.ensureClosing();
+    const on = this.listen(this.detach);
 
     // mouseup 而不是 selectionchange：后者在拖选过程中连发几十次。
     // keyup 补上 shift+方向键选中的情况。
     on(document, "mouseup", (e) => this.schedule(e), { capture: true });
     on(document, "keyup", (e) => {
       if ((e as KeyboardEvent).key.startsWith("Arrow")) this.schedule(e);
-    });
-    on(document, "mousedown", (e) => {
-      // 点在浮层里不算"点到别处"，否则按钮永远点不到
-      if (this.insidePopover(e)) return;
-      this.dismiss();
-      // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
-      this.warm();
-    }, { capture: true });
-    on(document, "scroll", () => {
-      // 追问期间不关：手机上弹出键盘就是一次滚动，正打着字的问题不该被这一下收走。
-      // 浮层是 fixed 的，滚动时它停在原处、和原文错开——比丢掉答案划算。
-      if (!this.popover.asking) this.dismiss();
-    }, { capture: true, passive: true });
-    on(document, "keydown", (e) => {
-      if ((e as KeyboardEvent).key === "Escape") this.dismiss();
     });
 
     if (coarsePointer()) {
@@ -162,6 +144,77 @@ export class SelectionTranslator {
     }
   }
 
+  private listen(group: Array<() => void>) {
+    return <K extends keyof DocumentEventMap>(target: Document | Window, type: K,
+      fn: (ev: DocumentEventMap[K]) => void, opts?: AddEventListenerOptions): void => {
+      target.addEventListener(type, fn as EventListener, opts);
+      group.push(() => target.removeEventListener(type, fn as EventListener, opts));
+    };
+  }
+
+  private ensureClosing(): void {
+    // OCR 在没开划词的页面也得能点外面 / Esc 关闭；只挂关闭组，不能替用户开启选区监听。
+    if (this.closeDetach.length) return;
+    const on = this.listen(this.closeDetach);
+    on(document, "mousedown", (e) => {
+      // 点在浮层里不算"点到别处"，否则按钮永远点不到
+      if (this.insidePopover(e)) return;
+      this.dismiss();
+      // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
+      if (this.detach.length) this.warm();
+    }, { capture: true });
+    on(document, "scroll", () => {
+      // 追问期间不关：手机上弹出键盘就是一次滚动，正打着字的问题不该被这一下收走。
+      // 浮层是 fixed 的，滚动时它停在原处、和原文错开——比丢掉答案划算。
+      if (!this.popover.asking) this.dismiss();
+    }, { capture: true, passive: true });
+    on(document, "keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Escape") this.dismiss();
+    });
+  }
+
+  showCaptureError(error: string): void {
+    this.dismiss();
+    this.ensureClosing();
+    this.popover.showError(new DOMRect((window.innerWidth - 200) / 2, 0, 200, 0), error, false);
+  }
+
+  async translateImage(png: string, rect: DOMRect): Promise<void> {
+    this.dismiss();
+    this.ensureClosing();
+    const mine = ++this.seq;
+    const ctrl = new AbortController();
+    this.inflight = ctrl;
+    this.popover.showRecognizing(rect);
+    let reply: OcrReply;
+    try {
+      reply = await this.deps.recognize(png, ctrl.signal);
+    } catch (err) {
+      reply = { ok: false, error: String(err) };
+    }
+    if (mine !== this.seq) return;
+    this.inflight = null;
+    if (!reply?.ok) {
+      this.popover.showError(rect, reply?.error ?? "识别失败：后台未就绪", false);
+      return;
+    }
+    this.popover.setTerm(reply.text);
+    const settings = this.deps.settings();
+    const verdict = judgeSelection(reply.text, settings);
+    if (!verdict.ok) {
+      this.popover.showError(rect, verdict.reason === "选区过长"
+        ? "识别文字过长，请缩小框选范围" : "没认出英文，请重新框选清晰的英文文字", false);
+      return;
+    }
+    const req: TranslateRequest = {
+      articleId: this.deps.articleId, url: this.deps.url, articleTitle: this.deps.articleTitle,
+      text: verdict.text, context: verdict.text, kind: verdict.kind, explainVocab: settings.explainVocab,
+    };
+    this.pending = { rect, req };
+    if (verdict.needsConfirm) this.popover.showConfirm(rect, verdict.text, verdict.words, "image");
+    else await this.runPending();
+  }
+
   stop(): void {
     for (const off of this.detach) off();
     this.detach = [];
@@ -173,7 +226,11 @@ export class SelectionTranslator {
     return host !== null && e.composedPath().includes(host);
   }
 
-  private dismiss(): void {
+  dismiss(): void {
+    if (!this.detach.length) {
+      for (const off of this.closeDetach) off();
+      this.closeDetach = [];
+    }
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.pending = null;

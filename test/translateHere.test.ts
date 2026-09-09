@@ -63,7 +63,7 @@ const URL_ = "https://app.example.com/inbox";
 
 test("抽不出正文：不追踪，划词翻译只是「可用」，点了才挂监听，停了就摘掉", async () => {
   const ctl = await startTracking({ url: URL_, extract: () => null });
-  assert.deepEqual(ctl.state(), { tracked: false, reason: "未识别为文章页", translateHere: "available" });
+  assert.deepEqual(ctl.state(), { tracked: false, reason: "未识别为文章页", translateHere: "available", screenshot: "available" });
   assert.equal(mouseups, 0);
 
   ctl.translateHere();
@@ -101,7 +101,7 @@ test("总开关本来就关着的页面不给按钮", async () => {
     settings: { ...DEFAULT_SETTINGS, translateEnabled: false },
   });
   const ctl = await startTracking({ url: URL_, extract: () => null });
-  assert.deepEqual(ctl.state(), { tracked: false, reason: "未识别为文章页" });
+  assert.deepEqual(ctl.state(), { tracked: false, reason: "未识别为文章页", screenshot: "available" });
   ctl.translateHere(); // 点了也不该挂：总开关的语义是「根本不挂选区监听」
   assert.equal(mouseups, 0);
   ctl.stop();

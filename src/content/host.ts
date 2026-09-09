@@ -30,6 +30,7 @@ export interface PageHost {
   state(): PageState;
   /** popup 的「本页启用划词翻译」，转给手上这一轮。 */
   translateHere(): void;
+  screenshot(): void;
   /**
    * 后台通知的同文档导航。归一化之后还是同一篇就什么都不做——长文加目录锚点
    * （#section）正是这个工具最常见的用法。判定口径与后台一致（normalizeUrl）。
@@ -90,6 +91,7 @@ export function createPageHost(begin: Begin): PageHost {
     start: (url) => run(url),
     state: () => ctl?.state() ?? { tracked: false, reason },
     translateHere: () => ctl?.translateHere(),
+    screenshot: () => ctl?.screenshot(),
     urlChanged: (url) => {
       if (articleId !== null && normalizeUrl(url) === articleId) return;
       run(url);

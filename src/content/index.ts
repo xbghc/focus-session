@@ -16,6 +16,8 @@ import { startTracking } from "./track.ts";
  * 否则读进度只在 session 开始/结束时更新，读到一半打开 popup 会看到旧数字。
  */
 let provideState: () => PageState = () => ({ tracked: false, reason: "初始化中" });
+/** 三个截图入口共用这条接线；只让顶层 HTML 文档响应。 */
+let screenshot: () => void = () => undefined;
 /** popup 的「本页启用划词翻译」。追踪器还没就绪时点到就是空操作——那时 popup 也拿不到按钮。 */
 let translateHere: () => void = () => undefined;
 /** 后台通知的同文档导航。不在跟踪的文档（iframe、非 HTML）上什么都不做。 */
@@ -24,6 +26,10 @@ let urlChanged: (url: string) => void = () => undefined;
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const m = msg as { type?: string; url?: string } | null;
   const type = m?.type;
+  if (type === "page:screenshot") {
+    screenshot();
+    return false;
+  }
   if (type === "page:url-changed") {
     urlChanged(m?.url ?? location.href);
     return false; // 后台是发完就不管的，不必应答
@@ -44,6 +50,7 @@ function main(): void {
   const host = createPageHost((url, signal) => startTracking({ url, focus: "window", signal }));
   provideState = () => host.state();
   translateHere = () => host.translateHere();
+  screenshot = () => host.screenshot();
   urlChanged = (url) => host.urlChanged(url);
   host.start(location.href);
   /*
