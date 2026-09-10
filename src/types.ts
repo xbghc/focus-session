@@ -630,6 +630,15 @@ export const EMPTY_USAGE: LlmUsage = {
  * 一次 LLM 调用失败的现场，给设置页的「诊断日志」用。
  * 只存本机；不进 ExportBundle（那份文件常被随手分享），自己单独导出；「清空全部记录」时一起清掉。
  */
+export interface LlmStreamTrace {
+  /** UTF-8 解码后、SSE 解析前的原始响应分块；不含请求头。 */
+  chunks: string[];
+  capturedChars: number;
+  totalChars: number;
+  clipped: boolean;
+  messageStop: boolean;
+}
+
 export interface LlmFailure {
   ts: number;
   /** 哪条路径出的错 */
@@ -643,6 +652,8 @@ export interface LlmFailure {
   stopReason: string | null;
   /** 模型的完整输出——只有解析阶段的失败才有；超长的截掉尾部 */
   raw: string | null;
+  /** raw 是拼接后、修补前的文本；stream 用来与传输原文对照。旧日志没有此字段。 */
+  stream?: LlmStreamTrace;
   /** 流式翻译下浮层是否已经显示过译文：「先显示再报错」和「一开始就报错」是两类问题 */
   partialShown: boolean | null;
   /** 当时请求里值得留下的部分，各路径各留各的；不存文章正文 */

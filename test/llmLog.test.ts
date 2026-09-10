@@ -244,3 +244,13 @@ test("导出包带版本与配置，不含 apiKey", async () => {
   assert.equal(b.errors.length, 1);
   assert.ok(!JSON.stringify(b).includes("secret-key"));
 });
+
+test("流式原始分块随失败持久化并进入诊断导出", async () => {
+  const err = new LlmError("流中断", "stream_interrupted");
+  err.raw = { text: "半截文本", stopReason: "" };
+  err.stream = { chunks: ['data: {坏的\n'], capturedChars: 11, totalChars: 11, clipped: false, messageStop: false };
+  await recordFailure(err, CFG, { source: "translate", request: {} });
+  const bundle = await llmLogBundle("test");
+  assert.deepEqual(bundle.failures[0]?.stream, err.stream);
+  assert.equal(bundle.failures[0]?.raw, "半截文本");
+});

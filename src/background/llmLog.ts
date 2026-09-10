@@ -143,6 +143,7 @@ export async function recordFailure(err: unknown, config: LlmConfig, ctx: Failur
       message: e ? e.message : String(err),
       stopReason: e?.raw?.stopReason ?? null,
       raw: e?.raw?.text ?? null,
+      ...(e?.stream ? { stream: e.stream } : {}),
       partialShown: ctx.partialShown ?? null,
       request: ctx.request,
       model: config.model,

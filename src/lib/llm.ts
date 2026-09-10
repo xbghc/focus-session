@@ -1,6 +1,7 @@
 import type {
   AskRequest,
   LlmConfig,
+  LlmStreamTrace,
   PartialTranslation,
   SnippetKind,
   TranslateRequest,
@@ -47,7 +48,7 @@ export interface CallTiming {
 }
 
 /** `abort` 是用户主动取消（关掉浮层、又选了别的），不该计入失败统计。 */
-export type LlmErrorKind = "config" | "http" | "network" | "timeout" | "parse" | "abort";
+export type LlmErrorKind = "config" | "http" | "network" | "timeout" | "parse" | "abort" | "token_limit" | "stream_interrupted";
 
 /**
  * 字段用显式声明而不是构造器参数属性——测试跑在 `node --experimental-strip-types`
@@ -62,6 +63,7 @@ export class LlmError extends Error {
    * service worker 的控制台，下一次失败才有得查。
    */
   raw: { text: string; stopReason: string } | undefined;
+  stream?: LlmStreamTrace;
   /**
    * 这次调用花了多久。缺配置那类"根本没发出去"的失败没有——
    * 和 `raw` 同一个思路：能挂上去的现场都挂上，日志才看得出"慢到超时"和"秒失败"的区别。
@@ -84,6 +86,7 @@ export interface RawUsage {
 }
 
 export interface CallResult {
+  stream?: LlmStreamTrace;
   text: string;
   usage: RawUsage;
   /** 原样的 stop_reason，进日志用；`truncated` 是从它推出来的。 */
@@ -260,15 +263,18 @@ export interface StreamOptions {
  * 分块边界会落在任意位置——一行 JSON 可能被切成两个 chunk，所以必须缓冲到
  * 换行才解析。`event:` 行和空行直接跳过：事件类型在 data 的 `type` 字段里也有。
  */
-export async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+export async function* sseEvents(body: ReadableStream<Uint8Array>, onChunk?: (chunk: string) => void): AsyncGenerator<Record<string, unknown>> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      const chunk = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      if (chunk) onChunk?.(chunk);
+      buf += chunk;
+      // EOF 时也处理没有换行的最后一行，避免静默丢掉终止事件。
+      if (done && buf) buf += "\n";
       for (;;) {
         const nl = buf.indexOf("\n");
         if (nl < 0) break;
@@ -283,6 +289,7 @@ export async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerat
           /* 单条事件坏掉不该中断整个流 */
         }
       }
+      if (done) break;
     }
   } finally {
     // for-await 提前 break/throw 时会走到这里，把底层连接掐掉
@@ -328,6 +335,17 @@ export async function callMessagesStream(
   // AbortSignal.any 要 Chrome 116，手动接一下更保险
   const relay = (): void => ctrl.abort();
   opts.signal?.addEventListener("abort", relay, { once: true });
+  let text = "";
+  let stopReason = "";
+  const stream: LlmStreamTrace = { chunks: [], capturedChars: 0, totalChars: 0, clipped: false, messageStop: false };
+  const capture = (chunk: string): void => {
+    stream.totalChars += chunk.length;
+    // 双重上限避免极碎或异常大的响应撑爆内存及本地日志。
+    const kept = stream.chunks.length < 4096 ? chunk.slice(0, Math.max(0, 64_000 - stream.capturedChars)) : "";
+    if (kept) stream.chunks.push(kept);
+    stream.capturedChars += kept.length;
+    stream.clipped ||= kept.length !== chunk.length;
+  };
 
   /** 把底层异常翻译成带 kind 的 LlmError；超时和主动取消要能区分开。 */
   const wrap = (err: unknown): LlmError => {
@@ -363,14 +381,15 @@ export async function callMessagesStream(
     }
     if (!res.body) throw new LlmError("响应没有可读流", "parse");
 
-    let text = "";
     let inputTokens = 0;
     let outputTokens = 0;
-    let stopReason = "";
 
     try {
-      for await (const ev of sseEvents(res.body)) {
+      for await (const ev of sseEvents(res.body, capture)) {
         switch (ev["type"]) {
+          case "message_stop":
+            stream.messageStop = true;
+            break;
           case "message_start": {
             const m = ev["message"] as { usage?: { input_tokens?: number }; base_resp?: BaseResp } | undefined;
             // MiniMax 会在 HTTP 200 的流里用 base_resp 报业务错误（余额不足、鉴权失败）
@@ -410,15 +429,22 @@ export async function callMessagesStream(
         }
       }
     } catch (err) {
-      throw wrap(err);
+      const wrapped = wrap(err);
+      if (wrapped.kind === "network") wrapped.kind = "stream_interrupted";
+      throw wrapped;
     }
 
+    if (!stopReason) throw new LlmError("流式响应提前结束，未收到 stop_reason，请重试", "stream_interrupted");
     if (!text) throw new LlmError("流式响应里没有任何文本", "parse");
-    return { text, usage: { inputTokens, outputTokens }, stopReason, truncated: stopReason === "max_tokens", timing: timing() };
+    return { text, stream, usage: { inputTokens, outputTokens }, stopReason, truncated: stopReason === "max_tokens", timing: timing() };
   } catch (err) {
     // `wrap` 造的是新的 LlmError，而上面 !res.ok / !res.body / !text 那几处压根不过 wrap，
     // 所以耗时统一在这里挂，不在 wrap 里挂
-    if (err instanceof LlmError) err.timing = timing();
+    if (err instanceof LlmError) {
+      err.timing = timing();
+      err.raw = { text, stopReason };
+      err.stream = stream;
+    }
     throw err;
   } finally {
     clearTimeout(timer);
@@ -603,9 +629,8 @@ function parseObjectAt(src: string, start: number): unknown {
  * 即便 system 里说了别加围栏，模型偶尔仍会包一层 ```json，
  * 也可能在 JSON 前后带一句话——两种情况都要能救回来。
  *
- * 顶层对象没闭合的按截断报，**不看 stop_reason**：MiniMax 兼容层在那个字段上回什么
- * 并无保证，它不说截断不等于没截断。这种输出若拿 lastIndexOf("}") 去抠，抓到的是
- * 最后一条生词的花括号，报出来的 SyntaxError 完全看不出是截断。
+ * 扫描失败只能说明结构或引号有问题，不能据此认定 token 耗尽。
+ * token 上限由调用层根据 stop_reason 单独分类。
  *
  * 扫描和解析都失败了才轮到 `repairJson`：没转义的引号成对时骗得过扫描（在解析处炸），
  * 奇数个时让扫描停在字符串里（被误报成截断），两条路都得给它留出口。
@@ -636,9 +661,9 @@ export function extractJson(text: string): unknown {
   if (fixed !== undefined) return fixed;
 
   const head = trimmed.slice(0, 160);
-  // 说"疑似"是因为没转义的引号也会让扫描停在字符串里；原文前缀照带，两种情况一眼能分
+  // 未转义或缺失的引号也会让扫描停在字符串里，不能据此建议增加 token。
   if (end === -1) {
-    throw new LlmError(`输出疑似被截断（JSON 没有闭合），请在设置里调大 max_tokens｜${head}`, "parse");
+    throw new LlmError(`JSON 格式错误：结构未闭合或引号不匹配｜${head}`, "parse");
   }
   // 带上出错处附近的原文：没有它，线上只剩一句"JSON 解析失败"，无从查起
   throw new LlmError(`JSON 解析失败：${String(syntax)}｜${head}`, "parse");
@@ -741,12 +766,13 @@ function finishTranslation(res: CallResult, req: TranslateRequest, config: LlmCo
   try {
     if (res.truncated) {
       // 截断的 JSON 必然解析失败，直接给出可操作的提示而不是让它撞到 parse 错误
-      throw new LlmError(`输出被 max_tokens(${config.maxTokens}) 截断，请在设置里调大`, "parse");
+      throw new LlmError(`输出被 max_tokens(${config.maxTokens}) 截断，请在设置里调大`, "token_limit");
     }
     return normalizeTranslation(extractJson(res.text), req.kind, req.text);
   } catch (err) {
     if (err instanceof LlmError) {
       err.raw = { text: res.text, stopReason: res.stopReason };
+      err.stream = res.stream;
       // 这个错是调用成功**之后**才造出来的，身上没有耗时；补上，
       // 不然日志里"生成了 40 秒最后解析失败"和"秒失败"分不开
       err.timing = res.timing;

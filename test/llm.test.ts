@@ -71,11 +71,11 @@ test("extractJson 认字符串里的花括号，也不被 JSON 后面带括号�
   assert.deepEqual(extractJson('{"a":1}\n注：{仅供参考}'), { a: 1 });
 });
 
-test("顶层对象没闭合时报截断，而不是一句看不出所以然的 SyntaxError", () => {
+test("顶层对象没闭合只报格式错误，不猜测 token 截断", () => {
   const cut = (s: string): void =>
     assert.throws(
       () => extractJson(s),
-      (e: unknown) => e instanceof LlmError && e.kind === "parse" && /截断/.test(e.message) && /max_tokens/.test(e.message),
+      (e: unknown) => e instanceof LlmError && e.kind === "parse" && /JSON/.test(e.message) && !/max_tokens/.test(e.message),
     );
   // 最常见的形状：连一个 } 都还没生成
   cut('{"translation": "泄');
@@ -504,13 +504,13 @@ test("输出被 max_tokens 截断时给出可操作的提示", async () => {
   );
 });
 
-test("stop_reason 没说截断、但 JSON 没闭合时同样提示调大 max_tokens", async () => {
+test("end_turn 下 JSON 没闭合归为格式错误，不建议调大 token", async () => {
   // MiniMax 兼容层在 stop_reason 上回什么并无保证，截断判定不能只认这个字段
   await assert.rejects(
     translate(REQ, CFG, {
       fetch: (async () => okResponse('{"translation":"泄', { stop_reason: "end_turn" })) as unknown as typeof fetch,
     }),
-    (e: unknown) => e instanceof LlmError && e.kind === "parse" && /max_tokens/.test(e.message),
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && !/max_tokens/.test(e.message),
   );
 });
 

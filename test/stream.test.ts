@@ -256,9 +256,9 @@ test("非 2xx 原样带出响应体，方便排查", async () => {
   );
 });
 
-test("一个字都没流出来算 parse 失败", async () => {
+test("完整结束但没有文本算 parse 失败", async () => {
   await assert.rejects(
-    () => callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, { fetch: fetchOf([evt({ type: "message_stop" })]) }),
+    () => callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, { fetch: fetchOf(textStream("")) }),
     (e: unknown) => e instanceof LlmError && e.kind === "parse",
   );
 });
@@ -375,14 +375,14 @@ test("流式结果同样走 normalizeTranslation 做最终校正", async () => {
 test("被截断的输出给出可操作的提示，而不是撞到 JSON 解析错", async () => {
   await assert.rejects(
     () => translateStream(REQ, CFG, () => {}, undefined, { fetch: fetchOf(textStream(`{"translation": "泄`, 4, "max_tokens")) }),
-    (e: unknown) => e instanceof LlmError && e.kind === "parse" && /max_tokens/.test(e.message),
+    (e: unknown) => e instanceof LlmError && e.kind === "token_limit" && /max_tokens/.test(e.message),
   );
 });
 
-test("stop_reason 没说截断、但 JSON 没闭合时同样提示调大 max_tokens", async () => {
+test("end_turn 下 JSON 没闭合归为格式错误，不建议调大 token", async () => {
   await assert.rejects(
     () => translateStream(REQ, CFG, () => {}, undefined, { fetch: fetchOf(textStream(`{"translation": "泄`, 4, "end_turn")) }),
-    (e: unknown) => e instanceof LlmError && e.kind === "parse" && /max_tokens/.test(e.message),
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && !/max_tokens/.test(e.message),
   );
 });
 
@@ -552,4 +552,45 @@ test("追问被取消时抛 abort，不当成一次失败", async () => {
     () => askStream(ASK_REQ, CFG, () => {}, ctrl.signal, { fetch: fetchOf(textStream("不该跑到这里")) }),
     (err: unknown) => err instanceof LlmError && err.kind === "abort",
   );
+});
+
+test("流式失败保留原始 SSE 分块与拼接前后可对照的文本", async () => {
+  const raw = '{"translation":"泄';
+  const chunks = textStream(raw);
+  await assert.rejects(
+    () => translateStream(REQ, CFG, () => {}, undefined, { fetch: fetchOf(chunks) }),
+    (e: unknown) => {
+      assert.ok(e instanceof LlmError);
+      assert.equal(e.kind, "parse");
+      assert.equal(e.raw?.text, raw);
+      assert.deepEqual(e.stream?.chunks, chunks);
+      assert.equal(e.stream?.clipped, false);
+      return true;
+    },
+  );
+});
+
+test("完整 JSON 但缺少结束原因仍判为流中断并保留现场", async () => {
+  const chunks = textStream('{"translation":"泄漏"}').slice(0, -1);
+  await assert.rejects(
+    () => translateStream(REQ, CFG, () => {}, undefined, { fetch: fetchOf(chunks) }),
+    (e: unknown) => e instanceof LlmError && e.kind === "stream_interrupted" && e.raw?.text === '{"translation":"泄漏"}' && e.stream?.chunks.join("") === chunks.join(""),
+  );
+});
+
+test("EOF 没换行的结束事件不丢失", async () => {
+  const chunks = textStream("你好");
+  chunks[chunks.length - 1] = chunks.at(-1)!.trimEnd();
+  const res = await callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, { fetch: fetchOf(chunks) });
+  assert.equal(res.stopReason, "end_turn");
+  assert.equal(res.stream?.chunks.join(""), chunks.join(""));
+});
+
+test("超长 SSE 记录标明裁剪且不影响文本拼接", async () => {
+  const raw = "x".repeat(70_000);
+  const res = await callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, { fetch: fetchOf(textStream(raw, 1000)) });
+  assert.equal(res.text, raw);
+  assert.equal(res.stream?.capturedChars, 64_000);
+  assert.equal(res.stream?.clipped, true);
+  assert.ok(res.stream!.totalChars > 70_000);
 });
