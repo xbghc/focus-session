@@ -1,3 +1,4 @@
+import { localStorage } from "../sync/storage.ts";
 import type { AppError, ReaderFetch } from "../types.ts";
 import { serialize } from "./store.ts";
 
@@ -34,7 +35,7 @@ export const MAX_TEXT_CHARS = 500;
 /** 调用栈单独给一个更宽的上限：只留前几帧的话，往往正好切掉出错的那一帧。 */
 export const MAX_STACK_CHARS = 2_000;
 
-const local = (): chrome.storage.StorageArea => chrome.storage.local;
+const local = (): chrome.storage.StorageArea => localStorage();
 
 /** 超长的截掉尾部并留个标记。同 llmLog.ts 的 clip，那边限的是模型输出。 */
 export function clip(s: string, max: number): string {

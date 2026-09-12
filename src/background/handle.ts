@@ -1,4 +1,9 @@
 import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "./articleFilter.ts";
+import { localStorage } from "../sync/storage.ts";
+import { configureSync, disconnectSync, runSync, syncStatus, testSync } from "../sync/engine.ts";
+import { saveArchive } from "../archive/background.ts";
+import { clearArchiveCache } from "../archive/cache.ts";
+import { normalizeUrl } from "../lib/url.ts";
 import type {
   AnyMessage,
   ContentToBg,
@@ -79,10 +84,12 @@ export function boot(): void {
 /** 发消息的一方。扩展里是 chrome.runtime.MessageSender，App 里由垫片造一个带 tab id 的。 */
 export interface Sender {
   tab?: { id?: number; windowId?: number };
+  url?: string;
 }
 
 /** 进行中的 session。存在 storage.session 里：SW 被回收后仍在，浏览器关闭即弃。 */
 interface OpenSession {
+  id?: string;
   tabId: number;
   articleId: string;
   url: string;
@@ -125,15 +132,11 @@ export async function recoverOpen(tabId: number, settings?: Settings): Promise<v
   const open = await getOpen();
   const o = open[String(tabId)];
   if (!o) return;
-  await mutateOpen((m) => {
-    delete m[String(tabId)];
-  });
   const s = settings ?? (await getSettings());
   const endTs = Math.max(o.startTs, o.lastBeatTs);
-  if (endTs - o.startTs < s.minSessionMs) return;
-  await commitSession(
+  if (endTs - o.startTs >= s.minSessionMs) await commitSession(
     {
-      id: crypto.randomUUID(),
+      id: o.id ?? crypto.randomUUID(),
       articleId: o.articleId,
       url: o.url,
       title: o.title,
@@ -144,6 +147,8 @@ export async function recoverOpen(tabId: number, settings?: Settings): Promise<v
     },
     [],
   );
+  // Keep the recovery checkpoint until the durable session/outbox commit succeeds.
+  await mutateOpen(m=>{if(m[String(tabId)]?.startTs===o.startTs)delete m[String(tabId)];});
 }
 
 /** 近 7 天概览。口径全在 lib/stats.ts，这里只负责取数。 */
@@ -159,6 +164,16 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
   const tabId = sender.tab?.id;
 
   switch (msg.type) {
+    case "sync:get": return syncStatus();
+    case "sync:test": return { ok: true, ...await testSync(msg.baseUrl, msg.token) };
+    case "sync:configure": return { ok: true, status: await configureSync(msg.baseUrl, msg.token, msg.enabled) };
+    case "sync:run": { const status = await runSync(); return {ok:!status.error,status,...(status.error ? {error:status.error} : {})}; }
+    case "sync:disconnect": return { ok: true, status: await disconnectSync() };
+    case "archive:save": {
+      if(sender.url && new URL(sender.url).protocol !== "chrome-extension:" && normalizeUrl(sender.url)!==msg.payload.articleId)throw new Error("只能保存当前页面的文章");
+      return saveArchive(msg.payload);
+    }
+    case "article:local-state": return localStorage().get([`p:${msg.articleId}`,`pos:${msg.articleId}`,"articles","speed"]);
     case "article:classify": return classifyPage(msg.url, msg.title, msg.text);
     case "article:classify-history": return classifyHistoryArticle(msg.articleId);
     case "articles:blacklist-suggest": return suggestBlacklist(msg.articleIds);
@@ -182,6 +197,7 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       await recoverOpen(tabId);
       await mutateOpen((open) => {
         open[String(tabId)] = {
+          id:crypto.randomUUID(),
           tabId,
           articleId: m.articleId,
           url: m.url,
@@ -217,16 +233,17 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       // 而"翻了两页就被叫走"的那两页照样要记住落点。
       if (m.position) await savePosition(m.position);
       // url/title 从进行中的记录里取，省一次文章表查询，也不受消息乱序影响
-      const o = tabId === undefined ? undefined : (await getOpen())[String(tabId)];
-      if (tabId !== undefined) {
+      const candidate = tabId === undefined ? undefined : (await getOpen())[String(tabId)];
+      const o=candidate?.startTs===m.startTs?candidate:undefined;
+      const close=async()=>{if (tabId !== undefined) {
         await mutateOpen((open) => {
-          delete open[String(tabId)];
+          if(open[String(tabId)]?.startTs===m.startTs)delete open[String(tabId)];
         });
-      }
-      if (m.discard) return { ok: true, discarded: true };
+      }};
+      if (m.discard) {await close();return { ok: true, discarded: true };}
       const known = (await getArticles())[m.articleId];
       const session: Session = {
-        id: crypto.randomUUID(),
+        id: o?.id ?? crypto.randomUUID(),
         articleId: m.articleId,
         url: o?.url ?? known?.url ?? m.articleId,
         title: o?.title ?? known?.title ?? "",
@@ -236,6 +253,7 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
         endReason: m.endReason,
       };
       await commitSession(session, m.paragraphs, m.reachedBottom);
+      await close();
       return { ok: true };
     }
 
@@ -288,6 +306,7 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       return await importBundle((msg as Extract<PopupToBg, { type: "data:import" }>).bundle);
     case "data:clear":
       await clearData();
+      if(typeof indexedDB!=="undefined")await clearArchiveCache();
       return { ok: true };
     case "settings:get":
       return await getSettings();

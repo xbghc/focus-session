@@ -1,3 +1,4 @@
+import { localStorage, hasSyncStorage } from "../sync/storage.ts";
 import type { LlmConfig, LlmUsage, ReviewCardView, Snippet, StoredCard, TranslationResult } from "../types.ts";
 import { DEFAULT_LLM, EMPTY_USAGE } from "../types.ts";
 import { cardKeyOf } from "../lib/lang.ts";
@@ -19,7 +20,7 @@ export const KEY_USAGE = "llmUsage";
 /** 与 store.ts 的 MAX_SESSIONS 同源的考虑：storage.local 约 10MB，超了静默失败。 */
 export const MAX_SNIPPETS = 5_000;
 
-const local = (): chrome.storage.StorageArea => chrome.storage.local;
+const local = (): chrome.storage.StorageArea => localStorage();
 
 /* ==================== LLM 配置 ==================== */
 
@@ -172,8 +173,9 @@ export async function addSnippet(input: AddSnippetInput): Promise<{ snippet: Sni
     }
 
     snippets.push(snippet);
-    const trimmed = snippets.length > MAX_SNIPPETS ? snippets.slice(-MAX_SNIPPETS) : snippets;
+    const trimmed = !hasSyncStorage() && snippets.length > MAX_SNIPPETS ? snippets.slice(-MAX_SNIPPETS) : snippets;
     await local().set({ [KEY_SNIPPETS]: trimmed, [KEY_CARDS]: cards });
+    if(hasSyncStorage())return {snippet:(await getSnippets()).find(s=>s.id===snippet.id)??snippet,card:card?(await getCards()).find(c=>c.key===card!.key)??null:null};
     return { snippet, card };
   });
 }
@@ -194,7 +196,7 @@ export async function enqueueSnippet(snippetId: string, now: number): Promise<St
     }
     s.cardId = card.id;
     await local().set({ [KEY_SNIPPETS]: snippets, [KEY_CARDS]: cards });
-    return card;
+    return hasSyncStorage() ? (await getCards()).find(c=>c.key===card!.key)??null : card;
   });
 }
 
@@ -226,9 +228,16 @@ export async function gradeStoredCard(cardId: string, grade: GradeValue, now: nu
     const i = cards.findIndex((c) => c.id === cardId);
     if (i < 0) return null;
     const next = gradeCard(cards[i]!, grade, now);
+    const prior = cards[i]!;
+    const history = await local().get(["reviewEvents","reviewBases"]);
+    const bases = (history.reviewBases ?? {}) as Record<string, unknown>;
+    const baseKey = `word:${prior.key}`;
+    if (!bases[baseKey]) bases[baseKey] = prior;
+    const events = (history.reviewEvents ?? []) as unknown[];
+    events.push({id:crypto.randomUUID(),kind:"word",cardKey:prior.key,grade,ts:now,algorithm:"fsrs-5-default-v1"});
     cards[i] = next;
-    await local().set({ [KEY_CARDS]: cards });
-    return next;
+    await local().set({ [KEY_CARDS]: cards, reviewEvents:events, reviewBases:bases });
+    return hasSyncStorage() ? (await getCards()).find(c=>c.key===prior.key)??null : next;
   });
 }
 

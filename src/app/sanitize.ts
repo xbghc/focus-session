@@ -57,7 +57,7 @@ function resolve(raw: string, base: string): string | null {
  * @param base 文章地址，相对链接按它补全
  * @param doc 用哪个 document 造节点。缺省是当前页面的；测试里传 jsdom 的。
  */
-export function sanitizeArticle(html: string, base: string, doc: Document = document): string {
+export function sanitizeArticle(html: string, base: string, doc: Document = document, archive = false): string {
   const tpl = doc.createElement("template");
   tpl.innerHTML = html;
   const root = tpl.content;
@@ -87,6 +87,10 @@ export function sanitizeArticle(html: string, base: string, doc: Document = docu
         if (!abs || !SAFE_HREF.test(abs)) el.removeAttribute(name);
         else el.setAttribute(name, abs);
       } else if (name === "src") {
+        if (archive) {
+          if (!/^fs-blob:[a-f0-9]{64}$/.test(value)) el.removeAttribute(name);
+          continue;
+        }
         const abs = /^data:/i.test(value) ? value : resolve(value, base);
         if (!abs || !SAFE_SRC.test(abs)) el.removeAttribute(name);
         else el.setAttribute(name, abs);

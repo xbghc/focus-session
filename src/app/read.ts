@@ -13,6 +13,9 @@ import { hostnameOf, normalizeUrl } from "../lib/url.ts";
 import { decodeWith, hasBom, pickCharset } from "../lib/charset.ts";
 import { recordFetch } from "../background/appLog.ts";
 import { READER_PREFIX } from "../background/store.ts";
+import { localStorage } from "../sync/storage.ts";
+import { loadArchivedArticle, hydrateArchiveImages } from "../archive/reader.ts";
+import type { ArchiveManifest } from "../archive/types.ts";
 
 /**
  * 阅读器：抓一篇网页的正文、洗干净、排成适合手机看的样子，然后把扩展在网页上做的
@@ -37,6 +40,7 @@ interface CachedArticle {
   /** 洗过的正文 HTML。 */
   html: string;
   savedTs: number;
+  archiveManifest?: ArchiveManifest;
 }
 
 const cacheKey = (articleId: string): string => READER_PREFIX + articleId;
@@ -250,13 +254,32 @@ async function main(): Promise<void> {
   // 缓存按用户给的地址查：抓之前还不知道它会跳到哪
   const key = cacheKey(normalizeUrl(url));
   const refresh = params.get("refresh") === "1";
-  let cached = (await chrome.storage.local.get(key))[key] as CachedArticle | undefined;
-  if (!cached || refresh) {
+  let cached = (await localStorage().get(key))[key] as CachedArticle | undefined;
+  let archiveError: unknown;
+  let archived = false;
+  try {
+    const saved = await loadArchivedArticle(url);
+    if (saved) {
+      cached = saved;
+      archived = true;
+      await localStorage().set({ [key]: cached });
+    }
+  } catch (err) {
+    archiveError = err;
+    // Keep the last downloaded version readable while a newer version is unavailable.
+    archived = !!cached?.archiveManifest;
+  }
+  if (archiveError && !cached) {
+    $("rtitle").textContent = hostnameOf(url);
+    showStatus(`文章已存档，但尚未下载到此设备：${archiveError instanceof Error ? archiveError.message : String(archiveError)}`, () => location.reload());
+    return;
+  }
+  if (!archived && !archiveError && (!cached || refresh)) {
     $("rtitle").textContent = hostnameOf(url);
     showStatus(refresh ? "正在重新抓取正文…" : "正在抓取正文…");
     try {
       cached = await fetchAndExtract(url);
-      await chrome.storage.local.set({ [key]: cached });
+      await localStorage().set({ [key]: cached });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       $("rtitle").textContent = hostnameOf(url);
@@ -267,6 +290,7 @@ async function main(): Promise<void> {
       return;
     }
   }
+  if (!cached) return;
 
   // 老缓存（没有 finalUrl 的）退回用户给的地址
   const pageUrl = cached.finalUrl || url;
@@ -283,12 +307,25 @@ async function main(): Promise<void> {
   box.innerHTML = "";
   box.append(heading, byline);
   const body = el("div", "body");
-  body.innerHTML = cached.html;
+  body.innerHTML = sanitizeArticle(cached.html, pageUrl, document, !!cached.archiveManifest);
+  if (cached.archiveManifest) {
+    const status = el("span", undefined, "插件存档 · 正在准备图片…");
+    byline.append(status);
+    const hydration = hydrateArchiveImages(body, cached.archiveManifest);
+    box.append(body);
+    const resources = await hydration;
+    window.addEventListener("pagehide", resources.release, { once: true });
+    status.textContent = resources.missing > 0
+      ? `插件存档 · ${resources.missing} 项资源未保存或未下载`
+      : "插件存档 · 可离线阅读";
+    if (archiveError) status.textContent += " · 当前显示此前下载的版本";
+  }
   box.append(body);
 
   const title = cached.title;
   ctl = await startTracking({
     url: pageUrl,
+    approvedArticle: !!cached.archiveManifest,
     focus: "assume",
     extract: () => extractFromContainer(body, title),
     onPending: pending => { ctl = pending; renderMeta(pageUrl); },

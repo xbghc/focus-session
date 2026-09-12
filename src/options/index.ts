@@ -1,3 +1,4 @@
+import "./sync.ts";
 import type { ExportBundle, ImportOutcome, LlmConfig, LlmLogBundle, LlmUsage, Settings } from "../types.ts";
 import { DEFAULT_LLM, DEFAULT_SETTINGS, MAX_AUTO_WORDS } from "../types.ts";
 import { saveTextFile } from "../lib/download.ts";
@@ -139,7 +140,7 @@ $<HTMLInputElement>("import-file").addEventListener("change", async (e) => {
 });
 
 $("clear").addEventListener("click", async () => {
-  if (!confirm("清空全部阅读记录？设置会保留，此操作不可撤销。")) return;
+  if (!confirm("清除此设备的阅读记录和离线文章，并断开同步？服务器和其他设备的数据不受影响，设置与模型密钥保留。清理前请导出需要保留的数据。")) return;
   await chrome.runtime.sendMessage({ type: "data:clear" });
   dataStatus.textContent = "已清空";
 });

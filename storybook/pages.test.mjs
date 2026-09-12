@@ -57,3 +57,49 @@ test('page bundles inline their assets and replace only the App platform boot', 
     assert.ok(html.includes('data:font/woff2;base64,'));
   }
 });
+
+test('sync settings keep secrets out of status, require a new token for a new address, and preserve local records on disconnect', async () => {
+  const html = pages.options.replace('<!--PREVIEW_CONFIG-->', '<script>window.__PREVIEW__={page:"options",state:"populated",tab:"articles"}</script>');
+  let closeWindow;
+  const dom = new JSDOM(html, {
+    url: 'https://preview.invalid/', runScripts: 'dangerously', pretendToBeVisual: true,
+    beforeParse(window) {
+      closeWindow = window.close.bind(window);
+      window.structuredClone = structuredClone;
+      window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
+      window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    },
+  });
+  const settle = () => new Promise(resolve => setTimeout(resolve, 30));
+  try {
+    await settle();
+    const { document, chrome } = dom.window;
+    const token = document.getElementById('sync-token');
+    assert.equal(token.value, '');
+    assert.ok(document.getElementById('sync-summary').textContent.includes('同步已启用'));
+    const before = await chrome.runtime.sendMessage({ type: 'data:export' });
+    document.getElementById('sync-url').value = 'https://other.example.com';
+    document.getElementById('sync-test').click();
+    await settle();
+    assert.ok(document.getElementById('sync-feedback').textContent.includes('重新填写 Token'));
+    assert.equal((await chrome.runtime.sendMessage({ type: 'sync:get' })).baseUrl, 'https://sync.example.com');
+    document.getElementById('sync-url').value = 'https://sync.example.com';
+    token.value = 'preview-secret-never-rendered';
+    document.getElementById('sync-save').click();
+    await settle();
+    assert.equal(token.value, '');
+    assert.equal(document.getElementById('sync-summary').textContent.includes('preview-secret-never-rendered'), false);
+    document.getElementById('sync-pause').click();
+    await settle();
+    assert.equal(document.getElementById('sync-run').disabled, true);
+    document.getElementById('sync-disconnect').click();
+    await settle();
+    const status = await chrome.runtime.sendMessage({ type: 'sync:get' });
+    assert.equal(status.tokenSet, false);
+    assert.equal(status.enabled, false);
+    const after = await chrome.runtime.sendMessage({ type: 'data:export' });
+    assert.equal(after.articles.length, before.articles.length);
+    assert.equal(after.snippets.length, before.snippets.length);
+    assert.deepEqual(Array.from(dom.window.__previewErrors), []);
+  } finally { closeWindow(); }
+});

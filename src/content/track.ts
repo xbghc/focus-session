@@ -59,6 +59,8 @@ const send = (msg: ContentToBg): void => {
 };
 
 export interface TrackOptions {
+  /** User-saved content has already been explicitly selected for reading; works offline. */
+  approvedArticle?: boolean;
   /**
    * 文章的地址。扩展里就是 location.href；App 的阅读器页面里是**原文**的地址——
    * 页面自己的地址是 read.html，不代表文章。articleId 从它归一化而来，
@@ -178,7 +180,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   window.addEventListener("pagehide", left, { once: true });
   let decision: { ok: boolean; isArticle?: boolean; reason: string };
   try {
-    decision = await chrome.runtime.sendMessage({ type: "article:classify", url: pageUrl,
+    decision = opts.approvedArticle ? {ok:true,isArticle:true,reason:"已保存的文章"} : await chrome.runtime.sendMessage({ type: "article:classify", url: pageUrl,
       title: supplied?.title || document.title,
       text: samplePage(supplied ? supplied.paragraphs.map(p => p.text).join("\n\n") : (document.body?.innerText || document.body?.textContent || "")),
     });
@@ -247,7 +249,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   // 顺带把位置记录也读出来（键名与 background/store.ts 的 posKey 一致），
   // 省一次往返——跳回上次位置这件事越早做越好。
   // 再带一份个人阅读速度的摘要（键名与 background/store.ts 的 KEY_SPEED 一致）：估「还需多久」要用。
-  const prior = await chrome.storage.local.get([`p:${articleId}`, `pos:${articleId}`, "articles", "speed"]);
+  const prior = await chrome.runtime.sendMessage({type:"article:local-state",articleId}) ?? {};
   const priorRecords = (prior[`p:${articleId}`] as ParagraphRecord[]) ?? [];
   const priorPosition = (prior[`pos:${articleId}`] as ReadingPosition | undefined) ?? null;
   const priorArticle = ((prior["articles"] as Record<string, Article> | undefined) ?? {})[articleId];

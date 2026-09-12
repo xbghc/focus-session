@@ -1,3 +1,4 @@
+import { localStorage } from "../sync/storage.ts";
 import type { LlmConfig, LlmFailure, LlmLogBundle, LlmTiming } from "../types.ts";
 import { type CallTiming, LlmError, type RawUsage } from "../lib/llm.ts";
 import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./appLog.ts";
@@ -28,7 +29,7 @@ export const MAX_RAW_CHARS = 16_000;
 /** 请求里字符串字段的上限。上下文在设置里最多 2000 字符，选区硬上限 1955，超出的本身就是异常。 */
 export const MAX_FIELD_CHARS = 2_000;
 
-const local = (): chrome.storage.StorageArea => chrome.storage.local;
+const local = (): chrome.storage.StorageArea => localStorage();
 
 export async function getLlmLog(): Promise<LlmFailure[]> {
   const got = await local().get(KEY_LLM_LOG);

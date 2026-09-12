@@ -5,6 +5,7 @@
   "description": "记录每篇文章的专注片段与阅读进度；在文章页划词即用 MiniMax 翻译并存档，之后用间隔重复复习。",
   "permissions": [
     "storage",
+    "alarms",
     "unlimitedStorage",
     "sidePanel",
     "tabs",

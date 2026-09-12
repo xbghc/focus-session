@@ -6,6 +6,8 @@ import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";
 import { installNative, native, captureVisible, recognizeNative } from "./native.ts";
 import { setOcrBackend } from "../background/ocr.ts";
 import { cleanOcrLines } from "../lib/ocrText.ts";
+import { indexedDriver, installStorage } from "../sync/storage.ts";
+import { bootSync } from "../sync/engine.ts";
 
 /**
  * App 每个页面的第一件事：把 chrome.* 垫片和宿主桥装好。
@@ -60,6 +62,10 @@ export const shim: ChromeShim = installChromeShim({
 });
 
 installNative();
+installStorage(indexedDriver(() => chrome.storage.local.get(null)), data => chrome.storage.local.set(data), async()=>{
+  const data=await chrome.storage.local.get(null);await chrome.storage.local.remove(Object.keys(data).filter(k=>k!=="settings"&&k!=="speed"));
+});
+bootSync();
 const bridge = native();
 if (bridge?.ocrStart) setOcrBackend({
   async recognize(png) {

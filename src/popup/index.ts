@@ -44,9 +44,36 @@ function kv(rows: Array<[string, string]>): HTMLElement {
 /* ---------- 当前页 ---------- */
 
 let liveTimer: ReturnType<typeof setInterval> | null = null;
+let archiveSaving = false;
+let archiveResult = "";
+
+function archiveNode(): HTMLElement {
+  const row = el("div", { class: "actions" });
+  const btn = el("button", { type: "button", class: "btn" }, [archiveSaving ? "正在保存正文和图片…" : "保存文章到同步库"]);
+  btn.disabled = archiveSaving;
+  const note = el("div", { class: "muted small", role: "status" }, [archiveResult || "保存在本机，连接同步服务器后可在手机阅读"]);
+  btn.addEventListener("click", () => {
+    archiveSaving = true;
+    archiveResult = "";
+    btn.disabled = true;
+    btn.textContent = "正在保存正文和图片…";
+    void askPage<{ ok?: boolean; missing?: number; error?: string }>({ type: "page:archive" }).then(result => {
+      archiveResult = result?.ok
+        ? result.missing ? `已保存，${result.missing} 项图片未能获取；可在页面加载完成后重新保存` : "文章和图片已保存在本机，将随同步上传"
+        : result?.error || "保存未完成，请保持原网页打开后重试";
+    }, (err: unknown) => {
+      archiveResult = err instanceof Error ? err.message : String(err);
+    }).finally(() => {
+      archiveSaving = false;
+      void refreshCurrent();
+    });
+  });
+  row.append(btn, note);
+  return row;
+}
 
 /** 问当前标签页的 content script 一句。chrome:// 页、PDF、扩展商店等注入不了脚本，回 null。 */
-async function askPage<T>(msg: PopupToContent): Promise<T | null> {
+async function askPage<T>(msg: PopupToContent | { type: "page:archive" }): Promise<T | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return null;
   try {
@@ -74,11 +101,13 @@ function renderCurrent(st: PageState | null): void {
     const box = el("div", { class: "empty" }, [el("div", {}, [st.reason ?? "未追踪"])]);
     if (st.translateHere) box.append(translateHereNode(st.translateHere));
     if (st.screenshot === "available") box.append(screenshotNode());
+    box.append(archiveNode());
     root.append(box);
     return;
   }
 
   root.append(el("h2", {}, [st.title || "（无标题）"]));
+  root.append(archiveNode());
 
   const durationNode = el("div", { class: "big" }, ["—"]);
   const label = el("div", { class: "muted small" }, ["当前 session"]);

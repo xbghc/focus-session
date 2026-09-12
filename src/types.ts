@@ -10,6 +10,8 @@ export type EndReason =
 /** 一次连续的注意力片段。 */
 export interface Session {
   id: string;
+  deviceId?: string;
+  paragraphsCommitted?: boolean;
   articleId: string;
   url: string;
   title: string;
@@ -69,6 +71,7 @@ export interface ReadingPosition {
 /** 按文章聚合的统计。 */
 export interface Article {
   id: string;
+  manualFinished?: { value: boolean; pending?: boolean; stamp?: { counter: number; deviceId: string } };
   url: string;
   title: string;
   /** Readability 正文全文字数（含未被段落覆盖的零散文本）。 */
@@ -254,6 +257,8 @@ export interface PageState {
 /* ---------- 消息协议 ---------- */
 
 export type ContentToBg =
+  | { type: "article:local-state"; articleId: string }
+  | { type: "archive:save"; payload: import("./archive/types.ts").ArchiveCapture }
   | { type: "page:capture" }
   | { type: "ocr:warm" }
   /** 只传 PNG 的 base64，两个宿主各自决定如何交给识别器。 */
@@ -289,6 +294,11 @@ export type ContentToBg =
   | { type: "options:open" };
 
 export type PopupToBg =
+  | { type: "sync:get" }
+  | { type: "sync:test"; baseUrl: string; token?: string }
+  | { type: "sync:configure"; baseUrl: string; token?: string; enabled: boolean }
+  | { type: "sync:run" }
+  | { type: "sync:disconnect" }
   | { type: "articles:list" }
   | { type: "article:sessions"; articleId: string }
   | { type: "stats:overview" }
@@ -411,6 +421,8 @@ export interface ReadingEstimate {
 }
 
 export interface ExportBundle {
+  /** Optional extension: preserve event identity and FSRS checkpoints across manual file transfers. */
+  reviewHistory?: { version: 1; records: import("./sync/protocol.ts").SyncRecord[] };
   /**
    * 4：加了 `positions`。导入时 3 和 4 都认——安卓 App 和扩展之间靠这份文件互相合并，
    * 两边不一定同时升级。

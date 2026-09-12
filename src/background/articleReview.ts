@@ -1,3 +1,4 @@
+import { localStorage } from "../sync/storage.ts";
 import type {
   ArticleCard,
   ArticleReview,
@@ -29,7 +30,7 @@ export const KEY_ARTICLE_CARDS = "articleCards";
 export const textKey = (articleId: string): string => TEXT_PREFIX + articleId;
 export const reviewKey = (articleId: string): string => REVIEW_PREFIX + articleId;
 
-const local = (): chrome.storage.StorageArea => chrome.storage.local;
+const local = (): chrome.storage.StorageArea => localStorage();
 
 /* ==================== 正文 ==================== */
 
@@ -194,9 +195,15 @@ export async function gradeArticleCard(articleId: string, grade: GradeValue, now
     const at = cards.findIndex((c) => c.articleId === articleId);
     if (at < 0) return null;
     const next = gradeFsrs(cards[at]!, grade, now);
+    const history = await local().get(["reviewEvents","reviewBases"]);
+    const bases = (history.reviewBases ?? {}) as Record<string, unknown>;
+    const baseKey = `article:${articleId}`;
+    if (!bases[baseKey]) bases[baseKey] = cards[at]!;
+    const events = (history.reviewEvents ?? []) as unknown[];
+    events.push({id:crypto.randomUUID(),kind:"article",cardKey:articleId,grade,ts:now,algorithm:"fsrs-5-default-v1"});
     cards[at] = next;
-    await local().set({ [KEY_ARTICLE_CARDS]: cards });
-    return next;
+    await local().set({ [KEY_ARTICLE_CARDS]: cards,reviewEvents:events,reviewBases:bases });
+    return (await getArticleCards()).find(c=>c.articleId===articleId)??next;
   });
 }
 

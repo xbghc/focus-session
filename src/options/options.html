@@ -65,9 +65,42 @@
   <body>
     <h1>Focus Session 设置</h1>
     <p class="muted small">
-      阅读记录只保存在本机的浏览器存储里。<strong>但划词翻译会把选中的文本及其所在段落发送给
+      阅读记录保存在本机；启用同步后，也会保存到你配置的服务器。<strong>划词翻译会把选中的文本及其所在段落发送给
       MiniMax</strong>——不需要翻译的页面请加进下面的翻译黑名单，或直接关掉划词翻译。
     </p>
+
+    <fieldset id="sync-settings">
+      <legend>设备同步</legend>
+      <p class="muted small">
+        连接自己的服务器，在手机和电脑之间合并阅读记录、划词和复习数据。
+        首次启用会上传本机已有记录，并下载账号已有数据；离线时仍可正常使用。
+        阅读与翻译偏好随账号同步；模型 API Key 留在本机，同步 Token 不进入数据导出。
+      </p>
+      <div class="field">
+        <label for="sync-url">后端地址</label>
+        <input id="sync-url" type="text" class="wide" inputmode="url" autocomplete="off" spellcheck="false"
+          placeholder="https://sync.example.com" aria-describedby="sync-address-hint" />
+      </div>
+      <div class="field">
+        <label for="sync-token">Token</label>
+        <input id="sync-token" type="password" class="wide" autocomplete="off" spellcheck="false" placeholder="管理员签发的 Token" />
+      </div>
+      <p id="sync-address-hint" class="muted small">输入服务器根地址。先测试连接可核对账号身份；更换服务器地址时需要重新填写 Token。</p>
+      <div class="row">
+        <button id="sync-test" type="button" disabled>测试连接</button>
+        <button id="sync-save" type="button" class="primary" disabled>保存并启用同步</button>
+        <button id="sync-run" type="button" disabled>立即同步</button>
+        <button id="sync-pause" type="button" hidden disabled>暂停同步</button>
+        <button id="sync-disconnect" type="button" hidden disabled>断开连接</button>
+      </div>
+      <p id="sync-summary" class="small" role="status" aria-live="polite">正在读取同步设置…</p>
+      <p id="sync-identity" class="muted small" style="overflow-wrap: anywhere" hidden></p>
+      <p id="sync-feedback" class="small" role="status" aria-live="polite"></p>
+      <p class="muted small">
+        暂停保留连接配置，断开连接会移除 Token；两者都保留本机数据。
+        已绑定的记录只能同步到原账号；换账号前先导出备份，再使用下方「清除此设备记录」。
+      </p>
+    </fieldset>
 
     <fieldset>
       <legend>MiniMax（翻译与复习都用它）</legend>
@@ -270,10 +303,11 @@
         <a id="download" hidden></a>
         <button id="import">导入并合并 JSON…</button>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
-        <button id="clear" class="danger">清空全部记录</button>
+        <button id="clear" class="danger">清除此设备记录</button>
         <span id="data-status" class="muted small"></span>
       </div>
       <p class="muted small">
+        清除此设备记录会断开同步，保留设置与 API Key，不会删除服务器上的数据。
         导入按文章、专注片段、划词、复习卡逐条合并：同一份文件导两次不会重复，
         同一个词在两边各有一张卡时合成一张、取最近复习过的排期。设置与 API Key 不受影响。
       </p>

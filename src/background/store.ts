@@ -1,4 +1,7 @@
 import { normalizeUrl } from "../lib/url.ts";
+import { localStorage, hasSyncStorage, resetLocal, syncDriver, withDataLock, projectRecords } from "../sync/storage.ts";
+import { mergeRecord, recordKey, validateRecord } from "../sync/protocol.ts";
+import type { SyncRecord } from "../sync/protocol.ts";
 import type {
   Article,
   ArticleCard,
@@ -43,12 +46,13 @@ const MAX_ARTICLES = 1_000;
  */
 let chain: Promise<unknown> = Promise.resolve();
 export function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  if (hasSyncStorage()) return withDataLock(fn);
   const next = chain.then(fn, fn);
   chain = next.catch(() => undefined);
   return next;
 }
 
-const local = () => chrome.storage.local;
+const local = localStorage;
 
 export async function getSettings(): Promise<Settings> {
   const got = await local().get(KEY_SETTINGS);
@@ -205,13 +209,17 @@ export async function deleteArticles(ids: string[]): Promise<number> {
     const [articles, sessions, got] = await Promise.all([
       getArticles(), getSessions(), local().get(null),
     ]);
-    const selected = new Set(ids.filter(id => articles[id]));
+    const archives = (got.archives ?? {}) as Record<string,unknown>;
+    const pending = (got.archivePending ?? {}) as Record<string,unknown>;
+    const pendingRecords = (got.archivePendingRecords ?? {}) as Record<string,unknown>;
+    const selected = new Set(ids.filter(id => articles[id] || archives[id]));
     const deleted = (got[KEY_DELETED] as Record<string, number> | undefined) ?? {};
-    for (const id of selected) { delete articles[id]; deleted[id] = Date.now(); }
+    for (const id of selected) { delete articles[id]; delete archives[id]; delete pending[id]; delete pendingRecords[id]; deleted[id] = Date.now(); }
     const remaining = sessions.filter(s => !selected.has(s.articleId));
     const cards = (got[KEY_ARTICLE_CARDS] as ArticleCard[] | undefined) ?? [];
     await local().set({
       [KEY_ARTICLES]: articles, [KEY_SESSIONS]: remaining, [KEY_DELETED]: deleted,
+      archives,archivePending:pending,archivePendingRecords:pendingRecords,
       [KEY_ARTICLE_CARDS]: cards.filter(c => !selected.has(c.articleId)),
       [KEY_SPEED]: summarizeSpeed(remaining, Date.now()),
     });
@@ -293,21 +301,22 @@ export async function commitSession(
     // 又送来真正的结束消息。用 (articleId, startTs) 认身份，覆盖而不是追加。
     // 只在新来的那份更完整时才覆盖：补记的 endTs 必然 <= 真实结束时刻，
     // 这样两条消息谁先到都不影响结果。
-    const dup = sessions.findIndex((s) => s.articleId === session.articleId && s.startTs === session.startTs);
+    if (hasSyncStorage()) session = { ...session, deviceId: session.deviceId ?? (await syncDriver().read()).deviceId };
+    const dup = sessions.findIndex((s) => s.id === session.id || (s.articleId === session.articleId && s.startTs === session.startTs && s.deviceId === session.deviceId));
     if (dup >= 0) {
       const prev = sessions[dup]!;
-      if (session.endTs > prev.endTs) sessions[dup] = { ...session, id: prev.id };
+      if (session.endTs > prev.endTs) sessions[dup] = { ...session, id: prev.id, paragraphsCommitted:prev.paragraphsCommitted };
     } else {
       sessions.push(session);
     }
     sessions.sort((a, b) => a.startTs - b.startTs);
-    const trimmed = sessions.length > MAX_SESSIONS ? sessions.slice(-MAX_SESSIONS) : sessions;
+    const trimmed = !hasSyncStorage() && sessions.length > MAX_SESSIONS ? sessions.slice(-MAX_SESSIONS) : sessions;
 
     const writes: Record<string, unknown> = { [KEY_SESSIONS]: trimmed };
     // 个人阅读速度的摘要顺手重算：session 表此刻就在手里，不必另开一次全表读取
     writes[KEY_SPEED] = summarizeSpeed(trimmed, Date.now());
 
-    if (paragraphs.length > 0) {
+    if (paragraphs.length > 0 && (!hasSyncStorage() || dup < 0 || !sessions[dup]?.paragraphsCommitted)) {
       const existing = await getParagraphs(session.articleId);
       const byHash = new Map(existing.map((r) => [r.hash, r]));
       for (const p of paragraphs) {
@@ -325,6 +334,8 @@ export async function commitSession(
       }
       const merged = [...byHash.values()].sort((a, b) => a.index - b.index);
       writes[paraKey(session.articleId)] = merged;
+      const committed = sessions.find(s => s.id === session.id || (s.articleId === session.articleId && s.startTs === session.startTs && s.deviceId === session.deviceId));
+      if (committed) committed.paragraphsCommitted = true;
 
       const a = articles[session.articleId];
       if (a) {
@@ -354,7 +365,7 @@ export async function commitSession(
       if (reachedBottom) a.reachedBottom = true;
       // 一旦置位不再回退——否则事后调高阈值会把已经读完的文章批量变回未读。
       // 判定本身见 lib/finish.ts，content script 用的是同一把尺子。
-      if (!a.finished) {
+      if (!a.finished && a.manualFinished?.value !== false) {
         if (isFinished({ ...a, finishRatio: settings.finishRatio })) {
           a.finished = true;
           a.finishedTs = session.endTs;
@@ -391,6 +402,7 @@ export async function markFinished(articleId: string, ts: number): Promise<boole
     const articles = await getArticles();
     const a = articles[articleId];
     if (!a) return false;
+    if (a.manualFinished?.value === false) return false;
     if (a.finished) return true;
     a.finished = true;
     a.finishedTs = ts;
@@ -411,6 +423,7 @@ export async function setFinished(articleId: string, finished: boolean): Promise
     const a = articles[articleId];
     if (!a) return null;
     a.finished = finished;
+    a.manualFinished = { value: finished, pending: true };
     a.finishedTs = finished ? Date.now() : null;
     // 手动取消时把触底标记也清掉，否则下一个 session 结算立刻又把它置回已读完
     if (!finished) a.reachedBottom = false;
@@ -430,6 +443,7 @@ export async function setFinished(articleId: string, finished: boolean): Promise
  * 才碰得到，不值得为它在这条热路径上再读一次卡表。
  */
 function prune(articles: Record<string, Article>): Record<string, Article> {
+  if (hasSyncStorage()) return articles;
   const entries = Object.entries(articles);
   if (entries.length <= MAX_ARTICLES) return articles;
   entries.sort((a, b) => b[1].lastSeenTs - a[1].lastSeenTs);
@@ -460,6 +474,7 @@ export async function exportAll(): Promise<ExportBundle> {
   const data = collect(await local().get(null));
   const llm = await getLlmConfig();
   return {
+    ...(hasSyncStorage() ? {reviewHistory:{version:1 as const,records:Object.values((await syncDriver().read()).records).filter(r=>["card","articleCard","reviewEvent"].includes(r.type))}} : {}),
     schema: 4,
     exportedAt: Date.now(),
     settings: await getSettings(),
@@ -493,8 +508,14 @@ export type ImportOutcome = { ok: true; report: MergeReport; message: string } |
  */
 export async function importBundle(raw: unknown): Promise<ImportOutcome> {
   let incoming: DataSet;
+  let history:SyncRecord[]=[];
   try {
     incoming = parseBundle(raw);
+    const extra=(raw as {reviewHistory?:{version?:unknown;records?:unknown}}).reviewHistory;
+    if(extra!==undefined) {
+      if(extra.version!==1||!Array.isArray(extra.records))throw new Error("复习历史格式不兼容");
+      history=extra.records.map(value=>{const r=validateRecord(value);if(!["card","articleCard","reviewEvent"].includes(r.type))throw new Error("复习历史包含不支持的数据类型");return r;});
+    }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -510,12 +531,12 @@ export async function importBundle(raw: unknown): Promise<ImportOutcome> {
       episodeGapMs: settings.episodeGapMs,
     });
 
-    const sessions = data.sessions.length > MAX_SESSIONS ? data.sessions.slice(-MAX_SESSIONS) : data.sessions;
+    const sessions = !hasSyncStorage() && data.sessions.length > MAX_SESSIONS ? data.sessions.slice(-MAX_SESSIONS) : data.sessions;
     const writes: Record<string, unknown> = {
       [KEY_DELETED]: deleted,
       [KEY_ARTICLES]: prune(data.articles),
       [KEY_SESSIONS]: sessions,
-      [KEY_SNIPPETS]: data.snippets.length > MAX_SNIPPETS ? data.snippets.slice(-MAX_SNIPPETS) : data.snippets,
+      [KEY_SNIPPETS]: !hasSyncStorage() && data.snippets.length > MAX_SNIPPETS ? data.snippets.slice(-MAX_SNIPPETS) : data.snippets,
       [KEY_CARDS]: data.cards,
       [KEY_ARTICLE_CARDS]: data.articleCards,
       // 速度摘要跟着重算：对方的片段也是你读的
@@ -524,6 +545,16 @@ export async function importBundle(raw: unknown): Promise<ImportOutcome> {
     for (const id of Object.keys(incoming.paragraphs)) writes[paraKey(id)] = data.paragraphs[id];
     for (const id of Object.keys(incoming.positions)) writes[posKey(id)] = data.positions[id];
     for (const id of Object.keys(incoming.articleReviews)) writes[reviewKey(id)] = data.articleReviews[id];
+    if(history.length&&hasSyncStorage())await syncDriver().update(state=>{
+      for(const record of history) {
+        const key=recordKey(record),previous=state.records[key],merged=mergeRecord(previous,record);
+        if(JSON.stringify(previous)!==JSON.stringify(merged)) {
+          state.records[key]=merged;state.outbox.push({opId:crypto.randomUUID(),record});
+        }
+        state.counter=Math.max(state.counter,record.stamp.counter);
+      }
+      projectRecords(state);
+    });
     await local().set(writes);
     return { ok: true, report, message: describeReport(report) };
   });
@@ -532,6 +563,7 @@ export async function importBundle(raw: unknown): Promise<ImportOutcome> {
 /** 清空全部记录，但保留设置与 LLM 配置（重填 API key 很烦）。 */
 export async function clearData(): Promise<void> {
   await serialize(async () => {
+    if (hasSyncStorage()) { await resetLocal(); return; }
     const all = await local().get(null);
     const keep = new Set<string>([KEY_SETTINGS, KEY_LLM]);
     await local().remove(Object.keys(all).filter((k) => !keep.has(k)));

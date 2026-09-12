@@ -1,3 +1,4 @@
+import { localStorage } from "../sync/storage.ts";
 import { decodeWith, pickCharset } from "../lib/charset.ts";
 import { ARTICLE_SYSTEM, parseDecision, parseSuggestions, samplePage } from "../lib/articleFilter.ts";
 import { callMessages, extractJson } from "../lib/llm.ts";
@@ -39,7 +40,7 @@ export async function classifyHistoryArticle(articleId: string): Promise<History
   const article = (await getArticles())[articleId];
   if (!article) return { ok: false, reason: "记录已被删除，请刷新列表" };
   try {
-    const stored = await chrome.storage.local.get([`t:${articleId}`, `rh:${articleId}`]);
+    const stored = await localStorage().get([`t:${articleId}`, `rh:${articleId}`]);
     const saved = (stored[`t:${articleId}`] as { text?: string } | undefined)?.text
       || (stored[`rh:${articleId}`] as { html?: string } | undefined)?.html;
     let text = saved?.trim() ?? "";

@@ -2,10 +2,18 @@ import { handle } from '../src/background/handle.ts';
 import { installChromeShim, memoryBackend } from '../src/app/shim.ts';
 import { ARTICLE_URL, fixtures } from './fixtures.ts';
 import type { AnyMessage, PageState } from '../src/types.ts';
+import type { SyncStatus } from '../src/sync/engine.ts';
 
 declare global { interface Window { __PREVIEW__: { state: string; tab: string; page: string }; __previewErrors: string[] } }
 const options = window.__PREVIEW__;
 const seed = fixtures(options.state === 'empty');
+let syncStatus: SyncStatus = {
+  enabled: options.state !== 'empty', baseUrl: options.state === 'empty' ? '' : 'https://sync.example.com',
+  tokenSet: options.state !== 'empty', deviceId: 'storybook-device', pending: options.state === 'error' ? 3 : 0,
+  lastSuccess: options.state === 'empty' ? null : Date.now() - 60_000,
+  error: options.state === 'error' ? '服务器暂时不可达（模拟）' : null, running: options.state === 'loading',
+  ...(options.state === 'empty' ? {} : { userId: 'preview-user', serverId: 'preview-server' }),
+};
 const storage = memoryBackend();
 void storage.set(seed.data);
 window.__previewErrors = [];
@@ -32,6 +40,24 @@ document.addEventListener('submit', event => { event.preventDefault(); event.sto
 export const shim = installChromeShim({
   storage, version: '0.3.5', navigate: url => console.info('[Storybook navigation]', url),
   async handle(raw, sender) {
+    const sync = raw as { type: string; baseUrl?: string; token?: string; enabled?: boolean };
+    if (sync.type === 'sync:get') return { ...syncStatus };
+    if (sync.type.startsWith('sync:')) {
+      if (sync.type === 'sync:disconnect') {
+        syncStatus = { ...syncStatus, enabled: false, tokenSet: false, error: null, running: false };
+        return { ok: true, status: { ...syncStatus } };
+      }
+      if (sync.type === 'sync:configure' && sync.enabled === false) {
+        syncStatus = { ...syncStatus, enabled: false, running: false };
+        return { ok: true, status: { ...syncStatus } };
+      }
+      if (options.state === 'error') return { ok: false, error: '服务器暂时不可达（模拟）' };
+      if (sync.type === 'sync:configure') syncStatus = { ...syncStatus, enabled: true,
+        baseUrl: sync.baseUrl ?? syncStatus.baseUrl, tokenSet: !!sync.token || syncStatus.tokenSet,
+        userId: 'preview-user', serverId: 'preview-server', error: null };
+      if (sync.type === 'sync:run') syncStatus = { ...syncStatus, pending: 0, lastSuccess: Date.now(), running: false };
+      return { ok: true, userId: 'preview-user', serverId: 'preview-server', status: { ...syncStatus } };
+    }
     const msg = raw as AnyMessage;
     switch (msg.type) {
       case 'article:classify-history':

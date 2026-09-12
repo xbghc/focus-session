@@ -3,6 +3,8 @@ import { PORT_TRANSLATE } from "../types.ts";
 import { normalizeUrl } from "../lib/url.ts";
 import { attachTranslatePort, boot, getOpen, handle, recoverOpen } from "./handle.ts";
 import { setOcrBackend } from "./ocr.ts";
+import { indexedDriver, installStorage } from "../sync/storage.ts";
+import { bootSync, scheduleSync } from "../sync/engine.ts";
 
 /*
  * service worker 的入口：只负责把 chrome 的各个注册点接到 handle.ts 上。
@@ -39,14 +41,22 @@ setOcrBackend({
   },
 });
 
+const legacyStorage = chrome.storage.local;
+installStorage(indexedDriver(() => legacyStorage.get(null)), data => legacyStorage.set(data), async()=>{
+  const data=await legacyStorage.get(null);await legacyStorage.remove(Object.keys(data).filter(k=>k!=="settings"&&k!=="speed"));
+});
 boot();
+bootSync();
+void chrome.alarms.create("sync", {periodInMinutes:1});
+chrome.alarms.onAlarm.addListener(alarm => {if(alarm.name === "sync")scheduleSync(100);});
 
 chrome.runtime.onMessage.addListener((msg: AnyMessage & { target?: string }, sender, sendResponse) => {
   if (msg?.target === "offscreen") return false;
+  if (msg.type?.startsWith("sync:") && sender.tab) { sendResponse({ok:false,error:"同步设置只能从扩展设置页访问"}); return false; }
   // 必须显式 return true 保持通道打开；Chrome 不认返回 Promise 的写法。
   handle(msg, sender).then(sendResponse, (err: unknown) => {
     // 写入失败（多数是超出存储配额）不能无声无息
-    console.warn("[focus-session] 消息处理失败", msg, err);
+    console.warn("[focus-session] 消息处理失败", msg.type, err instanceof Error ? err.message : "未知错误");
     sendResponse({ ok: false, error: String(err) });
   });
   return true;

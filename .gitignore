@@ -17,3 +17,9 @@ android/local.properties
 # UI development previews
 storybook-static/
 .npm-cache/
+
+# Server credentials and local persistent data
+.env
+.env.*
+!.env.example
+server/data/

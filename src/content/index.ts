@@ -1,6 +1,7 @@
 import type { PageState } from "../types.ts";
 import { createPageHost } from "./host.ts";
 import { startTracking } from "./track.ts";
+import { captureCurrentArticle } from "../archive/capture.ts";
 
 /*
  * content script 的入口：只做扩展特有的三件事——只跟踪顶层的 HTML 文档、
@@ -26,6 +27,12 @@ let urlChanged: (url: string) => void = () => undefined;
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const m = msg as { type?: string; url?: string } | null;
   const type = m?.type;
+  if (type === "page:archive") {
+    void captureCurrentArticle().then(sendResponse, (err: unknown) => {
+      sendResponse({ error: err instanceof Error ? err.message : String(err) });
+    });
+    return true;
+  }
   if (type === "page:screenshot") {
     screenshot();
     return false;

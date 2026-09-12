@@ -13,6 +13,7 @@ export function setupSettingsLayout(): void {
     privacy.append(summary, intro);
   }
   const descriptions: Record<string, string> = {
+    "设备同步": "服务器连接、同步状态与离线记录",
     "划词翻译": "翻译开关、选区与词汇讲解",
     "读完判定": "调整文章的完成标准",
     "续读位置": "返回上次阅读的段落",
@@ -44,6 +45,7 @@ export function setupSettingsLayout(): void {
       section.open = true;
       requestAnimationFrame(() => section.scrollIntoView({ block: "start" }));
     }
+    if (name === "设备同步" && location.hash === "#sync") section.open = true;
     fieldset.setAttribute("aria-label", heading.textContent);
     legend?.remove();
   }

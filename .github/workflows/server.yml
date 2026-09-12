@@ -1,0 +1,114 @@
+name: Server image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  check:
+    name: Backend and client checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: focus_test
+          POSTGRES_USER: focus_test
+          POSTGRES_PASSWORD: ci-only-ephemeral-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U focus_test -d focus_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://focus_test:ci-only-ephemeral-password@localhost:5432/focus_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm ci
+        working-directory: server
+      - run: npm run typecheck && npm test && npm run build
+        working-directory: server
+
+  image:
+    name: Build amd64 and arm64 image
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Image name and release tags
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${OWNER,,}/focus-session-server"
+          TAGS="$IMAGE:sha-$GITHUB_SHA"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="$(node -p "require('./package.json').version")"
+            SERVER_VERSION="$(node -p "require('./server/package.json').version")"
+            if [[ "$GITHUB_REF_NAME" != "v$VERSION" || "$SERVER_VERSION" != "$VERSION" ]]; then
+              echo 'Release tag, root package and server package versions must match.' >&2
+              exit 1
+            fi
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo 'Release version must be a Docker-compatible semantic version.' >&2
+              exit 1
+            fi
+            TAGS="$TAGS"$'\n'"$IMAGE:$VERSION"
+            if [[ "$VERSION" != *-* ]]; then TAGS="$TAGS"$'\n'"$IMAGE:latest"; fi
+          fi
+          printf 'tags<<IMAGE_TAGS\n%s\nIMAGE_TAGS\n' "$TAGS" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Sign in to GHCR for a release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and optionally publish
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Focus Session Server
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Record published digest
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.image.outputs.tags }}
+        run: |
+          printf 'Published tags:\n```text\n%s\n```\nDigest: `%s`\n' "$TAGS" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
