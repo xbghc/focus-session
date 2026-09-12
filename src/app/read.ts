@@ -1,7 +1,7 @@
 import "./boot.ts";
 import { Readability } from "@mozilla/readability";
 import type { ReaderFetch, Snippet } from "../types.ts";
-import { navigation, readerUrl, shim } from "./boot.ts";
+import { go, navigation, readerUrl, shim } from "./boot.ts";
 import { hostHooks, inApp, native, systemBars } from "./native.ts";
 import { startFullscreen, type FullscreenReading } from "./fullscreen.ts";
 import { sanitizeArticle } from "./sanitize.ts";
@@ -17,12 +17,17 @@ import { READER_PREFIX } from "../background/store.ts";
 import { localStorage } from "../sync/storage.ts";
 import { loadArchivedArticle, hydrateArchiveImages } from "../archive/reader.ts";
 import type { ArchiveManifest } from "../archive/types.ts";
+import { getBook, hydrateBookImages } from "../books/local.ts";
+import { chapterId, parseChapterId, type Book, type BookChapterContent } from "../books/types.ts";
 
 /**
  * 阅读器：抓一篇网页的正文、洗干净、排成适合手机看的样子，然后把扩展在网页上做的
  * 那一整套（session、段落停留、划词翻译、读完角标、跳回上次位置）原样跑在这份正文上。
  *
  * 正文只抓一次，存在 `rh:<articleId>` 下：再次打开秒开、断网也能看。
+ *
+ * 书里的一章走的是同一条路，只是正文不从网上抓，导入那会儿就已经躺在同一个键下了
+ * （见 books/import.ts）。往下的一切——段落、划词、读完角标、跳回上次位置——不区分两者。
  */
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -42,6 +47,8 @@ interface CachedArticle {
   html: string;
   savedTs: number;
   archiveManifest?: ArchiveManifest;
+  /** 书里的一章。带着它的图片清单，打开时按清单从本机的资源库里取。 */
+  book?: BookChapterContent["book"];
 }
 
 const cacheKey = (articleId: string): string => READER_PREFIX + articleId;
@@ -153,8 +160,6 @@ function onPhone(): boolean {
 // 后台发起的换页（读完角标的「回顾这篇」、浮层里的「去设置」）也要先结算最后一段
 navigation.beforeLeave = async () => {
   ctl?.stop("unload");
-  // 去的是有系统栏的页面（回顾、设置），先把栏还回来
-  full?.stop();
 };
 
 /** 返回键：把最后一段结算掉、等写入落盘，再让宿主回退，否则这一段阅读就丢了。 */
@@ -162,8 +167,8 @@ async function leave(): Promise<void> {
   if (leaving) return;
   leaving = true;
   ctl?.stop("unload");
-  // 系统栏先还回来：接下来那些页面（首页、设置）都是有栏的
-  full?.stop();
+  // 系统栏不在这儿还：回退落到哪一页只有宿主知道（可能是书里的上一节，那就该接着全屏），
+  // 所以放回系统栏统一由宿主的 onPageStarted 判断（见 MainActivity）
   await shim.flush();
   const bridge = native();
   if (bridge?.navigateBack) bridge.navigateBack();
@@ -171,11 +176,14 @@ async function leave(): Promise<void> {
   else location.href = "index.html";
 }
 
+/** 顶栏第二行最左边那一格：网页显示域名，书显示书名和这是第几节。 */
+let sourceLabel = "";
+
 function renderMeta(url: string): void {
   const st = ctl?.state();
   $<HTMLButtonElement>("translate-here").disabled = st?.translateHere !== "available";
   $("translate-here").title = st?.translateHere === "on" ? "本页划词翻译已开启" : "启用本页划词翻译";
-  const parts = [hostnameOf(url)];
+  const parts = [sourceLabel || hostnameOf(url)];
   if (st?.tracked) {
     const tracked = st.trackedWords ?? 0;
     const read = st.wordsRead ?? 0;
@@ -271,7 +279,9 @@ async function main(): Promise<void> {
     return true;
   };
 
-  if (!/^https?:\/\//i.test(url)) {
+  /** 这一页是书里的一章还是一个网址。 */
+  const chapter = parseChapterId(url);
+  if (!/^https?:\/\//i.test(url) && !chapter) {
     $("rtitle").textContent = "没有文章";
     showStatus("地址不对。从首页粘贴一个网页地址，或者从浏览器把网页分享到这个 App。");
     return;
@@ -282,10 +292,22 @@ async function main(): Promise<void> {
   const key = cacheKey(normalizeUrl(url));
   const refresh = params.get("refresh") === "1";
   let cached = (await localStorage().get(key))[key] as CachedArticle | undefined;
+  let book: Book | null = null;
+  if (chapter) {
+    // 书的正文导入时就存好了，这儿不联网也不重抓：找不到只能是这本书被删了或没导完
+    book = await getBook(chapter.bookId);
+    if (!cached?.book || !book) {
+      $("rtitle").textContent = "这一章不在本机";
+      showStatus("这本书没有导入完整，或者已经被删掉了。回首页重新导入这个 EPUB 就能接着读。");
+      return;
+    }
+    sourceLabel = `${book.title} · 第 ${chapter.index + 1}/${book.chapters.length} 节`;
+    $("rmeta").textContent = sourceLabel;
+  }
   let archiveError: unknown;
   let archived = false;
   try {
-    const saved = await loadArchivedArticle(url);
+    const saved = chapter ? null : await loadArchivedArticle(url);
     if (saved) {
       cached = saved;
       archived = true;
@@ -301,7 +323,7 @@ async function main(): Promise<void> {
     showStatus(`文章已存档，但尚未下载到此设备：${archiveError instanceof Error ? archiveError.message : String(archiveError)}`, () => location.reload());
     return;
   }
-  if (!archived && !archiveError && (!cached || refresh)) {
+  if (!chapter && !archived && !archiveError && (!cached || refresh)) {
     $("rtitle").textContent = hostnameOf(url);
     showStatus(refresh ? "正在重新抓取正文…" : "正在抓取正文…");
     try {
@@ -327,14 +349,24 @@ async function main(): Promise<void> {
   const box = $("article");
   const heading = el("h1", "atitle", cached.title);
   const byline = el("div", "aline");
-  const link = el("a", undefined, hostnameOf(pageUrl));
-  link.href = pageUrl;
-  byline.append(link, el("span", undefined, new Date(cached.savedTs).toLocaleDateString("zh-CN")));
+  if (book) {
+    byline.append(el("span", undefined, book.title));
+    if (book.author) byline.append(el("span", undefined, book.author));
+  } else {
+    const link = el("a", undefined, hostnameOf(pageUrl));
+    link.href = pageUrl;
+    byline.append(link);
+  }
+  byline.append(el("span", undefined, new Date(cached.savedTs).toLocaleDateString("zh-CN")));
   // 洗过的 HTML，见 sanitize.ts；正文来自任意网站，这一步不能省
   box.innerHTML = "";
   box.append(heading, byline);
   const body = el("div", "body");
-  body.innerHTML = sanitizeArticle(cached.html, pageUrl, document, !!cached.archiveManifest);
+  body.innerHTML = sanitizeArticle(cached.html, pageUrl, document, !!cached.archiveManifest || !!cached.book);
+  if (cached.book) {
+    const resources = await hydrateBookImages(body, cached.book.resources);
+    window.addEventListener("pagehide", resources.release, { once: true });
+  }
   if (cached.archiveManifest) {
     const status = el("span", undefined, "插件存档 · 正在准备图片…");
     byline.append(status);
@@ -349,11 +381,28 @@ async function main(): Promise<void> {
   }
   box.append(body);
 
+  /* 章末的翻页。书里没有"下一页"这一说，读完一节要能直接进下一节，也要能回目录。 */
+  if (book && chapter) {
+    const current = book;
+    const nav = el("div", "chapter-nav");
+    const jump = (to: number, label: string): void => {
+      const btn = el("button", "mini", label);
+      btn.addEventListener("click", () => void go(readerUrl(chapterId(current.id, to))));
+      nav.append(btn);
+    };
+    if (chapter.index > 0) jump(chapter.index - 1, "‹ 上一节");
+    const toc = el("button", "mini", "目录");
+    toc.addEventListener("click", () => void go(`index.html?book=${encodeURIComponent(current.id)}`));
+    nav.append(toc);
+    if (chapter.index + 1 < current.chapters.length) jump(chapter.index + 1, "下一节 ›");
+    box.append(nav);
+  }
+
   const title = cached.title;
   ctl = await startTracking({
     tapRoot: body,
     url: pageUrl,
-    approvedArticle: !!cached.archiveManifest,
+    approvedArticle: !!cached.archiveManifest || !!cached.book,
     focus: "assume",
     extract: () => extractFromContainer(body, title),
     onPending: pending => { ctl = pending; renderMeta(pageUrl); },
@@ -378,6 +427,8 @@ async function main(): Promise<void> {
     setSheet(true);
   });
   $("sheet-close").addEventListener("click", () => setSheet(false));
+  // 书的正文来自本机的文件，没有"重抓"这回事
+  $("refetch").hidden = !!chapter;
   $("refetch").addEventListener("click", () => {
     void (async () => {
       ctl?.stop("unload");

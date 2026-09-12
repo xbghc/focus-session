@@ -1,8 +1,11 @@
 import type { Article, ArticleReview, Session, Snippet } from '../src/types.ts';
 import { DEFAULT_LLM, DEFAULT_SETTINGS } from '../src/types.ts';
 import { newCard, newFsrs } from '../src/lib/review.ts';
+import { BOOKS_KEY, chapterId, type Book } from '../src/books/types.ts';
 
 export const ARTICLE_URL = 'https://example.com/attention';
+/** 书的 id 是文件内容的哈希，预览里给一个固定值就行。 */
+export const BOOK_ID = 'b0'.repeat(32);
 export const BODY = `<h2>Attention is a practice</h2><p>Attention is not simply a resource we spend. It is a practice shaped by the environments we create, the questions we ask, and the habits we repeat each day.</p><p>When we read a difficult text, we build a mental model one paragraph at a time. Taking a short pause can help consolidate the ideas and connect them with what we already know.</p><h2>Design a quieter environment</h2><p>Put distractions out of reach and choose one question to guide the session. The goal is not to finish every page quickly, but to understand enough to explain the argument in your own words.</p><blockquote>A good reading session leaves you with a clearer question.</blockquote><p>最后，给自己留一点回想的时间。合上文章，说出你记得的论点、证据与适用范围，才能发现真正理解了哪些内容。</p>`;
 
 export function fixtures(empty = false) {
@@ -35,13 +38,34 @@ export function fixtures(empty = false) {
     outline: ['事件循环协调调用栈与任务队列。', '微任务在当前任务结束后集中执行。', '耗时计算需要拆分，才能让界面及时响应。', '用时间线可以验证任务的执行顺序。'],
     questions: ['微任务与普通任务的执行顺序是什么？', '为什么长任务会阻塞界面？', '如何拆分一个耗时操作？'],
   };
+  /* 书：章是普通的阅读材料，只是列表上折进书架那一行。 */
+  const book: Book = {
+    id: BOOK_ID, title: '深度阅读的技艺', author: '某位作者', fileName: 'the-art-of-deep-reading.epub',
+    addedTs: now - 7_200_000, missingResources: 0, resources: [],
+    chapters: [
+      { index: 0, title: '开篇：为什么越读越快，记住的越少', words: 1240 },
+      { index: 1, title: '第二章 一次只问一个问题', words: 2080 },
+    ],
+  };
+  const chapter: Article = {
+    id: chapterId(BOOK_ID, 0), url: chapterId(BOOK_ID, 0), title: book.chapters[0]!.title,
+    totalWords: 1240, trackedWords: 1240, wordsRead: 1240, paragraphCount: 14, readParagraphCount: 14,
+    sessionCount: 2, totalMs: 540_000, maxSessionMs: 320_000, readingMs: 480_000, expectedMs: 600_000,
+    firstSeenTs: now - 7_000_000, lastSeenTs: now - 5_400_000,
+    reachedBottom: true, finished: true, finishedTs: now - 5_400_000,
+  };
   const activeArticles = empty ? [] : articles;
   return {
     articles, snippets,
     data: {
       settings: { ...DEFAULT_SETTINGS, articleExcludedUrls: ['https://example.com/search'], translationExcludedUrls: ['mail.example.com'] },
       llm: { ...DEFAULT_LLM, apiKey: '', model: 'storybook-preview' },
-      articles: Object.fromEntries(activeArticles.map(a => [a.id, a])), sessions: empty ? [] : sessions,
+      articles: Object.fromEntries(activeArticles.concat(empty ? [] : [chapter]).map(a => [a.id, a])), sessions: empty ? [] : sessions,
+      [BOOKS_KEY]: empty ? {} : { [book.id]: book },
+      [`rh:${chapterId(BOOK_ID, 0)}`]: {
+        url: chapterId(BOOK_ID, 0), finalUrl: chapterId(BOOK_ID, 0), title: book.chapters[0]!.title,
+        html: BODY, savedTs: now, book: { id: BOOK_ID, index: 0, resources: [] },
+      },
       snippets: empty ? [] : snippets,
       cards: empty ? [] : snippets.slice(0, 2).map((s, i) => newCard(`card-${i}`, s.text, [s.id], now)),
       articleCards: empty ? [] : [{ articleId: articles[1]!.id, ...newFsrs(now) }],

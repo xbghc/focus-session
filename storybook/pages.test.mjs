@@ -20,6 +20,7 @@ const scenarios = [
   ['options', 'populated', 'articles', '文章记录黑名单'],
   ['sidepanel', 'populated', 'articles', 'consolidate'],
   ['app', 'populated', 'articles', '共 3 篇'],
+  ['app', 'populated', 'articles', '深度阅读的技艺'],
   ['appOptions', 'populated', 'articles', '返回'],
   ['reader', 'populated', 'articles', 'Attention is a practice'],
   ['reader', 'loading', 'articles', 'LLM 正在判断'],

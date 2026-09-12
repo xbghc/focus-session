@@ -29,6 +29,15 @@
         <button id="add-go" type="submit" class="primary">阅读</button>
       </form>
       <p id="add-hint" class="muted small" hidden></p>
+      <!-- 书：从手机里挑一个 EPUB，解包之后每一章都是一篇阅读材料 -->
+      <div id="book-row" class="addrow" hidden>
+        <button id="import-book" type="button" class="primary">导入 EPUB</button>
+        <span id="book-status" class="muted small" role="status"></span>
+      </div>
+      <details id="book-section" class="blacklist-section" hidden>
+        <summary id="book-summary">我的书</summary>
+        <div id="book-list" class="list"></div>
+      </details>
       <div class="article-controls">
       <div id="article-search" class="toolbar article-search">
         <input id="q-article" type="search" placeholder="搜索标题或域名" />

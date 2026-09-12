@@ -76,28 +76,46 @@ export function indexedDriver(seed: () => Promise<Record<string, unknown>>, name
 }
 
 type Entry = { type: RecordType; id: string; value: any; articleId?: string };
+/**
+ * 只有网页上的阅读材料出门。
+ *
+ * 书是用户自己从手机里拿来的文件，正文多半有版权，不该上传；同步协议本身也只认
+ * http(s) 的文章标识（见 protocol.ts 的 validateRecord），`epub:` 开头的记录推上去
+ * 会被服务端整批拒掉，连带把别的改动也卡住。所以在这儿就拦住，不进 outbox。
+ * 书的阅读记录因此是**本机的**：换一台设备要重新导入，进度不跟着走。
+ */
+const syncable = (id: unknown): boolean => typeof id === "string" && /^https?:\/\//i.test(id);
 function entries(data: Record<string, any>): Map<string, Entry> {
   const result = new Map<string, Entry>();
   const add = (type: RecordType,id: string,value: any,articleId?: string) => { const e = {type,id,value,articleId}; result.set(recordKey(e),e); };
   for (const [id,a] of Object.entries(object(data.articles))) {
+    if (!syncable(id)) continue;
     const v = { ...object(a) };
     for (const key of ["wordsRead","readParagraphCount","sessionCount","totalMs","maxSessionMs","episodeCount","maxEpisodeMs","readingMs"]) delete v[key];
     add("article",id,v);
   }
-  for (const s of data.sessions ?? []) add("session", s.id,s,s.articleId);
-  for (const s of data.snippets ?? []) add("snippet",s.id,s);
-  for (const c of data.cards ?? []) add("card",c.key,{ id:c.id,key:c.key,snippetIds:c.snippetIds,base:object(data.reviewBases)[`word:${c.key}`] ?? c });
-  for (const c of data.articleCards ?? []) add("articleCard",c.articleId,{articleId:c.articleId,base:object(data.reviewBases)[`article:${c.articleId}`] ?? c},c.articleId);
-  for (const e of data.reviewEvents ?? []) add("reviewEvent",e.id,e,e.kind === "article" ? e.cardKey : undefined);
+  for (const s of data.sessions ?? []) if (syncable(s.articleId)) add("session", s.id,s,s.articleId);
+  const shareable = new Set<string>();
+  for (const s of data.snippets ?? []) if (syncable(s.articleId)) { shareable.add(s.id); add("snippet",s.id,s); }
+  for (const c of data.cards ?? []) {
+    // 只在书里遇到过的词，卡片跟着留在本机；两边都遇到过的词照常同步，出处只报网页那几个
+    const sources = (c.snippetIds ?? []).filter((id: string) => shareable.has(id));
+    if (sources.length > 0) add("card",c.key,{ id:c.id,key:c.key,snippetIds:sources,base:object(data.reviewBases)[`word:${c.key}`] ?? c });
+  }
+  for (const c of data.articleCards ?? []) if (syncable(c.articleId)) add("articleCard",c.articleId,{articleId:c.articleId,base:object(data.reviewBases)[`article:${c.articleId}`] ?? c},c.articleId);
+  for (const e of data.reviewEvents ?? []) {
+    if (e.kind === "article" && !syncable(e.cardKey)) continue;
+    add("reviewEvent",e.id,e,e.kind === "article" ? e.cardKey : undefined);
+  }
   for (const [id,v] of Object.entries(object(data.archives))) add("archive",id,v,id);
   for (const [id,v] of Object.entries(object(data.settings))) {
     if (id in DEFAULT_SETTINGS && id !== "excludedDomains") add("setting",id,v);
   }
   for (const [k,v] of Object.entries(data)) {
-    if (k.startsWith("p:") && Array.isArray(v)) for (const p of v) add("paragraph",JSON.stringify([k.slice(2),p.hash]),p,k.slice(2));
-    else if (k.startsWith("pos:")) add("position",k.slice(4),v,k.slice(4));
-    else if (k.startsWith("r:")) add("articleReview",k.slice(2),v,k.slice(2));
-    else if (k.startsWith("t:")) add("articleText",k.slice(2),v,k.slice(2));
+    if (k.startsWith("p:") && Array.isArray(v)) { if (syncable(k.slice(2))) for (const p of v) add("paragraph",JSON.stringify([k.slice(2),p.hash]),p,k.slice(2)); }
+    else if (k.startsWith("pos:")) { if (syncable(k.slice(4))) add("position",k.slice(4),v,k.slice(4)); }
+    else if (k.startsWith("r:")) { if (syncable(k.slice(2))) add("articleReview",k.slice(2),v,k.slice(2)); }
+    else if (k.startsWith("t:")) { if (syncable(k.slice(2))) add("articleText",k.slice(2),v,k.slice(2)); }
   }
   return result;
 }
@@ -105,7 +123,7 @@ const equal = (a: unknown,b: unknown): boolean => JSON.stringify(a) === JSON.str
 /** Called inside the same transaction as local set/remove, never for remote application. */
 export function trackChanges(state: SyncState, before: Record<string, any>, after: Record<string, any>, legacy = false): void {
   const prev = entries(before), next = entries(after);
-  for(const id of Object.keys(object(after.deletedArticles))) {
+  for(const id of Object.keys(object(after.deletedArticles)).filter(syncable)) {
     const key=recordKey({type:"article",id});
     if(!object(before.deletedArticles)[id]&&!prev.has(key)&&!next.has(key))prev.set(key,{type:"article",id,value:{id}});
   }
