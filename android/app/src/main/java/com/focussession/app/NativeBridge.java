@@ -543,6 +543,19 @@ public class NativeBridge {
         activity.runOnUiThread(activity::goBack);
     }
 
+    /* ==================== 全屏阅读 ==================== */
+
+    /**
+     * 收起 / 放回系统栏。阅读器一打开就收起来（见 src/app/fullscreen.ts）：
+     * 手机上一篇文章该占整块屏。收起后从屏幕边缘往里划能把系统栏临时叫回来。
+     *
+     * @JavascriptInterface 的方法跑在 WebView 自己的绑定线程上，碰窗口得回主线程。
+     */
+    @JavascriptInterface
+    public void setFullscreen(boolean hidden) {
+        activity.runOnUiThread(() -> activity.setFullscreen(hidden));
+    }
+
     /* ==================== 安全区 ==================== */
 
     /** 主线程调用。值没变就不推：转屏、软键盘、分屏都会重新派发一遍 insets。 */

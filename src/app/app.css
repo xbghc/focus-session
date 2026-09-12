@@ -145,6 +145,28 @@ body.reader {
   padding: calc(6px + var(--sa-top)) max(6px, var(--sa-right)) 6px max(6px, var(--sa-left));
   background: var(--bg); border-bottom: 1px solid var(--line);
 }
+/*
+ * 全屏阅读（body.reader.immersive，见 app/fullscreen.ts）。手机上打开一篇文章就是整块屏：
+ * 系统栏由宿主收起来，顶栏改成浮在正文上的 fixed——收起它只是往上挪一格，正文一个字都不动。
+ * sticky 做不到这一点：它收起来会让出那一格高度，正文整段往上跳，读到哪儿就丢了。
+ */
+body.reader.immersive .rbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  /*
+   * 全屏时 --sa-top 是 0（宿主量到系统栏已经不压着 WebView 了），顶栏会贴到屏幕最上沿。
+   * 留一条余量：既不顶着边，也给从上沿划出来的那条临时状态栏腾个地方——它是画在页面上面的，
+   * 不改 inset，顶栏不自己让开就会被压住。
+   */
+  padding-top: calc(6px + max(var(--sa-top), 18px));
+  transition: transform 160ms ease;
+}
+body.reader.immersive.chrome-hidden .rbar { transform: translateY(-100%); }
+/* 顶栏浮着，所以最上面那一屏要自己留出它的高度；--rbar-h 由 fullscreen.ts 量好写进来 */
+body.reader.immersive .article { padding-top: calc(14px + var(--rbar-h, 66px)); }
+@media (prefers-reduced-motion: reduce) {
+  body.reader.immersive .rbar { transition: none; }
+}
+
 .rinfo { flex: 1; min-width: 0; }
 .rtitle {
   font-size: 14px; font-weight: 600; line-height: 1.3;

@@ -2,7 +2,8 @@ import "./boot.ts";
 import { Readability } from "@mozilla/readability";
 import type { ReaderFetch, Snippet } from "../types.ts";
 import { navigation, readerUrl, shim } from "./boot.ts";
-import { hostHooks, inApp, native } from "./native.ts";
+import { hostHooks, inApp, native, systemBars } from "./native.ts";
+import { startFullscreen, type FullscreenReading } from "./fullscreen.ts";
 import { sanitizeArticle } from "./sanitize.ts";
 import { extractFromContainer } from "../content/paragraphs.ts";
 import { cancelRegion } from "../content/screenshot.ts";
@@ -136,11 +137,24 @@ function showStatus(text: string, retry?: () => void): void {
 }
 
 let ctl: TrackController | null = null;
+let full: FullscreenReading | null = null;
 let leaving = false;
+
+/**
+ * 在不在手机上。全屏阅读只在这儿成立：在宿主里（这个 App 只装在手机上），或者窄屏——
+ * 720px 是 app.css 里"手机"那道线，Storybook 的阅读器预览（390px 的 iframe）也就照着
+ * 手机上真实的样子显示。宽屏浏览器里调试 www/ 时照旧留着顶栏。
+ */
+function onPhone(): boolean {
+  if (inApp()) return true;
+  return window.matchMedia?.("(max-width: 720px)").matches ?? false;
+}
 
 // 后台发起的换页（读完角标的「回顾这篇」、浮层里的「去设置」）也要先结算最后一段
 navigation.beforeLeave = async () => {
   ctl?.stop("unload");
+  // 去的是有系统栏的页面（回顾、设置），先把栏还回来
+  full?.stop();
 };
 
 /** 返回键：把最后一段结算掉、等写入落盘，再让宿主回退，否则这一段阅读就丢了。 */
@@ -148,6 +162,8 @@ async function leave(): Promise<void> {
   if (leaving) return;
   leaving = true;
   ctl?.stop("unload");
+  // 系统栏先还回来：接下来那些页面（首页、设置）都是有栏的
+  full?.stop();
   await shim.flush();
   const bridge = native();
   if (bridge?.navigateBack) bridge.navigateBack();
@@ -222,6 +238,15 @@ async function main(): Promise<void> {
   const url = params.get("u")?.trim() ?? "";
   $("back").addEventListener("click", () => void leave());
   $("shot").addEventListener("click", () => ctl?.screenshot());
+  // 全屏先进：正文还在抓的时候系统栏就该让开，不必等正文回来才挪一次位置
+  if (onPhone()) {
+    full = startFullscreen({
+      body: document.body,
+      bar: document.querySelector<HTMLElement>(".rbar")!,
+      host: window,
+      systemBars: systemBars(),
+    });
+  }
   $("translate-here").addEventListener("click", () => { ctl?.translateHere(); renderMeta(url); });
 
   /* 本文生词那张单子的开合。返回键要先问它，所以在 beforeBack 之前就备好。 */
@@ -230,6 +255,8 @@ async function main(): Promise<void> {
   const setSheet = (open: boolean): void => {
     sheet.hidden = !open;
     backdrop.hidden = !open;
+    // 开单子是"我现在要界面"，顶栏跟着露出来；收起时那一排还在，退回全屏交给下一次往下读
+    if (open) full?.reveal();
   };
   backdrop.addEventListener("click", () => setSheet(false));
 

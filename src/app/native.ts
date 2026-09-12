@@ -29,6 +29,11 @@ export interface NativeBridge {
   stopSpeaking(): void;
   /** 页面处理完返回键之后，让宿主真正回退。 */
   navigateBack(): void;
+  /**
+   * 收起（true）/ 放回（false）系统栏。阅读器一打开就收起来：手机上一篇文章该占整块屏。
+   * 收起之后从屏幕边缘往里划能把它们临时叫回来，不必先退出阅读器。
+   */
+  setFullscreen(hidden: boolean): void;
   /** 宿主的版本名。 */
   version(): string;
   /** 系统栏 / 刘海压在 WebView 上的那几条边，"上,右,下,左"，单位 CSS px。 */
@@ -145,6 +150,15 @@ export function captureVisible(): Promise<string> {
   if (!bridge?.captureStart) return Promise.reject(new Error("这个版本的宿主不支持截图翻译"));
   const start = bridge.captureStart.bind(bridge);
   return requestImage(captures, start);
+}
+
+/**
+ * 收起 / 放回系统栏的那座桥。宿主没有这个方法（老版本的 App、或者拿普通浏览器开 www/ 调试）
+ * 时返回 undefined：全屏照样进，只是系统栏收不掉，顶栏该收还是收。
+ */
+export function systemBars(): ((hidden: boolean) => void) | undefined {
+  const bridge = native();
+  return bridge?.setFullscreen ? bridge.setFullscreen.bind(bridge) : undefined;
 }
 
 export async function recognizeNative(png: string): Promise<OcrLine[]> {

@@ -2,6 +2,7 @@ package com.focussession.app;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -25,7 +26,9 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewFeature;
@@ -47,6 +50,7 @@ public class MainActivity extends ComponentActivity {
     static final String ORIGIN = "https://appassets.androidplatform.net";
     static final String ROOT = ORIGIN + "/www/";
     static final String INDEX = ROOT + "index.html";
+    static final String READER = ROOT + "read.html";
     private static final Pattern URL_IN_TEXT = Pattern.compile("https?://[^\\s<>\"']+");
     /** 进程被杀之前记一句「刚才正等着装」，见 onCreate 里恢复它的地方。 */
     private static final String STATE_PENDING_UPDATE = "pendingUpdate";
@@ -58,6 +62,8 @@ public class MainActivity extends ComponentActivity {
     /** 送用户去开「安装未知应用」时先把包记在这儿，回来接着装。 */
     private File pendingUpdate;
     private ActivityResultLauncher<Intent> installPermission;
+    /** 系统栏正收着（阅读器要整块屏）。切到别的应用再回来要照这个再收一次。 */
+    private boolean fullscreen;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -125,6 +131,16 @@ public class MainActivity extends ComponentActivity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 return loader.shouldInterceptRequest(request.getUrl());
+            }
+
+            /**
+             * 离开阅读器就把系统栏还回来。收起来是阅读器自己按屏幕决定的（`Native.setFullscreen`），
+             * 但放回来不能只靠它：首页、设置都是有栏的页面，而页面脚本万一挂在半路上，
+             * 用户会剩在一个没有状态栏的首页上。这里兜住所有出口，包括返回键和 window.open。
+             */
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (fullscreen && (url == null || !url.startsWith(READER))) setFullscreen(false);
             }
 
             @Override
@@ -232,6 +248,24 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
+    /**
+     * 收起 / 放回系统栏（NativeBridge.setFullscreen 在主线程调过来，onPageStarted、onResume 也用它）。
+     *
+     * 收起后的行为选 BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE：从屏幕边缘往里划，系统栏临时回来一会儿，
+     * 松手又走——读到一半想看一眼时间不用先退出阅读器。临时的那一层是画在页面**上面**的，
+     * 不改 insets，所以顶栏自己留了一条余量（见 app.css 里 body.reader.immersive 那段）。
+     *
+     * 系统栏一收，`ViewCompat.setOnApplyWindowInsetsListener` 会再派发一遍 insets，量到的是 0：
+     * 页面的 --sa-* 自己归零，正文铺到整块屏，这一步不用另外通知网页。
+     */
+    void setFullscreen(boolean hidden) {
+        WindowInsetsControllerCompat bars = WindowCompat.getInsetsController(getWindow(), web);
+        bars.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        if (hidden) bars.hide(WindowInsetsCompat.Type.systemBars());
+        else bars.show(WindowInsetsCompat.Type.systemBars());
+        fullscreen = hidden;
+    }
+
     /** 站外链接一律进阅读器：文章卡片的标题、正文里的链接、回顾页的「打开原文」。 */
     void openExternal(Uri u) {
         String scheme = u.getScheme();
@@ -330,6 +364,8 @@ public class MainActivity extends ComponentActivity {
     protected void onResume() {
         super.onResume();
         web.onResume();
+        // 去过别的应用（分享面板、系统安装器）再回来，系统栏往往已经自己回来了；阅读器还开着就再收一次
+        if (fullscreen) setFullscreen(true);
         web.evaluateJavascript("window.__fsHost&&window.__fsHost.visibility(true)", null);
     }
 
