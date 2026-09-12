@@ -6,6 +6,12 @@ import { localStorage } from "../sync/storage.ts";
 import { ARCHIVES_KEY, type ArchiveManifest } from "../archive/types.ts";
 import { cachedBlob } from "../archive/cache.ts";
 import { hostnameOf } from "../lib/url.ts";
+import type { Article } from "../types.ts";
+import { formatDuration } from "../lib/stats.ts";
+import { importEpub } from "../books/import.ts";
+import { coverUrl, deleteBook, getBook, importHash, listBooks, localSink, saveBook } from "../books/local.ts";
+import { canOpenBooks, openEpub, pickEpub } from "../books/native.ts";
+import { chapterId, nextChapter, type Book } from "../books/types.ts";
 
 /**
  * App 首页 = 扩展的 dashboard（文章 / 复习 / 生词本），外加一个"文章从哪来"的入口：
@@ -32,7 +38,7 @@ savedSummary.textContent = "插件保存的文章";
 const savedList = document.createElement("div");
 savedList.className = "list";
 savedSection.append(savedSummary, savedList);
-hint.after(savedSection);
+document.getElementById("book-section")?.after(savedSection);
 let archiveRender = 0;
 async function renderSavedArticles(): Promise<void> {
   const turn = ++archiveRender;
@@ -101,6 +107,184 @@ if (shared) {
     hint.textContent = "分享过来的内容里没有网址。";
   }
 }
+
+/* ==================== 书架 ==================== */
+
+/*
+ * 书和文章摆在同一个分栏里：读完一章和读完一篇文章是同一件事，只是书多一层目录。
+ * 章的阅读记录、划词、复习都由下面那一层自己管，这儿只负责"哪本书、第几节、读到哪了"。
+ */
+
+const bookRow = $("book-row");
+const bookSection = $("book-section");
+const bookStatus = $("book-status");
+const bookList = $("book-list");
+/** 封面的临时地址，重画前逐个回收。 */
+let coverUrls: string[] = [];
+let openBookId = new URLSearchParams(location.search).get("book") ?? "";
+let importing = false;
+let shelfDrawn = false;
+
+const say = (text: string): void => { bookStatus.textContent = text; };
+
+function chapterRow(book: Book, index: number, title: string, words: number, done: boolean): HTMLElement {
+  const item = document.createElement("div");
+  item.className = "card chapter-row";
+  const link = document.createElement("a");
+  link.href = readerUrl(chapterId(book.id, index));
+  link.textContent = `${index + 1}. ${title}`;
+  const meta = document.createElement("span");
+  meta.className = "muted small";
+  meta.textContent = `${words} 字${done ? " · 已读完" : ""}`;
+  item.append(link, meta);
+  return item;
+}
+
+async function renderBooks(): Promise<void> {
+  const books = await listBooks();
+  const res = (await chrome.runtime.sendMessage({ type: "articles:list" })) as { articles?: Article[] };
+  const finished = new Set((res.articles ?? []).filter(a => a.finished).map(a => a.id));
+  const records = new Map((res.articles ?? []).map(a => [a.id, a]));
+  for (const url of coverUrls) URL.revokeObjectURL(url);
+  coverUrls = [];
+
+  const fragment = document.createDocumentFragment();
+  for (const book of books) {
+    const done = new Set(book.chapters.filter(c => finished.has(chapterId(book.id, c.index))).map(c => c.index));
+    const card = document.createElement("div");
+    card.className = "card book-card";
+
+    const row = document.createElement("div");
+    row.className = "row1";
+    const cover = await coverUrl(book);
+    if (cover) {
+      coverUrls.push(cover);
+      const img = document.createElement("img");
+      img.className = "book-cover";
+      img.src = cover;
+      img.alt = "";
+      row.append(img);
+    }
+    const title = document.createElement("div");
+    title.className = "title";
+    const open = document.createElement("a");
+    open.href = readerUrl(chapterId(book.id, nextChapter(book, done)));
+    open.textContent = book.title;
+    title.append(open);
+    const pill = document.createElement("span");
+    pill.className = `pill${done.size === book.chapters.length ? " done" : ""}`;
+    pill.textContent = `${done.size}/${book.chapters.length}`;
+    row.append(title, pill);
+
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    const words = book.chapters.reduce((n, c) => n + c.words, 0);
+    // 读了多久、读了多少，从每一节的记录现算，书本身不存进度
+    const tracked = book.chapters.flatMap(c => records.get(chapterId(book.id, c.index)) ?? []);
+    const read = tracked.reduce((n, a) => n + a.wordsRead, 0);
+    const ms = tracked.reduce((n, a) => n + a.totalMs, 0);
+    for (const part of [book.author, `${book.chapters.length} 节`, `约 ${words.toLocaleString("zh-CN")} 字`,
+      ms > 0 ? `已读 ${read.toLocaleString("zh-CN")} 字 · ${formatDuration(ms)}` : "还没读过",
+      book.missingResources > 0 ? `${book.missingResources} 张图未保存` : ""]) {
+      if (part) sub.append(Object.assign(document.createElement("span"), { textContent: part }));
+    }
+
+    const toc = document.createElement("details");
+    toc.className = "book-toc";
+    const summary = document.createElement("summary");
+    summary.textContent = "目录";
+    const chapters = document.createElement("div");
+    chapters.className = "list";
+    toc.append(summary, chapters);
+    // 一本书上千节的话，展开时才画：书架本身不该为没人看的目录卡住
+    const fill = (): void => {
+      if (chapters.childElementCount > 0) return;
+      const list = document.createDocumentFragment();
+      for (const c of book.chapters) list.append(chapterRow(book, c.index, c.title, c.words, done.has(c.index)));
+      chapters.append(list);
+    };
+    toc.addEventListener("toggle", () => { if (toc.open) fill(); });
+    if (book.id === openBookId) { toc.open = true; fill(); }
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "mini";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => {
+      if (!confirm(`删除《${book.title}》？这本书的正文、图片和每一节的阅读记录都会清掉，划词与生词卡保留。`)) return;
+      remove.disabled = true;
+      void deleteBook(book.id)
+        .then(() => renderBooks())
+        .catch((err: unknown) => { remove.disabled = false; say(err instanceof Error ? err.message : String(err)); });
+    });
+
+    card.append(row, sub, toc, remove);
+    fragment.append(card);
+  }
+  bookList.replaceChildren(fragment);
+  bookSection.hidden = books.length === 0;
+  if (books.length > 0) {
+    // 只在第一次画的时候展开：用户收起来之后，一次同步或一次导入不该把它又掀开
+    if (!shelfDrawn) (bookSection as HTMLDetailsElement).open = true;
+    shelfDrawn = true;
+    $("book-summary").textContent = `我的书（${books.length}）`;
+  }
+}
+
+/**
+ * 导入一个 EPUB。`uri` 来自系统的"用别的应用打开"，没有就自己弹文件选择器。
+ *
+ * 同一个文件再导一次不会重来一遍：书的 id 就是文件内容的哈希，已经在书架上的直接打开，
+ * 上次读到哪还在哪。
+ */
+async function importBook(uri?: string): Promise<void> {
+  if (importing) return;
+  importing = true;
+  $<HTMLButtonElement>("import-book").disabled = true;
+  try {
+    say("正在打开文件…");
+    const picked = uri ? { uri, name: "" } : await pickEpub();
+    if (!picked) { say(""); return; }
+    const handle = await openEpub(picked.uri);
+    try {
+      const existing = await getBook(handle.hash);
+      const book = existing ?? await importEpub(
+        { names: handle.names, bytes: handle.bytes },
+        handle.hash,
+        picked.name || "未命名的书.epub",
+        {
+          parse: (text, mime) => new DOMParser().parseFromString(text, mime),
+          doc: document,
+          hash: importHash,
+          sink: localSink(),
+          onProgress: (done, total) => say(`正在导入…${done}/${total} 节`),
+        },
+      );
+      if (!existing) await saveBook(book);
+      openBookId = book.id;
+      await renderBooks();
+      say(existing ? `《${book.title}》已经在书架上了` : `《${book.title}》导入完成，共 ${book.chapters.length} 节`);
+    } finally {
+      handle.close();
+    }
+  } catch (err) {
+    say(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    importing = false;
+    $<HTMLButtonElement>("import-book").disabled = false;
+  }
+}
+
+if (canOpenBooks()) {
+  bookRow.hidden = false;
+  $("import-book").addEventListener("click", () => void importBook());
+}
+void renderBooks();
+window.addEventListener("focus-sync-updated", () => { void renderBooks(); });
+
+// 从文件管理器里点开一个 EPUB：宿主把 content:// 地址放在 ?epub= 里送过来
+const sharedBook = new URLSearchParams(location.search).get("epub");
+if (sharedBook) void importBook(sharedBook);
 
 /*
  * 开 App 时问一次有没有新版本（一天最多一次，设置页能关，详见 update.ts）。

@@ -2,10 +2,12 @@ package com.focussession.app;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
@@ -55,6 +57,9 @@ public class MainActivity extends ComponentActivity {
     private NativeBridge bridge;
     private ValueCallback<Uri[]> pendingFile;
     private ActivityResultLauncher<Intent> filePicker;
+    /** 网页正等着用户挑一个 EPUB；存的是那次请求的 id。 */
+    private String pendingEpub;
+    private ActivityResultLauncher<Intent> epubPicker;
     /** 送用户去开「安装未知应用」时先把包记在这儿，回来接着装。 */
     private File pendingUpdate;
     private ActivityResultLauncher<Intent> installPermission;
@@ -188,6 +193,16 @@ public class MainActivity extends ComponentActivity {
             cb.onReceiveValue(uris);
         });
 
+        epubPicker = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            String id = pendingEpub;
+            pendingEpub = null;
+            if (id == null) return;
+            Intent data = result.getData();
+            Uri uri = result.getResultCode() == RESULT_OK && data != null ? data.getData() : null;
+            // 取消时也要回话，否则网页那边的 Promise 一直吊着
+            bridge.epubPicked(id, uri == null ? null : uri.toString(), uri == null ? null : displayName(uri));
+        });
+
         /*
          * Android 11 起，用户在「安装未知应用」那一页把开关拨开的**那一瞬间**，
          * 系统会 force-stop 掉刚被授权的这个应用——也就是我们自己。等他返回时进程是新的，
@@ -230,6 +245,40 @@ public class MainActivity extends ComponentActivity {
         } else {
             handleIntent(getIntent(), true);
         }
+    }
+
+    /**
+     * 让用户挑一个 EPUB（NativeBridge.epubPick 从 WebView 的绑定线程调过来）。
+     *
+     * 类型报 `*\/*`：不少文件管理器不给 epub 标类型，只放 application/epub+zip 的话
+     * 用户会看见一屏灰掉的文件。挑错了也没关系，解包那一步会说这不是一本书。
+     */
+    void pickEpub(String id) {
+        runOnUiThread(() -> {
+            if (pendingEpub != null) bridge.epubPicked(pendingEpub, null, null);
+            pendingEpub = id;
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")
+                    .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                            "application/epub+zip", "application/zip", "application/octet-stream"});
+            try {
+                epubPicker.launch(pick);
+            } catch (Exception e) {
+                pendingEpub = null;
+                bridge.epubPicked(id, null, null);
+            }
+        });
+    }
+
+    /** 文件名。拿不到就空着——书名优先用 EPUB 自己的 dc:title。 */
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (Exception ignored) {
+            /* 有的 provider 不认这一列 */
+        }
+        return uri.getLastPathSegment();
     }
 
     /** 站外链接一律进阅读器：文章卡片的标题、正文里的链接、回顾页的「打开原文」。 */
@@ -287,17 +336,27 @@ public class MainActivity extends ComponentActivity {
         return ROOT + "read.html?u=" + Uri.encode(url);
     }
 
-    /** 从「分享」进来：文本里挑出第一个网址。 */
+    /**
+     * 从外面进来的东西：分享一段文本（挑出第一个网址）、或者把一个 EPUB 交给我们打开
+     * （文件管理器的「打开方式」是 ACTION_VIEW，别的应用分享文件是 ACTION_SEND 带 EXTRA_STREAM）。
+     * 书交给首页去导：解包、洗正文、存图都在网页那边，这儿只把地址带过去。
+     */
     private void handleIntent(Intent intent, boolean fresh) {
         String url = null;
-        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+        Uri file = null;
+        String action = intent == null ? null : intent.getAction();
+        if (Intent.ACTION_VIEW.equals(action)) {
+            file = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            file = intent.getParcelableExtra(Intent.EXTRA_STREAM);
             String text = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (text != null) {
+            if (file == null && text != null) {
                 Matcher m = URL_IN_TEXT.matcher(text);
                 if (m.find()) url = m.group();
             }
         }
-        if (url != null) web.loadUrl(readerUrl(url));
+        if (file != null && !isApp(file)) web.loadUrl(ROOT + "index.html?epub=" + Uri.encode(file.toString()));
+        else if (url != null) web.loadUrl(readerUrl(url));
         else if (fresh) web.loadUrl(INDEX);
     }
 

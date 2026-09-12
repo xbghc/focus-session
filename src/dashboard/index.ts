@@ -16,6 +16,8 @@ import { formatDuration } from "../lib/stats.ts";
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
 import { fillMeta } from "../lib/speak.ts";
+import { BOOKS_KEY, parseChapterId, type Book } from "../books/types.ts";
+import { localStorage } from "../sync/storage.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const send = <T,>(msg: unknown): Promise<T> => chrome.runtime.sendMessage(msg) as Promise<T>;
@@ -64,6 +66,11 @@ $("to-options").addEventListener("click", (e) => {
 /* ==================== 文章 ==================== */
 
 let articles: Article[] = [];
+/**
+ * 书目。App 里才有；扩展那边这个键永远是空的，下面那段分组也就永远不进。
+ * 章的阅读记录和文章是同一种东西，只是列表上折成一行，免得一本书把整页刷满。
+ */
+let books: Record<string, Book> = {};
 const selectedArticles = new Set<string>();
 let managingArticles = false;
 let visibleArticles: Article[] = [];
@@ -91,6 +98,9 @@ let speed: SpeedSummary | null = null;
 async function loadArticles(): Promise<void> {
   const res = await send<{ articles: Article[]; speed?: SpeedSummary | null }>({ type: "articles:list" });
   articles = res.articles ?? [];
+  // 走 localStorage() 而不是 chrome.storage.local：App 里数据在同步库那一份下，
+  // 扩展的这个页面没装过垫片，退回真正的 chrome.storage.local——那边本来就没有书。
+  books = ((await localStorage().get(BOOKS_KEY))[BOOKS_KEY] ?? {}) as Record<string, Book>;
   for (const id of selectedArticles) if (!articles.some(a => a.id === id)) selectedArticles.delete(id);
   for (const id of classifications.keys()) if (!articles.some(a => a.id === id)) classifications.delete(id);
   speed = res.speed ?? null;
@@ -100,7 +110,14 @@ async function loadArticles(): Promise<void> {
 function renderArticles(): void {
   const q = $<HTMLInputElement>("q-article").value.trim().toLowerCase();
   const filter = $<HTMLSelectElement>("finish-filter").value;
-  const list = articles.filter((a) => {
+  /*
+   * 书里的章不在这份列表里露面——它们在书架那一栏按书折成一行，
+   * 否则一本四十节的书能把整页刷满。记录本身还是一章一条，只是不在这儿逐条摆出来。
+   * 扩展里 books 永远是空的，这几行等于不存在。
+   */
+  const shelved = (a: Article): boolean => Boolean(books[parseChapterId(a.id)?.bookId ?? ""]);
+  const loose = articles.filter((a) => !shelved(a));
+  const list = loose.filter((a) => {
     if (filter === "done" && !a.finished) return false;
     if (filter === "reading" && a.finished) return false;
     if (!q) return true;
@@ -109,13 +126,15 @@ function renderArticles(): void {
 
   visibleArticles = list;
   updateArticleSelection();
-  const done = articles.filter((a) => a.finished).length;
-  $("article-summary").textContent = `共 ${articles.length} 篇，读完 ${done} 篇`;
+  const done = loose.filter((a) => a.finished).length;
+  const chapters = articles.length - loose.length;
+  $("article-summary").textContent = `共 ${loose.length} 篇，读完 ${done} 篇`
+    + (chapters > 0 ? ` · 另有 ${chapters} 节在书架上` : "");
 
   const box = $("articles");
   box.textContent = "";
   if (list.length === 0) {
-    box.append(el("div", "empty", articles.length ? "没有匹配的文章" : "还没有阅读记录"));
+    box.append(el("div", "empty", loose.length ? "没有匹配的文章" : "还没有阅读记录"));
     return;
   }
 

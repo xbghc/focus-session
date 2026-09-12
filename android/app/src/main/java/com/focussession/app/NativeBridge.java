@@ -41,6 +41,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -49,6 +51,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * 注入到网页 `window.Native` 上的桥。方法一一对应 src/app/native.ts 里的 NativeBridge。
@@ -67,6 +71,11 @@ public class NativeBridge {
     private static final int MAX_REDIRECTS = 6;
     private static final int CHUNK = 16 * 1024;
 
+    /** 一本书、一个条目最多这么大。防的是畸形或超大的文件，不是产品限制。 */
+    private static final long MAX_EPUB_BYTES = 200L * 1024 * 1024;
+    private static final long MAX_ENTRY_BYTES = 16L * 1024 * 1024;
+    private static final int MAX_EPUB_ENTRIES = 5000;
+
     /** 升级包下在 cacheDir/update/ 下，交给安装器时走 FileProvider（见 res/xml/file_paths.xml）。 */
     private static final String UPDATE_DIR = "update";
     private static final String UPDATE_APK = "update.apk";
@@ -77,6 +86,8 @@ public class NativeBridge {
     private final WebView web;
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> live = new ConcurrentHashMap<>();
+    /** 打开着的 EPUB，按页面给的句柄索引。 */
+    private final Map<String, OpenBook> books = new ConcurrentHashMap<>();
     private final Set<String> aborted = ConcurrentHashMap.newKeySet();
     private TextRecognizer recognizer;
     private boolean closed;
@@ -313,6 +324,135 @@ public class NativeBridge {
     /** evaluateJavascript 只能在主线程调。 */
     private void js(String script) {
         activity.runOnUiThread(() -> web.evaluateJavascript(script, null));
+    }
+
+    /* ==================== 电子书 ==================== */
+
+    /*
+     * EPUB 就是一个 zip。解压放在这边而不是网页里：java.util.zip 本来就在平台上，
+     * 不必为此在网页那边再添一个解压依赖；而且 ZipFile 是随机存取的——一本书三五百个条目，
+     * 页面按自己需要的顺序一个个取就行，不必先把整包读进 WebView 的内存。
+     *
+     * 字节和 HTTP 那条桥一样按 16KB 一块 base64 推回去：一块的边界可能落在多字节字符中间，
+     * 按文本传会出乱码。
+     */
+
+    private static final class OpenBook {
+        final ZipFile zip;
+        final File file;
+
+        OpenBook(ZipFile zip, File file) {
+            this.zip = zip;
+            this.file = file;
+        }
+    }
+
+    private File booksDir() {
+        return new File(activity.getCacheDir(), "epub");
+    }
+
+    @JavascriptInterface
+    public void epubPick(String id) {
+        activity.pickEpub(id);
+    }
+
+    /** 由 MainActivity 在用户选完（或取消）之后调过来。 */
+    void epubPicked(String id, String uri, String name) {
+        js("window.__fsEpub&&window.__fsEpub.picked(" + JSONObject.quote(id) + ","
+                + JSONObject.quote(uri == null ? "" : uri) + "," + JSONObject.quote(name == null ? "" : name) + ")");
+    }
+
+    @JavascriptInterface
+    public void epubOpen(String id, String uri) {
+        pool.execute(() -> openBook(id, uri));
+    }
+
+    private void openBook(String id, String uri) {
+        File copy = new File(booksDir(), id + ".epub");
+        try {
+            // content:// 的流只能顺序读一遍，ZipFile 要的是随机存取，所以先原样拷进缓存目录，
+            // 顺手把 SHA-256 算出来——它就是这本书的 id，同一个文件导第二次不会重来一遍。
+            booksDir().mkdirs();
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            long total = 0;
+            try (InputStream in = activity.getContentResolver().openInputStream(Uri.parse(uri));
+                 OutputStream out = new FileOutputStream(copy)) {
+                if (in == null) throw new IllegalStateException("打不开这个文件");
+                byte[] buf = new byte[CHUNK];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    total += n;
+                    if (total > MAX_EPUB_BYTES) throw new IllegalStateException("这个文件太大了");
+                    digest.update(buf, 0, n);
+                    out.write(buf, 0, n);
+                }
+            }
+            ZipFile zip = new ZipFile(copy);
+            JSONArray names = new JSONArray();
+            for (Enumeration<? extends ZipEntry> it = zip.entries(); it.hasMoreElements(); ) {
+                ZipEntry entry = it.nextElement();
+                if (entry.isDirectory()) continue;
+                if (names.length() >= MAX_EPUB_ENTRIES) break;
+                names.put(entry.getName());
+            }
+            closeBook(id); // 同一个句柄重来一次时先收拾干净
+            books.put(id, new OpenBook(zip, copy));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", b));
+            js("window.__fsEpub&&window.__fsEpub.opened(" + JSONObject.quote(id) + ","
+                    + JSONObject.quote(hex.toString()) + "," + JSONObject.quote(names.toString()) + ")");
+        } catch (Exception e) {
+            copy.delete();
+            epubError(id, "打不开这本书：" + e.getMessage());
+        }
+    }
+
+    @JavascriptInterface
+    public void epubEntry(String id, String handle, String name) {
+        pool.execute(() -> {
+            OpenBook book = books.get(handle);
+            try {
+                if (book == null) throw new IllegalStateException("这本书已经关掉了");
+                ZipEntry entry = book.zip.getEntry(name);
+                if (entry == null) throw new IllegalStateException("书里没有 " + name);
+                long read = 0;
+                try (InputStream in = book.zip.getInputStream(entry)) {
+                    byte[] buf = new byte[CHUNK];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        read += n;
+                        // 压缩包声称的大小不可信，边读边数
+                        if (read > MAX_ENTRY_BYTES) throw new IllegalStateException("这个条目太大：" + name);
+                        js("window.__fsEpub&&window.__fsEpub.chunk(" + JSONObject.quote(id) + ","
+                                + JSONObject.quote(Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)) + ")");
+                    }
+                }
+                js("window.__fsEpub&&window.__fsEpub.end(" + JSONObject.quote(id) + ")");
+            } catch (Exception e) {
+                epubError(id, "读取失败：" + e.getMessage());
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public void epubClose(String handle) {
+        pool.execute(() -> closeBook(handle));
+    }
+
+    /** 关掉句柄，连缓存目录里那份拷贝一起删掉：正文和图片这时已经进了页面的库。 */
+    private void closeBook(String handle) {
+        OpenBook book = books.remove(handle);
+        if (book == null) return;
+        try {
+            book.zip.close();
+        } catch (Exception ignored) {
+            /* 关不上也还是要把文件删掉 */
+        }
+        book.file.delete();
+    }
+
+    private void epubError(String id, String message) {
+        js("window.__fsEpub&&window.__fsEpub.error(" + JSONObject.quote(id) + "," + JSONObject.quote(message) + ")");
     }
 
     /* ==================== 文件 ==================== */
@@ -587,6 +727,7 @@ public class NativeBridge {
 
     synchronized void shutdown() {
         closed = true;
+        for (String handle : books.keySet().toArray(new String[0])) closeBook(handle);
         if (recognizer != null) {
             recognizer.close();
             recognizer = null;

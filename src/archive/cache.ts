@@ -36,6 +36,19 @@ export async function cacheBlob(hash: string, blob: Blob): Promise<void> {
   });
 }
 
+/** 删书时回收它独占的图片。别的书或文章还在引用的哈希由调用方先滤掉。 */
+export async function dropBlobs(hashes: readonly string[]): Promise<void> {
+  const valid = hashes.filter(hash => ARCHIVE_HASH.test(hash));
+  if (valid.length === 0) return;
+  const db = await open();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("blobs", "readwrite");
+    for (const hash of valid) tx.objectStore("blobs").delete(hash);
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error("清除书籍资源失败"));
+  });
+}
+
 /** Used by “clear this device”; no server deletion is generated. */
 export async function clearArchiveCache(): Promise<void> {
   const db = await open();

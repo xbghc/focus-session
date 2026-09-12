@@ -13,7 +13,8 @@ test("历史页选择筛选结果、建议经勾选采用、批量删除仅发�
     finished: false, trackedWords: 100, totalWords: 100, wordsRead: 0, totalMs: 0, sessionCount: 0, lastSeenTs: index + 1 }));
   let lockedAttempts = 0;
   const requests: Array<{ type: string; articleIds?: string[]; articleId?: string; settings?: unknown }> = [];
-  g["chrome"] = { runtime: { sendMessage: async (msg: typeof requests[number]) => {
+  // 书架（App 才有）：扩展里这个键永远是空的，历史页据此不折叠任何东西
+  g["chrome"] = { storage: { local: { get: async () => ({}) } }, runtime: { sendMessage: async (msg: typeof requests[number]) => {
     requests.push(msg);
     if (msg.type === "article:classify-history" && msg.articleId === "locked" && lockedAttempts++ === 0) return { ok: false, reason: "HTTP 403" };
     if (msg.type === "article:classify-history") return { ok: true, isArticle: msg.articleId !== "search", reason: "内容类型判断", source: "saved" };
