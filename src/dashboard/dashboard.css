@@ -201,3 +201,80 @@ button.mini {
 .face ol.qs li { margin: 9px 0; line-height: 1.75; font-size: 15px; }
 .face ol.ol li { margin: 10px 0; line-height: 1.85; }
 .face ol.qs li::marker, .face ol.ol li::marker { color: var(--accent); }
+
+.suggestion { display: block; margin-bottom: 8px; overflow-wrap: anywhere; cursor: pointer; }
+.suggestion input { margin-right: 8px; }
+
+.classification-panel { padding: 14px; margin: 12px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }
+.classification-result { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.classification-result p { margin: 5px 0; }
+.classification-result.not-article strong, .classification-result.failed strong { color: var(--accent); }
+
+/* 文章管理：操作、筛选摘要、结果各占一层。 */
+#pane-articles { min-width: 0; }
+#pane-articles > .toolbar { gap: 10px; margin-bottom: 18px; }
+#pane-articles > .toolbar input[type="search"] { min-width: 120px; }
+.article-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0; font-family: var(--sans); }
+.article-actions > button, .article-actions > details { flex: 0 0 auto; white-space: nowrap; }
+.article-actions .selection-toggle input { margin: 0; }
+.article-controls { display: grid; grid-template-columns: minmax(0, 1fr) 104px; align-items: center; gap: 12px; margin-bottom: 18px; }
+.article-controls .article-search, .article-controls .article-actions { grid-area: 1 / 1; margin: 0; min-width: 0; opacity: 1; visibility: visible; transition: opacity 160ms ease, visibility 0s; }
+.article-controls .article-actions { border: 0; }
+.article-controls .article-search input[type="search"] { min-width: 100px; width: 100px; }
+.article-controls .article-search { gap: 8px; }
+.article-controls .article-search[hidden], .article-controls .article-actions[hidden] { display: flex; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 160ms ease, visibility 0s 160ms; }
+.article-controls #manage-articles { grid-area: 1 / 2; width: 104px; }
+.article-controls #manage-articles { transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
+.article-controls #manage-articles[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 9%, var(--card)); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); color: var(--accent); }
+.article-card .row1 > input[type="checkbox"] { opacity: 1; visibility: visible; transition: opacity 160ms ease, visibility 0s; }
+.article-card .row1 > input[type="checkbox"][hidden] { display: block; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 160ms ease, visibility 0s 160ms; }
+@media (prefers-reduced-motion: reduce) {
+  .article-controls .article-search, .article-controls .article-actions,
+  .article-controls .article-search[hidden], .article-controls .article-actions[hidden],
+  .article-controls #manage-articles, .article-card .row1 > input[type="checkbox"],
+  .article-card .row1 > input[type="checkbox"][hidden] { transition: none; }
+}
+.selection-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+#selection-count { margin-right: auto; white-space: nowrap; }
+#pane-articles button { font-family: var(--sans); }
+.article-actions button, .classification-panel button, .blacklist-section button { padding: 7px 11px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--fg); font-size: 12px; line-height: 1.4; cursor: pointer; }
+.article-actions > button { padding: 7px 6px; }
+.article-actions .action-delete { color: #a44438; }
+#pane-articles button:disabled { opacity: .4; cursor: default; }
+#article-action-status:empty { display: none; }
+#article-action-status { margin: 10px 0; font-family: var(--sans); }
+.classification-panel { margin: 18px 0 14px; padding: 14px 16px; border: 0; border-radius: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); font-family: var(--sans); }
+.classification-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.classification-heading strong { font-size: 13px; }
+#classification-progress { margin: 8px 0 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.classification-panel .toolbar { margin: 0; gap: 7px; }
+#select-nonarticles { border-color: var(--accent); color: var(--accent); background: transparent; }
+.article-card { padding: 16px; border-radius: 6px; transition: border-color .15s; min-width: 0; }
+.article-card.selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.article-card .row1 { align-items: center; }
+.article-card .title { min-width: 0; white-space: normal; font-size: 14px; line-height: 1.5; }
+.article-card .sub { margin: 7px 0 0 24px; gap: 5px 12px; }
+.article-card.has-classification .sub { font-size: 11px; }
+.article-card.has-classification .progress, .article-card.has-classification .reading-action { display: none; }
+.article-card.has-classification .sub > :nth-child(n+3) { display: none; }
+.classification-result { display: grid; grid-template-columns: 100px minmax(0,1fr); column-gap: 12px; row-gap: 4px; margin: 12px 0 0 24px; padding: 10px 0 0; font-family: var(--sans); font-size: 12px; line-height: 1.6; }
+.classification-result strong { font-size: 11px; font-weight: 600; }
+.classification-result p { margin: 0; color: var(--muted); }
+.classification-result > span { grid-column: 2; font-size: 10px; }
+.classification-result.is-article strong { color: #54745b; }
+.classification-result.not-article strong { color: var(--accent); }
+.classification-result.failed strong { color: #a44438; }
+.blacklist-section { margin: 14px 0; border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; font-family: var(--sans); }
+.blacklist-section summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.blacklist-section[open] summary { margin-bottom: 12px; }
+.blacklist-section .suggestion { padding: 10px; }
+#articles { margin-top: 14px; }
+@media (max-width: 640px) {
+  .article-controls { gap: 8px; }
+  body.dash { padding-left: 14px; padding-right: 14px; }
+  .article-actions { gap: 6px; }
+  .article-card { padding: 12px; }
+  .classification-result { grid-template-columns: 1fr; gap: 3px; }
+  .classification-result > span { grid-column: 1; }
+  .classification-heading > span { font-size: 10px; }
+}

@@ -119,7 +119,10 @@ export interface Settings {
   readFraction: number;
   /** 同一篇文章内间隔不超过这个值（毫秒）的片段合成一个「回合」。 */
   episodeGapMs: number;
+  /** 旧版共用黑名单，仅用于迁移。 */
   excludedDomains: string[];
+  articleExcludedUrls: string[];
+  translationExcludedUrls: string[];
   /** 划词翻译总开关。关掉后 content script 不再挂选区监听。 */
   translateEnabled: boolean;
   /** 短于此长度的选区不翻译（避免误点选到一两个字符）。 */
@@ -170,6 +173,8 @@ export const DEFAULT_SETTINGS: Settings = {
   readFraction: 0.5,
   episodeGapMs: 300_000,
   excludedDomains: [],
+  articleExcludedUrls: [],
+  translationExcludedUrls: [],
   translateEnabled: true,
   minSelectionChars: 2,
   maxAutoSelectionWords: 200, // ≈ 1100 字符（英文均值 5.5 字符/词），大致是三四段
@@ -253,6 +258,10 @@ export type ContentToBg =
   | { type: "ocr:warm" }
   /** 只传 PNG 的 base64，两个宿主各自决定如何交给识别器。 */
   | { type: "ocr:recognize"; png: string }
+  | { type: "article:classify"; url: string; title: string; text: string }
+  | { type: "article:classify-history"; articleId: string }
+  | { type: "articles:delete"; articleIds: string[] }
+  | { type: "articles:blacklist-suggest"; articleIds: string[] }
   | { type: "article:meta"; meta: ArticleMeta }
   | { type: "session:start"; articleId: string; url: string; title: string; startTs: number }
   /** `position` 捎在心跳上而不另开一条消息：这样它天然享有 session 的补记链路。 */
@@ -642,7 +651,7 @@ export interface LlmStreamTrace {
 export interface LlmFailure {
   ts: number;
   /** 哪条路径出的错 */
-  source: "translate" | "test" | "assist" | "articleReview" | "ask";
+  source: "translate" | "test" | "assist" | "articleReview" | "ask" | "articleFilter" | "blacklistSuggestion";
   /** LlmError 的 kind（config / http / network / timeout / parse / abort）；不是 LlmError 的记 unknown */
   kind: string;
   /** HTTP 状态码，只有 http 类失败才有 */

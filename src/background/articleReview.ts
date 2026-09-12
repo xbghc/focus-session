@@ -12,7 +12,7 @@ import { MAX_REVIEW_CHARS, clipText, generateArticleReview } from "../lib/articl
 import { type GradeValue, dueCards, gradeFsrs, newFsrs, reviewStats } from "../lib/review.ts";
 import { addUsage, getLlmConfig } from "./vocab.ts";
 import { recordFailure, recordTiming } from "./llmLog.ts";
-import { getArticles, serialize } from "./store.ts";
+import { getArticles, isArticleDeleted, serialize } from "./store.ts";
 
 /**
  * 文章级回顾的存储与生成编排。
@@ -45,6 +45,7 @@ export async function getArticleText(articleId: string): Promise<ArticleText | n
  */
 export async function saveArticleText(articleId: string, text: string, fullChars: number): Promise<boolean> {
   return serialize(async () => {
+    if (await isArticleDeleted(articleId)) return false;
     if (await getArticleText(articleId)) return false;
     const clipped = clipText(text, MAX_REVIEW_CHARS);
     const rec: ArticleText = { articleId, text: clipped, fullChars, savedTs: Date.now() };
@@ -107,6 +108,7 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
         await recordTiming("articleReview", config, timing, usage);
         const full: ArticleReview = { articleId, ...review };
         await serialize(async () => {
+          if (await isArticleDeleted(articleId)) return;
           await local().set({ [reviewKey(articleId)]: full });
         });
         return { ok: true, review: full };

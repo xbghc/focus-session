@@ -40,3 +40,21 @@ export function isExcluded(hostname: string, patterns: string[]): boolean {
     return host === p || host.endsWith("." + p);
   });
 }
+
+/** 域名规则包含子域；完整 URL 按源与路径边界匹配，路径区分大小写。 */
+export function matchesUrlRule(rawUrl: string, rule: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    const value = rule.trim();
+    if (!/^https?:\/\//i.test(value)) {
+      if (!/^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(value)) return false;
+      return isExcluded(url.hostname, [value]);
+    }
+    const target = new URL(value);
+    if (target.username || target.password || target.hash || target.search) return false;
+    const path = target.pathname.replace(/\/$/, "");
+    return url.origin === target.origin && (url.pathname === path || url.pathname.startsWith(path + "/"));
+  } catch { return false; }
+}
+
+export const isUrlExcluded = (url: string, rules: string[]): boolean => rules.some(rule => matchesUrlRule(url, rule));

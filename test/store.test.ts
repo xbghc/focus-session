@@ -491,3 +491,41 @@ test("清空数据连速度摘要一起清掉", async () => {
   await store.clearData();
   assert.equal(await store.getSpeedSummary(), null);
 });
+
+
+test("旧黑名单迁移到两份列表，后续修改互不影响", async () => {
+  await area.set({ settings: { excludedDomains: ["example.com"] } });
+  await store.persistMigrations();
+  const initial = await store.getSettings();
+  assert.deepEqual(initial.articleExcludedUrls, ["example.com"]);
+  assert.deepEqual(initial.translationExcludedUrls, ["example.com"]);
+  await store.setSettings({ translationExcludedUrls: [] });
+  const next = await store.getSettings();
+  assert.deepEqual(next.articleExcludedUrls, ["example.com"]);
+  assert.deepEqual(next.translationExcludedUrls, []);
+  await store.persistMigrations();
+  assert.deepEqual((await store.getSettings()).translationExcludedUrls, []);
+});
+
+test("批量删除关联阅读数据并阻止迟到写入，保留生词", async () => {
+  await seedArticle();
+  await store.commitSession(session(), []);
+  const associated = ["p:", "pos:", "t:", "r:", "rh:"];
+  for (const prefix of associated) await area.set({ [prefix + ARTICLE]: { articleId: ARTICLE } });
+  await area.set({ articleCards: [{ articleId: ARTICLE }], snippets: [{ id: "word", articleId: ARTICLE }], cards: [{ id: "card" }] });
+  assert.equal(await store.deleteArticles([ARTICLE, ARTICLE, "missing"]), 1);
+  assert.deepEqual(await store.getArticles(), {});
+  assert.deepEqual(await store.getSessions(), []);
+  for (const prefix of associated) assert.equal(area.data.has(prefix + ARTICLE), false);
+  assert.deepEqual(area.data.get("articleCards"), []);
+  assert.equal((area.data.get("snippets") as unknown[]).length, 1);
+  assert.equal((area.data.get("cards") as unknown[]).length, 1);
+  await store.commitSession(session({ id: "late" }), []);
+  await store.savePosition({ articleId: ARTICLE, hash: "x", index: 0, offset: 0, paragraphCount: 3, savedTs: 100 });
+  const { saveArticleText } = await import("../src/background/articleReview.ts");
+  assert.equal(await saveArticleText(ARTICLE, "迟到正文", 4), false);
+  assert.deepEqual(await store.getSessions(), []);
+  assert.equal(area.data.has("pos:" + ARTICLE), false);
+  await seedArticle();
+  assert.equal(await store.isArticleDeleted(ARTICLE), false, "重新访问可以重新记录");
+});

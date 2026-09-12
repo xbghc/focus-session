@@ -47,7 +47,7 @@ function main(): void {
     provideState = () => ({ tracked: false, reason: "非 HTML 文档" });
     return;
   }
-  const host = createPageHost((url, signal) => startTracking({ url, focus: "window", signal }));
+  const host = createPageHost((url, signal, onPending) => startTracking({ url, focus: "window", signal, onPending }));
   provideState = () => host.state();
   translateHere = () => host.translateHere();
   screenshot = () => host.screenshot();

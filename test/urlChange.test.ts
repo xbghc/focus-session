@@ -78,6 +78,7 @@ g["IntersectionObserver"] = class {
   disconnect(): void {}
 };
 
+let classifyAsArticle = true;
 let sent: Array<{ type?: string; articleId?: string }> = [];
 /** 设置监听的收支。摘不掉的话每重来一轮就多挂一个，翻译器会被停掉的那轮重新拉起来。 */
 let settingsListeners = 0;
@@ -96,6 +97,7 @@ g["chrome"] = {
   },
   runtime: {
     sendMessage: async (msg: { type?: string }) => {
+      if (msg.type === "article:classify") return { ok: true, isArticle: classifyAsArticle, reason: "未识别为文章页" };
       sent.push(msg);
       // 角标只在后台确认建卡之后才弹，见 track.ts 的 maybeShowFinished
       return msg?.type === "article:finished" ? { ok: true, marked: true } : undefined;
@@ -184,6 +186,7 @@ test("收摊之后原地再起一轮：角标收掉、旧那篇不再收到任�
 });
 
 test("非文章页：收摊时摘掉设置监听，划词翻译跟着停", async () => {
+  classifyAsArticle = false;
   settingsListeners = 0;
   const ctl = await startTracking({ url: FIRST, focus: "assume", extract: () => null });
   assert.equal(settingsListeners, 1);

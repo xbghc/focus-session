@@ -14,6 +14,7 @@ const fields = {
   readFraction: $<HTMLInputElement>("readFraction"),
   episodeGap: $<HTMLInputElement>("episodeGap"),
   excluded: $<HTMLTextAreaElement>("excluded"),
+  translationExcluded: $<HTMLTextAreaElement>("translationExcluded"),
   translateEnabled: $<HTMLInputElement>("translateEnabled"),
   restorePositionEnabled: $<HTMLInputElement>("restorePositionEnabled"),
   articleReviewEnabled: $<HTMLInputElement>("articleReviewEnabled"),
@@ -41,7 +42,8 @@ function fill(s: Settings): void {
   fields.dwell.value = String(s.paragraphDwellMs);
   fields.readFraction.value = String(Math.round(s.readFraction * 100));
   fields.episodeGap.value = String(Math.round(s.episodeGapMs / 60_000));
-  fields.excluded.value = s.excludedDomains.join("\n");
+  fields.excluded.value = s.articleExcludedUrls.join("\n");
+  fields.translationExcluded.value = s.translationExcludedUrls.join("\n");
   fields.translateEnabled.checked = s.translateEnabled;
   fields.restorePositionEnabled.checked = s.restorePositionEnabled;
   fields.articleReviewEnabled.checked = s.articleReviewEnabled;
@@ -67,9 +69,11 @@ function collect(): Settings {
     paragraphDwellMs: num(fields.dwell, 1000, 100, 10_000),
     readFraction: num(fields.readFraction, 50, 10, 100) / 100,
     episodeGapMs: num(fields.episodeGap, 5, 0, 120) * 60_000,
-    excludedDomains: fields.excluded.value
+    excludedDomains: [],
+    translationExcludedUrls: fields.translationExcluded.value.split("\n").map(line => line.trim()).filter(Boolean),
+    articleExcludedUrls: fields.excluded.value
       .split("\n")
-      .map((line) => line.trim().toLowerCase())
+      .map((line) => line.trim())
       .filter(Boolean),
     translateEnabled: fields.translateEnabled.checked,
     restorePositionEnabled: fields.restorePositionEnabled.checked,

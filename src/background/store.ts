@@ -1,3 +1,4 @@
+import { normalizeUrl } from "../lib/url.ts";
 import type {
   Article,
   ArticleCard,
@@ -69,7 +70,11 @@ interface LegacySettings {
  * 两步互斥：走过字符换算的人不会再被抬默认值。
  */
 function migrate(stored: Stored): Stored {
-  return { ...migrateSelectionLimit(stored), ...raiseAutoWords(stored) };
+  return {
+    ...migrateSelectionLimit(stored), ...raiseAutoWords(stored),
+    ...(stored.articleExcludedUrls === undefined ? { articleExcludedUrls: stored.excludedDomains ?? [] } : {}),
+    ...(stored.translationExcludedUrls === undefined ? { translationExcludedUrls: stored.excludedDomains ?? [] } : {}),
+  };
 }
 
 /**
@@ -180,15 +185,44 @@ export async function ensureSpeedSummary(): Promise<void> {
   });
 }
 
-/**
- * 记下「上次读到哪」。
- *
- * **刻意不走 serialize**：这是一次整键覆盖写，没有读改写，没有可交错丢失的东西。
- * 同一篇文章开了两个标签页时最后写的赢——那正是想要的语义（最后离开的那一眼
- * 就是下次的落点），排队反而会让先写的那个赢。
- */
+/** 与删除串行，防止旧页面的迟到位置重新创建已删除数据。 */
 export async function savePosition(pos: ReadingPosition): Promise<void> {
-  await local().set({ [posKey(pos.articleId)]: pos });
+  await serialize(async () => {
+    if (await isArticleDeleted(pos.articleId)) return;
+    await local().set({ [posKey(pos.articleId)]: pos });
+  });
+}
+
+const KEY_DELETED = "deletedArticles";
+export async function isArticleDeleted(id: string): Promise<boolean> {
+  const got = await local().get(KEY_DELETED);
+  return Boolean((got[KEY_DELETED] as Record<string, number> | undefined)?.[id]);
+}
+
+/** 清除阅读数据，保留独立的划词记录与生词卡。墓碑拦截仍打开页面的迟到写入。 */
+export async function deleteArticles(ids: string[]): Promise<number> {
+  return serialize(async () => {
+    const [articles, sessions, got] = await Promise.all([
+      getArticles(), getSessions(), local().get(null),
+    ]);
+    const selected = new Set(ids.filter(id => articles[id]));
+    const deleted = (got[KEY_DELETED] as Record<string, number> | undefined) ?? {};
+    for (const id of selected) { delete articles[id]; deleted[id] = Date.now(); }
+    const remaining = sessions.filter(s => !selected.has(s.articleId));
+    const cards = (got[KEY_ARTICLE_CARDS] as ArticleCard[] | undefined) ?? [];
+    await local().set({
+      [KEY_ARTICLES]: articles, [KEY_SESSIONS]: remaining, [KEY_DELETED]: deleted,
+      [KEY_ARTICLE_CARDS]: cards.filter(c => !selected.has(c.articleId)),
+      [KEY_SPEED]: summarizeSpeed(remaining, Date.now()),
+    });
+    const aliases = Object.entries(got).flatMap(([key, value]) => {
+      if (!key.startsWith(READER_PREFIX) || !value || typeof value !== "object") return [];
+      const cached = value as { url?: string; finalUrl?: string };
+      return [cached.url, cached.finalUrl].some(url => typeof url === "string" && selected.has(normalizeUrl(url))) ? [key] : [];
+    });
+    await local().remove([...aliases, ...[...selected].flatMap(id => [paraKey(id), posKey(id), textKey(id), reviewKey(id), READER_PREFIX + id])]);
+    return selected.size;
+  });
 }
 
 /** 注册/更新一篇文章的静态元信息（字数、标题），不触碰阅读进度。 */
@@ -206,6 +240,13 @@ export async function upsertArticleMeta(meta: {
   await serialize(async () => {
     const articles = await getArticles();
     const prev = articles[meta.articleId];
+    // 用户下次重新打开页面，可以重新记录；旧页面的 session 不会经过这里。
+    const removed = await local().get(KEY_DELETED);
+    const deleted = (removed[KEY_DELETED] as Record<string, number> | undefined) ?? {};
+    if (deleted[meta.articleId]) {
+      delete deleted[meta.articleId];
+      await local().set({ [KEY_DELETED]: deleted });
+    }
     articles[meta.articleId] = {
       id: meta.articleId,
       url: meta.url,
@@ -246,6 +287,7 @@ export async function commitSession(
 ): Promise<void> {
   await serialize(async () => {
     const [sessions, articles] = await Promise.all([getSessions(), getArticles()]);
+    if (await isArticleDeleted(session.articleId)) return;
 
     // 同一片段可能被上报两次：后台先按最后一次心跳补记过，随后 content script
     // 又送来真正的结束消息。用 (articleId, startTs) 认身份，覆盖而不是追加。
@@ -457,7 +499,10 @@ export async function importBundle(raw: unknown): Promise<ImportOutcome> {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
   return serialize(async () => {
-    const before = collect(await local().get(null));
+    const stored = await local().get(null);
+    const before = collect(stored);
+    const deleted = (stored[KEY_DELETED] as Record<string, number> | undefined) ?? {};
+    for (const id of Object.keys(incoming.articles)) delete deleted[id];
     const settings = await getSettings();
     const { data, report } = mergeData(before, incoming, {
       now: Date.now(),
@@ -467,6 +512,7 @@ export async function importBundle(raw: unknown): Promise<ImportOutcome> {
 
     const sessions = data.sessions.length > MAX_SESSIONS ? data.sessions.slice(-MAX_SESSIONS) : data.sessions;
     const writes: Record<string, unknown> = {
+      [KEY_DELETED]: deleted,
       [KEY_ARTICLES]: prune(data.articles),
       [KEY_SESSIONS]: sessions,
       [KEY_SNIPPETS]: data.snippets.length > MAX_SNIPPETS ? data.snippets.slice(-MAX_SNIPPETS) : data.snippets,

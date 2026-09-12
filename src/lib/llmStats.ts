@@ -14,6 +14,8 @@ export const SOURCE_LABEL: Record<LlmTiming["source"], string> = {
   assist: "复习助手",
   ask: "浮层追问",
   articleReview: "文章回顾",
+  articleFilter: "文章判别",
+  blacklistSuggestion: "黑名单建议",
 };
 
 /** 毫秒折成人看的。秒以上给一位小数——1.4s 比 1437ms 更容易一眼比较。 */

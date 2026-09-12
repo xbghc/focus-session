@@ -45,7 +45,7 @@ beforeEach(() => {
   g["chrome"] = {
     runtime: {
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      sendMessage: async (msg: { type: string }) => { messages.push(msg); return msg.type === "page:capture" ? await capture() : undefined; },
+      sendMessage: async (msg: { type: string }) => { if (msg.type === "article:classify") return { ok: true, isArticle: false, reason: "非文章" }; messages.push(msg); return msg.type === "page:capture" ? await capture() : undefined; },
     },
     storage: {
       local: { get: async () => ({ settings }) },
@@ -158,14 +158,15 @@ test("非文章页总开关关闭仍能截图，预热不等回复，失败浮�
 test("非文章页运行中排除后截图无操作，也不再给截图字段", async () => {
   controller = await startTracking({ url: location.href, extract: () => null });
   controller.screenshot(); await tick(); assert.ok(root());
-  changed!({ settings: { newValue: { ...settings, excludedDomains: ["example.com"] } } }, "local");
+  changed!({ settings: { newValue: { ...settings, translationExcludedUrls: ["example.com"] } } }, "local");
   assert.equal(root(), undefined);
   const n = messages.length; controller.screenshot(); await tick();
   assert.equal(messages.length, n); assert.equal(controller.state().screenshot, undefined);
 });
 
 test("初始排除域名的 idle 控制器截图是空操作", async () => {
-  settings.excludedDomains = ["example.com"];
+  settings.articleExcludedUrls = ["example.com"];
+  settings.translationExcludedUrls = ["example.com"];
   controller = await startTracking({ url: location.href, extract: () => null });
   controller.screenshot(); await tick();
   assert.equal(messages.length, 0); assert.equal(controller.state().screenshot, undefined);
@@ -209,7 +210,7 @@ test("完整控制器路径：预热不等待、冻结帧裁剪、识别文本�
   const runtime = chrome.runtime;
   let delivered!: (m: unknown) => void;
   runtime.sendMessage = (async (msg: { type: string; png?: string }) => {
-    messages.push(msg);
+    if (msg.type === "article:classify") return { ok: true, isArticle: false, reason: "非文章" }; messages.push(msg);
     if (msg.type === "ocr:warm") return await new Promise(() => {});
     if (msg.type === "page:capture") return { ok: true, dataUrl: "data:image/png;base64,AA==" };
     if (msg.type === "ocr:recognize") { assert.equal(msg.png, "AQID"); return { ok: true, text: "hello world" }; }

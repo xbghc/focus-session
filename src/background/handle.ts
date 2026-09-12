@@ -1,3 +1,4 @@
+import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "./articleFilter.ts";
 import type {
   AnyMessage,
   ContentToBg,
@@ -38,6 +39,7 @@ import {
 } from "./vocab.ts";
 import {
   clearData,
+  deleteArticles,
   commitSession,
   ensureSpeedSummary,
   exportAll,
@@ -157,6 +159,16 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
   const tabId = sender.tab?.id;
 
   switch (msg.type) {
+    case "article:classify": return classifyPage(msg.url, msg.title, msg.text);
+    case "article:classify-history": return classifyHistoryArticle(msg.articleId);
+    case "articles:blacklist-suggest": return suggestBlacklist(msg.articleIds);
+    case "articles:delete": {
+      const deleted = await deleteArticles(msg.articleIds);
+      await mutateOpen(open => {
+        for (const [key, session] of Object.entries(open)) if (msg.articleIds.includes(session.articleId)) delete open[key];
+      });
+      return { ok: true, deleted };
+    }
     /* ---- content script ---- */
     case "article:meta": {
       const m = (msg as Extract<ContentToBg, { type: "article:meta" }>).meta;

@@ -21,7 +21,7 @@ import type { TrackController } from "./track.ts";
  */
 
 /** 按地址起一轮追踪。作废时 signal 会 abort，那一轮就该尽早收手（见 TrackOptions.signal）。 */
-export type Begin = (url: string, signal: AbortSignal) => Promise<TrackController>;
+export type Begin = (url: string, signal: AbortSignal, pending?: (ctl: TrackController) => void) => Promise<TrackController>;
 
 export interface PageHost {
   /** 开张：按这个地址起第一轮。 */
@@ -68,7 +68,10 @@ export function createPageHost(begin: Begin): PageHost {
     reason = "初始化中";
     const ac = new AbortController();
     pending = ac;
-    void begin(url, ac.signal).then(
+    void begin(url, ac.signal, next => {
+      if (gen === round) ctl = next;
+      else next.stop("unload");
+    }).then(
       (next) => {
         // 抽正文期间又换了一篇：这一轮认的地址已经过时，接手的是后来那轮
         if (gen !== round) {

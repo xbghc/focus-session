@@ -1,3 +1,7 @@
+import type { HistoryArticleDecision } from "../lib/articleFilter.ts";
+import type { BlacklistSuggestion } from "../lib/articleFilter.ts";
+import { matchesUrlRule } from "../lib/url.ts";
+import type { Settings } from "../types.ts";
 import type {
   Article,
   ArticleReviewOutcome,
@@ -60,12 +64,35 @@ $("to-options").addEventListener("click", (e) => {
 /* ==================== 文章 ==================== */
 
 let articles: Article[] = [];
+const selectedArticles = new Set<string>();
+let managingArticles = false;
+let visibleArticles: Article[] = [];
+let articleActionBusy = false;
+type Classification = HistoryArticleDecision | { status: "pending" | "running" | "stopped" };
+const classifications = new Map<string, Classification>();
+let classificationRunning = false;
+let stopClassification = false;
+$("manage-articles").addEventListener("click", () => {
+  managingArticles = !managingArticles;
+  if (!managingArticles) selectedArticles.clear();
+  updateArticleSelection();
+  for (const checkbox of document.querySelectorAll<HTMLInputElement>('#articles .row1 > input[type="checkbox"]')) {
+    checkbox.hidden = !managingArticles;
+    checkbox.inert = !managingArticles;
+    if (!managingArticles) {
+      checkbox.checked = false;
+      checkbox.closest(".article-card")?.classList.remove("selected");
+    }
+  }
+});
 /** 个人阅读速度的摘要，和文章列表一起取回，估每篇「还需多久」用。 */
 let speed: SpeedSummary | null = null;
 
 async function loadArticles(): Promise<void> {
   const res = await send<{ articles: Article[]; speed?: SpeedSummary | null }>({ type: "articles:list" });
   articles = res.articles ?? [];
+  for (const id of selectedArticles) if (!articles.some(a => a.id === id)) selectedArticles.delete(id);
+  for (const id of classifications.keys()) if (!articles.some(a => a.id === id)) classifications.delete(id);
   speed = res.speed ?? null;
   renderArticles();
 }
@@ -80,6 +107,8 @@ function renderArticles(): void {
     return a.title.toLowerCase().includes(q) || a.url.toLowerCase().includes(q);
   });
 
+  visibleArticles = list;
+  updateArticleSelection();
   const done = articles.filter((a) => a.finished).length;
   $("article-summary").textContent = `共 ${articles.length} 篇，读完 ${done} 篇`;
 
@@ -91,7 +120,7 @@ function renderArticles(): void {
   }
 
   for (const a of list) {
-    const card = el("div", "card");
+    const card = el("div", "card article-card");
     const row = el("div", "row1");
 
     const title = el("div", "title");
@@ -117,13 +146,26 @@ function renderArticles(): void {
       }
     });
 
-    row.append(title, pill);
+    const select = el("input");
+    select.type = "checkbox";
+    select.hidden = !managingArticles;
+    select.inert = !managingArticles;
+    select.checked = selectedArticles.has(a.id);
+    select.disabled = articleActionBusy;
+    select.setAttribute("aria-label", "选择 " + (a.title || a.url));
+    select.addEventListener("change", () => {
+      if (select.checked) selectedArticles.add(a.id); else selectedArticles.delete(a.id);
+      card.classList.toggle("selected", select.checked);
+      updateArticleSelection();
+    });
+    row.append(select, title, pill);
     // 读完了才有回顾卡；没读完的文章连正文都未必存下来了
     if (a.finished) {
       const rev = el("button", "mini", "回顾");
       rev.addEventListener("click", () => void openArticleReview(a.id));
       row.append(rev);
     }
+    toggle.classList.add("reading-action");
     row.append(toggle);
 
     const sub = el("div", "sub");
@@ -151,12 +193,170 @@ function renderArticles(): void {
     bar.append(fill);
 
     card.append(row, sub, bar);
+    const classification = classifications.get(a.id);
+    if (classification) {
+      const result = el("div", "classification-result");
+      card.classList.add("has-classification");
+      if ("status" in classification) result.textContent = classification.status === "pending" ? "LLM：等待判别" : classification.status === "running" ? "LLM：正在判别…" : "LLM：已停止，尚未判别";
+      else {
+        result.classList.add(classification.ok ? classification.isArticle ? "is-article" : "not-article" : "failed");
+        result.append(el("strong", undefined, classification.ok ? classification.isArticle ? "LLM：是文章" : "LLM：非文章" : "LLM：判别失败"),
+          el("p", undefined, classification.reason));
+        if (classification.ok) result.append(el("span", "muted small", classification.source === "saved" ? "依据：已存正文" : "依据：重新抓取的网页"));
+      }
+      card.append(result);
+    }
+    card.classList.toggle("selected", selectedArticles.has(a.id));
     box.append(card);
   }
 }
 
 $("q-article").addEventListener("input", renderArticles);
 $("finish-filter").addEventListener("change", renderArticles);
+
+function updateArticleSelection(): void {
+  $("article-search").hidden = managingArticles;
+  $("article-search").inert = managingArticles;
+  $("article-actions").hidden = !managingArticles;
+  $("article-actions").inert = !managingArticles;
+  $("pane-articles").classList.toggle("managing-articles", managingArticles);
+  $("manage-articles").textContent = managingArticles ? "完成" : "批量管理";
+  $("manage-articles").setAttribute("aria-pressed", String(managingArticles));
+  $("selection-count").textContent = `已选 ${selectedArticles.size} 篇`;
+  const all = $<HTMLInputElement>("select-articles");
+  const n = visibleArticles.filter(a => selectedArticles.has(a.id)).length;
+  all.checked = n > 0 && n === visibleArticles.length;
+  all.indeterminate = n > 0 && n < visibleArticles.length;
+  all.disabled = articleActionBusy || !visibleArticles.length;
+  for (const id of ["delete-articles", "suggest-blacklist", "classify-articles"]) {
+    $<HTMLButtonElement>(id).disabled = articleActionBusy || !selectedArticles.size;
+  }
+  renderClassificationProgress();
+}
+
+function renderClassificationProgress(): void {
+  $("classification-panel").hidden = classifications.size === 0;
+  const values = [...classifications.values()];
+  const done = values.filter(v => "ok" in v);
+  const nonarticles = done.filter(v => "ok" in v && v.ok && !v.isArticle).length;
+  const failed = done.filter(v => "ok" in v && !v.ok).length;
+  const stopped = values.filter(v => "status" in v && v.status === "stopped").length;
+  $("classification-progress").textContent = `${classificationRunning ? "筛选中" : "筛选结束"}：已处理 ${done.length} / ${values.length} 篇，其中非文章 ${nonarticles} 篇，失败 ${failed} 篇${stopped ? `，未处理 ${stopped} 篇` : ""}。`;
+  $<HTMLButtonElement>("select-nonarticles").disabled = articleActionBusy || !visibleArticles.some(a => {
+    const result = classifications.get(a.id); return result && "ok" in result && result.ok && !result.isArticle;
+  });
+  $<HTMLButtonElement>("retry-classification").disabled = articleActionBusy || !failed;
+  $("stop-classification").hidden = !classificationRunning;
+  $<HTMLButtonElement>("stop-classification").disabled = stopClassification;
+}
+
+async function classifySelected(ids: string[]): Promise<void> {
+  if (articleActionBusy || !ids.length) return;
+  classificationRunning = true;
+  stopClassification = false;
+  for (const id of ids) classifications.set(id, { status: "pending" });
+  await articleAction(async () => {
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (!stopClassification && next < ids.length) {
+        const id = ids[next++]!;
+        classifications.set(id, { status: "running" }); renderArticles();
+        try {
+          const result = await send<HistoryArticleDecision>({ type: "article:classify-history", articleId: id });
+          if (!result || typeof result.ok !== "boolean" || (result.ok && typeof result.isArticle !== "boolean")) throw new Error("判别响应无效，请重试");
+          classifications.set(id, result);
+        } catch (err) { classifications.set(id, { ok: false, reason: err instanceof Error ? err.message : String(err) }); }
+        renderArticles();
+      }
+    };
+    try { await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker)); }
+    finally {
+      for (const id of ids) if ((classifications.get(id) as { status?: string })?.status === "pending") classifications.set(id, { status: "stopped" });
+      classificationRunning = false;
+    }
+  });
+}
+
+$("classify-articles").addEventListener("click", () => void classifySelected([...selectedArticles]));
+$("stop-classification").addEventListener("click", () => { stopClassification = true; renderClassificationProgress(); });
+$("retry-classification").addEventListener("click", () => void classifySelected([...classifications].flatMap(([id, result]) => "ok" in result && !result.ok ? [id] : [])));
+$("select-nonarticles").addEventListener("click", () => {
+  managingArticles = true;
+  selectedArticles.clear();
+  for (const a of visibleArticles) {
+    const result = classifications.get(a.id);
+    if (result && "ok" in result && result.ok && !result.isArticle) selectedArticles.add(a.id);
+  }
+  renderArticles();
+});
+
+$("select-articles").addEventListener("change", () => {
+  const checked = $<HTMLInputElement>("select-articles").checked;
+  for (const a of visibleArticles) {
+    if (checked) selectedArticles.add(a.id); else selectedArticles.delete(a.id);
+  }
+  renderArticles();
+});
+
+async function articleAction(work: () => Promise<void>): Promise<void> {
+  articleActionBusy = true;
+  renderArticles();
+  try { await work(); }
+  catch (err) { $("article-action-status").textContent = "操作失败：" + (err instanceof Error ? err.message : String(err)); }
+  finally { articleActionBusy = false; renderArticles(); }
+}
+
+$("delete-articles").addEventListener("click", () => {
+  const ids = [...selectedArticles];
+  if (!ids.length || !confirm(`删除所选 ${ids.length} 篇文章及其阅读记录、正文、回顾卡？划词记录和生词卡会保留。此操作不可撤销。`)) return;
+  void articleAction(async () => {
+    const res = await send<{ ok: boolean; deleted: number }>({ type: "articles:delete", articleIds: ids });
+    if (!res.ok) throw new Error("删除失败");
+    for (const id of ids) selectedArticles.delete(id);
+    $("article-action-status").textContent = `已删除 ${res.deleted} 篇文章`;
+    await loadArticles();
+  });
+});
+
+$("suggest-blacklist").addEventListener("click", () => {
+  const ids = [...selectedArticles];
+  void articleAction(async () => {
+    $("article-action-status").textContent = "LLM 正在根据所选记录的网址和标题提出建议…";
+    const res = await send<{ ok: boolean; suggestions?: BlacklistSuggestion[]; error?: string }>({ type: "articles:blacklist-suggest", articleIds: ids });
+    if (!res.ok) throw new Error(res.error || "生成失败");
+    const box = $("blacklist-suggestions");
+    const section = $<HTMLDetailsElement>("blacklist-section");
+    section.hidden = false; section.open = true;
+    box.textContent = "";
+    const choices: { input: HTMLInputElement; pattern: string }[] = [];
+    for (const suggestion of res.suggestions ?? []) {
+      const row = el("label", "card suggestion");
+      const input = el("input"); input.type = "checkbox";
+      const matches = articles.filter(a => matchesUrlRule(a.url, suggestion.pattern)).length;
+      row.append(input, el("strong", undefined, suggestion.pattern), el("p", undefined, suggestion.reason),
+        el("p", "muted small", `匹配现有 ${matches} 条记录；采用后阻止后续记录，不删除已有文章，不影响翻译。`));
+      choices.push({ input, pattern: suggestion.pattern });
+      box.append(row);
+    }
+    $("article-action-status").textContent = choices.length ? "请勾选要采用的建议。" : "没有足够依据提出黑名单建议。";
+    if (!choices.length) return;
+    const apply = el("button", undefined, "采用勾选建议");
+    apply.addEventListener("click", () => {
+      const rules = choices.filter(c => c.input.checked).map(c => c.pattern);
+      if (!rules.length) return;
+      apply.disabled = true;
+      void articleAction(async () => {
+        const settings = await send<Settings>({ type: "settings:get" });
+        await send({ type: "settings:set", settings: { articleExcludedUrls: [...new Set([...settings.articleExcludedUrls, ...rules])] } });
+        box.textContent = "";
+        section.hidden = true;
+        $("article-action-status").textContent = `已采用 ${rules.length} 条文章记录黑名单建议`;
+      }).finally(() => { apply.disabled = false; });
+    });
+    box.append(apply);
+  });
+});
+
 
 /* ==================== 生词本 ==================== */
 

@@ -29,7 +29,8 @@
         <button id="add-go" type="submit" class="primary">阅读</button>
       </form>
       <p id="add-hint" class="muted small" hidden></p>
-      <div class="toolbar">
+      <div class="article-controls">
+      <div id="article-search" class="toolbar article-search">
         <input id="q-article" type="search" placeholder="搜索标题或域名" />
         <select id="finish-filter">
           <option value="">全部文章</option>
@@ -38,6 +39,26 @@
         </select>
         <span id="article-summary" class="muted small"></span>
       </div>
+      <div id="article-actions" class="article-actions" hidden>
+        <label class="selection-toggle" title="全选当前搜索和筛选结果"><input id="select-articles" type="checkbox" aria-label="全选当前结果" /> 全选</label>
+        <span id="selection-count" class="muted small">已选 0 篇</span>
+        <button id="delete-articles" class="action-delete" disabled>删除所选</button>
+        <button id="classify-articles" aria-label="LLM 筛选所选文章" disabled>LLM 筛选</button>
+        <button id="suggest-blacklist" disabled>黑名单建议</button>
+      </div>
+      <button id="manage-articles" class="mini" aria-pressed="false">批量管理</button>
+      </div>
+      <p id="article-action-status" class="muted small" role="status"></p>
+      <section id="classification-panel" class="classification-panel" hidden aria-label="LLM 文章筛选">
+        <div class="classification-heading"><strong>筛选结果</strong><span class="muted small">只判断文章类型 · 不自动删除</span></div>
+        <p id="classification-progress" role="status" aria-live="polite"></p>
+        <div class="toolbar">
+          <button id="select-nonarticles" disabled>勾选非文章</button>
+          <button id="retry-classification" disabled>重试失败项</button>
+          <button id="stop-classification" hidden>停止后续请求</button>
+        </div>
+      </section>
+      <details id="blacklist-section" class="blacklist-section" hidden><summary>网址黑名单建议</summary><div id="blacklist-suggestions"></div></details>
       <div id="articles" class="list"></div>
     </section>
 

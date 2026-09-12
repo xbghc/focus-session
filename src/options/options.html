@@ -66,7 +66,7 @@
     <h1>Focus Session 设置</h1>
     <p class="muted small">
       阅读记录只保存在本机的浏览器存储里。<strong>但划词翻译会把选中的文本及其所在段落发送给
-      MiniMax</strong>——不需要翻译的页面请加进下面的排除域名，或直接关掉划词翻译。
+      MiniMax</strong>——不需要翻译的页面请加进下面的翻译黑名单，或直接关掉划词翻译。
     </p>
 
     <fieldset>
@@ -243,9 +243,14 @@
     </fieldset>
 
     <fieldset>
-      <legend>排除域名</legend>
-      <p class="muted small">每行一个。填写 example.com 会同时排除它的子域。</p>
-      <textarea id="excluded" spellcheck="false" placeholder="mail.google.com&#10;twitter.com"></textarea>
+      <legend>文章记录黑名单</legend>
+      <p class="muted small">每行一个域名或完整网址。域名包含子域，网址包含该路径及子路径。不影响翻译。</p>
+      <textarea id="excluded" spellcheck="false" placeholder="example.com&#10;https://example.org/search"></textarea>
+    </fieldset>
+    <fieldset>
+      <legend>翻译黑名单</legend>
+      <p class="muted small">规则格式同上。禁用划词和截图翻译，不影响文章记录。非文章页面可以从弹出面板启用划词翻译。</p>
+      <textarea id="translationExcluded" spellcheck="false" placeholder="mail.google.com"></textarea>
     </fieldset>
 
     <div class="row">

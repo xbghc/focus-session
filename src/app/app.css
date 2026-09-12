@@ -234,6 +234,33 @@ body.reader {
 .sheet .item .vn { color: var(--muted); font-size: 11.5px; line-height: 1.7; font-family: var(--sans); }
 .ph { cursor: pointer; border-bottom: 1px dotted currentColor; }
 
+/* App settings: a compact index with native, keyboard-accessible disclosure groups. */
+body.mobile-settings { padding-bottom: calc(130px + var(--sa-bottom)); }
+.mobile-settings h1 { margin-top: 18px; font-size: 26px; }
+.mobile-settings .topnav a { display: inline-flex; align-items: center; min-height: 44px; }
+.mobile-settings .settings-privacy { margin: 10px 0 24px; color: var(--muted); font-size: 12px; }
+.mobile-settings .settings-privacy summary { padding: 8px 0; cursor: pointer; }
+.mobile-settings .settings-section { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card); min-width: 0; }
+.mobile-settings .settings-section > summary { position: relative; list-style: none; padding: 16px 38px 16px 16px; cursor: pointer; }
+.mobile-settings .settings-section > summary::-webkit-details-marker { display: none; }
+.mobile-settings .settings-section > summary::after { content: '+'; position: absolute; right: 16px; top: 21px; color: var(--muted); font-size: 18px; }
+.mobile-settings .settings-section[open] > summary::after { content: '−'; }
+.mobile-settings .settings-section > summary strong { display: block; font: 600 15px/1.5 var(--sans); }
+.mobile-settings .settings-section > summary span { display: block; margin-top: 3px; font: 12px/1.5 var(--sans); color: var(--muted); }
+.mobile-settings .settings-section > fieldset { min-width: 0; margin: 0; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0 0 10px 10px; padding: 4px 16px 16px; }
+.mobile-settings .field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.mobile-settings .field .wide { grid-column: auto; }
+.mobile-settings .field.check { grid-template-columns: minmax(0, 1fr) auto; }
+.mobile-settings .field.check .hint { grid-column: 1 / -1; }
+.mobile-settings .field.check input { width: 22px !important; height: 22px; accent-color: var(--accent); }
+.mobile-settings input, .mobile-settings textarea { min-width: 0; max-width: 100%; border-radius: 6px; }
+.mobile-settings button { min-height: 44px; border-radius: 6px; }
+.mobile-settings .settings-section p { overflow-wrap: anywhere; }
+.mobile-settings .settings-savebar { position: fixed; z-index: 10; bottom: 0; left: 0; right: 0; max-width: 620px; margin: 0 auto; padding: 12px max(14px, var(--sa-right)) calc(12px + var(--sa-bottom)) max(14px, var(--sa-left)); background: var(--bg); border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
+.mobile-settings .settings-savebar #status { grid-column: 1 / -1; min-height: 0; }
+.mobile-settings .settings-savebar #status:empty { display: none; }
+.mobile-settings .settings-savebar button { width: 100%; }
+
 button.mini {
   font-family: var(--sans); font-size: 12px; cursor: pointer;
   padding: 5px 10px; border-radius: 3px;

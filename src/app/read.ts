@@ -98,13 +98,12 @@ async function fetchAndExtract(url: string): Promise<CachedArticle> {
     const base = doc.createElement("base");
     base.href = finalUrl;
     doc.head.prepend(base);
-    const parsed = new Readability(doc).parse();
-    if (!parsed?.content) throw new Error("没能从这一页里认出正文。它可能不是文章，或者需要登录才能看。");
+    const parsed = new Readability(doc.cloneNode(true) as Document).parse();
     const article: CachedArticle = {
       url,
       finalUrl,
-      title: (parsed.title || doc.title || url).replace(/\s+/g, " ").trim(),
-      html: sanitizeArticle(parsed.content, finalUrl),
+      title: (parsed?.title || doc.title || url).replace(/\s+/g, " ").trim(),
+      html: sanitizeArticle(parsed?.content || doc.body.innerHTML, finalUrl),
       savedTs: Date.now(),
     };
     log.title = article.title;
@@ -154,6 +153,8 @@ async function leave(): Promise<void> {
 
 function renderMeta(url: string): void {
   const st = ctl?.state();
+  $<HTMLButtonElement>("translate-here").disabled = st?.translateHere !== "available";
+  $("translate-here").title = st?.translateHere === "on" ? "本页划词翻译已开启" : "启用本页划词翻译";
   const parts = [hostnameOf(url)];
   if (st?.tracked) {
     const tracked = st.trackedWords ?? 0;
@@ -217,6 +218,7 @@ async function main(): Promise<void> {
   const url = params.get("u")?.trim() ?? "";
   $("back").addEventListener("click", () => void leave());
   $("shot").addEventListener("click", () => ctl?.screenshot());
+  $("translate-here").addEventListener("click", () => { ctl?.translateHere(); renderMeta(url); });
 
   /* 本文生词那张单子的开合。返回键要先问它，所以在 beforeBack 之前就备好。 */
   const sheet = $("sheet");
@@ -289,6 +291,7 @@ async function main(): Promise<void> {
     url: pageUrl,
     focus: "assume",
     extract: () => extractFromContainer(body, title),
+    onPending: pending => { ctl = pending; renderMeta(pageUrl); },
   });
   hostHooks.visibility = (v) => ctl?.setVisible(v);
   renderMeta(pageUrl);

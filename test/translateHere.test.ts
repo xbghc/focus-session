@@ -53,7 +53,7 @@ g["chrome"] = {
     },
   },
   runtime: {
-    sendMessage: async () => undefined,
+    sendMessage: async () => ({ ok: true, isArticle: false, reason: "未识别为文章页" }),
     getURL: (p: string) => `chrome-extension://test/${p}`,
   },
 };
@@ -90,9 +90,9 @@ test("总开关关掉即摘监听且不再给按钮；开关回来时用户的�
   assert.equal(mouseups, 1);
   assert.equal(ctl.state().translateHere, "on");
 
-  push({ ...DEFAULT_SETTINGS, excludedDomains: ["example.com"] });
+  push({ ...DEFAULT_SETTINGS, translationExcludedUrls: ["example.com"] });
   assert.equal(mouseups, 0);
-  assert.deepEqual(ctl.state(), { tracked: false, reason: "app.example.com 在排除列表中" });
+  assert.deepEqual(ctl.state(), { tracked: false, reason: "命中翻译黑名单；未识别为文章页" });
   ctl.stop();
 });
 
@@ -105,4 +105,37 @@ test("总开关本来就关着的页面不给按钮", async () => {
   ctl.translateHere(); // 点了也不该挂：总开关的语义是「根本不挂选区监听」
   assert.equal(mouseups, 0);
   ctl.stop();
+});
+
+
+test("文章黑名单不会禁用非文章页翻译", async () => {
+  (g["chrome"] as { storage: { local: { get: () => Promise<unknown> } } }).storage.local.get = async () => ({
+    settings: { ...DEFAULT_SETTINGS, articleExcludedUrls: ["app.example.com"] },
+  });
+  const ctl = await startTracking({ url: URL_, extract: () => null });
+  assert.equal(ctl.state().tracked, false);
+  assert.equal(ctl.state().screenshot, "available");
+  ctl.translateHere();
+  assert.equal(ctl.state().translateHere, "on");
+  ctl.stop();
+});
+
+
+test("LLM 等待期间可开启翻译，判为非文章后保留开启状态", async () => {
+  const chromeMock = g["chrome"] as { storage: { local: { get: () => Promise<unknown> } }; runtime: { sendMessage: () => Promise<unknown> } };
+  chromeMock.storage.local.get = async () => ({ settings: DEFAULT_SETTINGS });
+  let respond!: (v: unknown) => void;
+  chromeMock.runtime.sendMessage = () => new Promise(resolve => { respond = resolve; });
+  let pending!: Awaited<ReturnType<typeof startTracking>>;
+  const ready = startTracking({ url: URL_, extract: () => null, onPending: value => { pending = value; } });
+  await new Promise(resolve => setImmediate(resolve));
+  pending.translateHere();
+  assert.equal(pending.state().translateHere, "on");
+  respond({ ok: true, isArticle: false, reason: "聊天界面" });
+  const controller = await ready;
+  assert.equal(controller.state().tracked, false);
+  assert.equal(controller.state().translateHere, "on");
+  assert.equal(mouseups, 1);
+  controller.stop();
+  assert.equal(mouseups, 0);
 });

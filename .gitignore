@@ -13,3 +13,7 @@ android/local.properties
 # 签名密钥永远不进仓库（Release 工作流从 Secrets 里解出来）
 *.jks
 *.keystore
+
+# UI development previews
+storybook-static/
+.npm-cache/
