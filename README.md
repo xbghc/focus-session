@@ -109,6 +109,8 @@ cd android && ./gradlew assembleDebug   # 会先跑 npm run build:app 生成网�
 
 装好后进「设置」填 MiniMax API Key。App 和扩展**各存各的密钥**，导出文件不带它。
 
+App 阅读器中，单击英文单词翻译当前单词，双击翻译该词所在的完整句子。单击会等待约 150ms 以区分双击；双击只发起整句翻译。正文中的链接仍可正常打开，滑动阅读不触发翻译。
+
 ## 它怎么判断你在专注
 
 ### session 的划分

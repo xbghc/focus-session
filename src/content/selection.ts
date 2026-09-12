@@ -11,6 +11,7 @@ import type {
 } from "../types.ts";
 import { judgeSelection } from "../lib/lang.ts";
 import { Popover } from "./popover.ts";
+import { bindTapTranslation, type TapKind } from "./tapTranslation.ts";
 
 /**
  * 划词翻译的触发与编排。
@@ -62,6 +63,8 @@ function coarsePointer(): boolean {
 }
 
 export interface SelectionDeps {
+  /** App 阅读器传正文容器，启用单击单词、双击句子。 */
+  tapRoot?: HTMLElement;
   articleId: string;
   url: string;
   articleTitle: string;
@@ -96,6 +99,7 @@ export class SelectionTranslator {
   private deps: SelectionDeps;
   private popover: Popover;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private taps: ReturnType<typeof bindTapTranslation> | null = null;
   private detach: Array<() => void> = [];
   private closeDetach: Array<() => void> = [];
   /** 递增的请求序号：慢响应回来时若已经不是最新一次选择，就丢弃。 */
@@ -124,6 +128,16 @@ export class SelectionTranslator {
     if (this.detach.length > 0) return;
     this.ensureClosing();
     const on = this.listen(this.detach);
+
+    if (this.deps.tapRoot) {
+      this.taps = bindTapTranslation(this.deps.tapRoot, (range, kind) => {
+        this.dismiss();
+        this.warm();
+        this.evaluateRange(range, kind);
+      });
+      this.detach.push(() => { this.taps?.stop(); this.taps = null; });
+      return;
+    }
 
     // mouseup 而不是 selectionchange：后者在拖选过程中连发几十次。
     // keyup 补上 shift+方向键选中的情况。
@@ -159,6 +173,8 @@ export class SelectionTranslator {
     on(document, "mousedown", (e) => {
       // 点在浮层里不算"点到别处"，否则按钮永远点不到
       if (this.insidePopover(e)) return;
+      // App 的两次轻点由 taps 合并；触摸合成的 mousedown 也不能取消刚发起的整句翻译。
+      if (this.deps.tapRoot && e.composedPath().includes(this.deps.tapRoot)) return;
       this.dismiss();
       // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
       if (this.detach.length) this.warm();
@@ -227,6 +243,7 @@ export class SelectionTranslator {
   }
 
   dismiss(): void {
+    this.taps?.cancel();
     if (!this.detach.length) {
       for (const off of this.closeDetach) off();
       this.closeDetach = [];
@@ -275,14 +292,18 @@ export class SelectionTranslator {
       return;
     }
 
+    this.evaluateRange(sel.getRangeAt(0));
+  }
+
+  private evaluateRange(range: Range, kind?: TapKind): void {
     const settings = this.deps.settings();
-    const verdict = judgeSelection(sel.toString(), settings);
+    // 明确点词也允许 I / a；双击的短句始终按句子记录，不生成词组复习卡。
+    const verdict = judgeSelection(range.toString(), kind ? { ...settings, minSelectionChars: 1 } : settings);
     if (!verdict.ok) {
       this.popover.hide();
       return;
     }
 
-    const range = sel.getRangeAt(0);
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return;
 
@@ -292,7 +313,7 @@ export class SelectionTranslator {
       articleTitle: this.deps.articleTitle,
       text: verdict.text,
       context: this.deps.contextOf(range, settings.contextChars),
-      kind: verdict.kind,
+      kind: kind ?? verdict.kind,
       explainVocab: settings.explainVocab,
     };
     this.pending = { rect, req };

@@ -186,7 +186,7 @@ function renderWords(list: Snippet[]): void {
   const box = $("sheet-list");
   box.textContent = "";
   if (list.length === 0) {
-    box.append(el("div", "empty", "这篇还没有划词。长按选中一段英文就会自动翻译。"));
+    box.append(el("div", "empty", "这篇还没有翻译记录。单击英文单词翻译该词，双击翻译当前句子。"));
     return;
   }
   for (const s of list) {
@@ -324,6 +324,7 @@ async function main(): Promise<void> {
 
   const title = cached.title;
   ctl = await startTracking({
+    tapRoot: body,
     url: pageUrl,
     approvedArticle: !!cached.archiveManifest,
     focus: "assume",

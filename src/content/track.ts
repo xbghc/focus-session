@@ -59,6 +59,8 @@ const send = (msg: ContentToBg): void => {
 };
 
 export interface TrackOptions {
+  /** App 正文的点词、双击整句翻译范围。 */
+  tapRoot?: HTMLElement;
   /** User-saved content has already been explicitly selected for reading; works offline. */
   approvedArticle?: boolean;
   /**
@@ -169,11 +171,11 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   settings.translationExcludedUrls = (stored["settings"] as Partial<Settings> | undefined)?.translationExcludedUrls ?? settings.excludedDomains;
   if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
     stopWatchingInput();
-    return translateOnly(pageUrl, host, settings, "命中文章记录黑名单");
+    return translateOnly(pageUrl, host, settings, "命中文章记录黑名单", opts.tapRoot);
   }
 
   const supplied = opts.extract?.();
-  const pendingTranslation = opts.onPending ? translateOnly(pageUrl, host, settings, "LLM 正在判断是否为文章…") : null;
+  const pendingTranslation = opts.onPending ? translateOnly(pageUrl, host, settings, "LLM 正在判断是否为文章…", opts.tapRoot) : null;
   if (pendingTranslation) opts.onPending?.(pendingTranslation);
   let pageLeft = false;
   const left = (): void => { pageLeft = true; pendingTranslation?.stop(); };
@@ -203,7 +205,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   if (!decision?.ok || !decision.isArticle || isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
     stopWatchingInput();
     const controller = translateOnly(pageUrl, host, settings, isUrlExcluded(pageUrl, settings.articleExcludedUrls)
-      ? "命中文章记录黑名单" : decision?.reason || "文章判断失败，请刷新重试");
+      ? "命中文章记录黑名单" : decision?.reason || "文章判断失败，请刷新重试", opts.tapRoot);
     if (wantedTranslation) controller.translateHere();
     return controller;
   }
@@ -216,7 +218,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   if (gone) return gone;
   if (!article) {
     stopWatchingInput();
-    return translateOnly(pageUrl, host, settings);
+    return translateOnly(pageUrl, host, settings, undefined, opts.tapRoot);
   }
 
   const articleId = normalizeUrl(pageUrl);
@@ -584,7 +586,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       finish("unload")();
       translatorOn = false;
       excludedNow = "命中文章记录黑名单";
-      translationFallback = translateOnly(pageUrl, host, settings, excludedNow);
+      translationFallback = translateOnly(pageUrl, host, settings, excludedNow, opts.tapRoot);
     }
   };
   chrome.storage.onChanged.addListener(onSettingsChanged);
@@ -594,7 +596,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   /* ---- 划词翻译 ----
    * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。 */
-  const translator = makeTranslator(articleId, pageUrl, title, () => settings);
+  const translator = makeTranslator(articleId, pageUrl, title, () => settings, opts.tapRoot);
   const screenshot = screenshotAction(() => translator, () => !torn && !isUrlExcluded(pageUrl, settings.translationExcludedUrls));
   let translatorOn = false;
   const syncTranslator = (): void => {
@@ -775,8 +777,9 @@ function streamAsk(req: AskRequest, onDelta: (text: string) => void, signal: Abo
 }
 
 /** 划词翻译器的接线。文章页和临时开启的非文章页用同一份，别让两边的依赖悄悄分叉。 */
-function makeTranslator(articleId: string, url: string, title: string, settings: () => Settings): SelectionTranslator {
+function makeTranslator(articleId: string, url: string, title: string, settings: () => Settings, tapRoot?: HTMLElement): SelectionTranslator {
   return new SelectionTranslator({
+    tapRoot,
     articleId,
     url,
     articleTitle: title,
@@ -836,7 +839,7 @@ function screenshotAction(getTranslator: () => SelectionTranslator, allowed: () 
  *
  * 总开关和排除域名照样管着它：关掉就摘监听；开关回来时，用户这次的选择还在。
  */
-function translateOnly(pageUrl: string, host: string, initial: Settings, reason = "未识别为文章页"): TrackController {
+function translateOnly(pageUrl: string, host: string, initial: Settings, reason = "未识别为文章页", tapRoot?: HTMLElement): TrackController {
   let settings = initial;
   /** 用户点过「本页启用划词翻译」。 */
   let wanted = false;
@@ -845,7 +848,7 @@ function translateOnly(pageUrl: string, host: string, initial: Settings, reason 
   let on = false;
   let stopped = false;
   const screenshot = screenshotAction(() => {
-    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings);
+    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings, tapRoot);
     return translator;
   }, () => !stopped && !excluded);
 
@@ -858,7 +861,7 @@ function translateOnly(pageUrl: string, host: string, initial: Settings, reason 
       return;
     }
     // 到开启这一刻才建：单页应用常常在加载之后才改标题，这时取到的才是当前这一页的
-    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings);
+    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings, tapRoot);
     translator.start();
   };
 
