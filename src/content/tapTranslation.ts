@@ -1,3 +1,5 @@
+import type { TranslationInputTiming } from "../lib/translationDiagnostics.ts";
+
 /** App 正文的点词 / 双击整句；扩展仍使用原生划词。 */
 const DOUBLE_TAP_MS = 150;
 const MOVE_PX = 12;
@@ -89,9 +91,9 @@ export function textRangeAtPoint(root: HTMLElement, x: number, y: number, kind: 
   return range;
 }
 
-export function bindTapTranslation(root: HTMLElement, translate: (range: Range, kind: TapKind) => void) {
-  let down: { id: number; x: number; y: number; time: number } | null = null;
-  let pending: { x: number; y: number; time: number; range: Range; timer: ReturnType<typeof setTimeout> } | null = null;
+export function bindTapTranslation(root: HTMLElement, translate: (range: Range, kind: TapKind, timing: TranslationInputTiming) => void) {
+  let down: { id: number; x: number; y: number; time: number; started: number } | null = null;
+  let pending: { x: number; y: number; time: number; range: Range; timing: TranslationInputTiming; timer: ReturnType<typeof setTimeout> } | null = null;
   const cancel = (): void => {
     down = null;
     if (pending) clearTimeout(pending.timer);
@@ -99,7 +101,7 @@ export function bindTapTranslation(root: HTMLElement, translate: (range: Range, 
   };
   const onDown = (e: PointerEvent): void => {
     if (!e.isPrimary || e.button !== 0 || (e.target as Element).closest(INTERACTIVE)) { cancel(); return; }
-    down = { id: e.pointerId, x: e.clientX, y: e.clientY, time: Date.now() };
+    down = { id: e.pointerId, x: e.clientX, y: e.clientY, time: Date.now(), started: performance.now() };
     // 第二次已落指时暂缓单击，避免在这次抬指前发出单词请求。
     if (pending && down.time - pending.time <= DOUBLE_TAP_MS &&
         Math.hypot(e.clientX - pending.x, e.clientY - pending.y) <= DOUBLE_TAP_PX) clearTimeout(pending.timer);
@@ -112,6 +114,7 @@ export function bindTapTranslation(root: HTMLElement, translate: (range: Range, 
     down = null;
     if (!gesture || gesture.id !== e.pointerId) return;
     if (Date.now() - gesture.time > 500 || Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > MOVE_PX) { cancel(); return; }
+    const committed = performance.now();
     const range = textRangeAtPoint(root, e.clientX, e.clientY, "word");
     if (!range) { cancel(); return; }
     const previous = pending;
@@ -119,13 +122,15 @@ export function bindTapTranslation(root: HTMLElement, translate: (range: Range, 
     if (previous && gesture.time - previous.time <= DOUBLE_TAP_MS &&
         Math.hypot(e.clientX - previous.x, e.clientY - previous.y) <= DOUBLE_TAP_PX) {
       const sentence = textRangeAtPoint(root, e.clientX, e.clientY, "sentence");
-      if (sentence) translate(sentence, "sentence");
+      if (sentence) translate(sentence, "sentence", { source: "double-tap", started: previous.timing.started, committed,
+        resolved: performance.now(), debounceEnded: performance.now() });
       return;
     }
-    pending = { x: e.clientX, y: e.clientY, time: Date.now(), range,
+    const timing: TranslationInputTiming = { source: "tap", started: gesture.started, committed, resolved: performance.now() };
+    pending = { x: e.clientX, y: e.clientY, time: Date.now(), range, timing,
       timer: setTimeout(() => {
         pending = null;
-        if (root.isConnected && root.contains(range.startContainer)) translate(range, "word");
+        if (root.isConnected && root.contains(range.startContainer)) translate(range, "word", { ...timing, debounceEnded: performance.now() });
       }, DOUBLE_TAP_MS),
     };
   };

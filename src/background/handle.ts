@@ -21,6 +21,7 @@ import { samePosition } from "../lib/position.ts";
 import { dueCards, reviewStats } from "../lib/review.ts";
 import { handleAssist, streamAsk, streamTranslate, testConnection } from "./translate.ts";
 import { clearLlmLog, llmLogBundle } from "./llmLog.ts";
+import { recordTranslationTrace } from "./translationLog.ts";
 import {
   articleReviewState,
   articleReviewStats,
@@ -428,6 +429,9 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       return await getUsage();
 
     /* ---- 诊断日志 ---- */
+    case "translation:trace":
+      await recordTranslationTrace(msg.trace);
+      return { ok: true };
     case "llm:log":
       return await llmLogBundle(chrome.runtime.getManifest().version);
     case "llm:log-clear":

@@ -26,7 +26,7 @@ export interface LlmDeps {
   fetch: typeof fetch;
   /** 重试前的退避时长，默认 `RETRY_DELAY_MS`。单测拿它跳过那 1.2 秒的真实等待。 */
   retryDelayMs?: number;
-  /** 取当前时刻，默认 `Date.now`。单测拿它把耗时钉死，不必依赖真实时间。 */
+  /** 单调时钟，默认 `performance.now`。单测可注入。 */
   now?: () => number;
 }
 
@@ -41,7 +41,7 @@ export interface CallTiming {
   totalMs: number;
   /** 第一个文本增量到达。非流式为 null——那条路在整段生成完之前什么都没有。 */
   firstTextMs: number | null;
-  /** 译文字段闭合、浮层第一次真显示出东西。只有流式翻译有。 */
+  /** 模型译文字段闭合；页面实际显示另由翻译链路日志记录。 */
   firstFieldMs: number | null;
   /** 实际发出去几次请求。>1 说明撞上过 429/529，`totalMs` 里有一段是退避。 */
   attempts: number;
@@ -173,7 +173,7 @@ export async function callMessages(
   if (!config.apiKey) throw new LlmError("尚未填写 MiniMax API Key", "config");
 
   // 计时从这里起：缺配置那次根本没发请求，不该占一格
-  const now = deps.now ?? Date.now;
+  const now = deps.now ?? (() => performance.now());
   const t0 = now();
   const count = { n: 0 };
   /** 非流式没有"第一个字"可言——整段生成完之前什么都没有，两个 first 恒为 null。 */
@@ -319,7 +319,7 @@ export async function callMessagesStream(
   if (!config.apiKey) throw new LlmError("尚未填写 MiniMax API Key", "config");
   if (opts.signal?.aborted) throw new LlmError("已取消", "abort");
 
-  const now = deps.now ?? Date.now;
+  const now = deps.now ?? (() => performance.now());
   const t0 = now();
   const count = { n: 0 };
   let firstTextMs: number | null = null;
@@ -926,7 +926,7 @@ export async function translateStream(
   signal?: AbortSignal,
   deps?: LlmDeps,
 ): Promise<{ result: TranslationResult; usage: RawUsage; timing: CallTiming }> {
-  const now = deps?.now ?? Date.now;
+  const now = deps?.now ?? (() => performance.now());
   const t0 = now();
   /** 浮层第一次真显示出译文的时刻——用户感知的"等了多久"就是这个数，不是 totalMs。 */
   let firstFieldMs: number | null = null;
