@@ -181,8 +181,12 @@ let sourceLabel = "";
 
 function renderMeta(url: string): void {
   const st = ctl?.state();
-  $<HTMLButtonElement>("translate-here").disabled = st?.translateHere !== "available";
-  $("translate-here").title = st?.translateHere === "on" ? "本页划词翻译已开启" : "启用本页划词翻译";
+  const excluded = st?.translationExcluded === true;
+  const here = $<HTMLButtonElement>("translate-here");
+  here.disabled = st?.translateHere !== "available";
+  here.title = st?.translateHere === "on"
+    ? (excluded ? "本页已暂时开启划词翻译，下次打开回到黑名单" : "本页划词翻译已开启")
+    : excluded ? "本站在翻译黑名单里：暂时开启本页划词翻译" : "启用本页划词翻译";
   const parts = [sourceLabel || hostnameOf(url)];
   if (st?.tracked) {
     const tracked = st.trackedWords ?? 0;
@@ -193,9 +197,12 @@ function renderMeta(url: string): void {
     if (est && est.words > 0) parts.push("还需" + formatEstimate(est.ms));
     else if (tracked > 0 && read >= tracked) parts.push("已读完");
     if (st.activeSince) parts.push("计时中");
+    // 文章页顶栏没有那行「为什么没追踪」，黑名单这件事得单独说，否则点词没反应像是坏了
+    if (excluded && st.translateHere !== "on") parts.push("命中翻译黑名单");
   } else if (st?.reason) {
     parts.push(st.reason);
   }
+  if (excluded && st?.translateHere === "on") parts.push("已暂时开启翻译");
   $("rmeta").textContent = parts.join(" · ");
 }
 

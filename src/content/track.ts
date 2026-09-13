@@ -97,8 +97,10 @@ export interface TrackController {
   /** 结束追踪：结算最后一段、判一次读完、拆掉所有监听。重复调用无害。 */
   stop(reason?: EndReason): void;
   /**
-   * 没识别为文章的页面上，临时挂起划词翻译，只对本次加载有效（popup 的「本页启用划词翻译」）。
-   * 追踪中的文章页本来就挂着，调它没有效果；被排除的域名上也不会挂。
+   * 临时挂起划词翻译，只对本次加载有效（popup 的「本页启用划词翻译」、App 顶栏的「译」）。
+   * 两种页面上有效：没识别为文章的页面（默认不挂），以及命中翻译黑名单的页面——文章页也一样——
+   * 这时是**暂时无视黑名单**，截图翻译跟着放开。追踪中且没被排除的文章页本来就挂着，调它没有效果；
+   * 总开关关着时调它也不挂。
    */
   translateHere(): void;
   screenshot(): void;
@@ -469,22 +471,33 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     { visible: document.visibilityState === "visible", focused: assumeFocus || document.hasFocus() },
   );
 
-  const state = (): PageState => ({
-    tracked: true,
-    screenshot: "available",
-    articleId,
-    title,
-    totalWords: article.totalWords,
-    trackedWords: article.trackedWords,
-    wordsRead: tracker.wordsRead,
-    paragraphCount: article.paragraphs.length,
-    readParagraphCount: tracker.readCount,
-    activeSince: machine.activeSince,
-    sessionsThisLoad,
-    visibleExpectedMs: tracker.visibleExpectedMs(),
-    idleLimitMs: machine.quietLimits().idleMs,
-    estimate: estimateNow(),
-  });
+  const state = (): PageState => {
+    const st: PageState = {
+      tracked: true,
+      articleId,
+      title,
+      totalWords: article.totalWords,
+      trackedWords: article.trackedWords,
+      wordsRead: tracker.wordsRead,
+      paragraphCount: article.paragraphs.length,
+      readParagraphCount: tracker.readCount,
+      activeSince: machine.activeSince,
+      sessionsThisLoad,
+      visibleExpectedMs: tracker.visibleExpectedMs(),
+      idleLimitMs: machine.quietLimits().idleMs,
+      estimate: estimateNow(),
+    };
+    // 命中翻译黑名单：截图翻译要等放行才给；「暂时开启」的入口照给——总开关关着除外，
+    // 它的语义是根本不挂选区监听，黑名单放行也不例外。
+    // "on" 看的是用户的选择而不是翻译器此刻挂没挂：pagehide 收摊后翻译器已经摘了，
+    // 但从 bfcache 回来还是同一次加载，host.ts 的 restored 要靠这个 "on" 替用户再点一次。
+    if (translationAllowed()) st.screenshot = "available";
+    if (translationExcluded) {
+      st.translationExcluded = true;
+      if (settings.translateEnabled) st.translateHere = translateOverride ? "on" : "available";
+    }
+    return st;
+  };
 
   /* ---- 活动信号 ---- */
 
@@ -580,8 +593,12 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       maxQuietMs: settings.maxQuietMs,
     });
     tracker.setThresholds({ dwellMs: settings.paragraphDwellMs, readFraction: settings.readFraction });
+    // 运行中被加进翻译黑名单：那是比「暂时开启」更新的一次选择，这次的开启作废，再点一次才回来
+    const wasExcluded = translationExcluded;
+    translationExcluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
+    if (translationExcluded && !wasExcluded) translateOverride = false;
     syncTranslator();
-    if (isUrlExcluded(pageUrl, settings.translationExcludedUrls)) screenshot.stop();
+    if (!translationAllowed()) screenshot.stop();
     if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
       finish("unload")();
       translatorOn = false;
@@ -595,12 +612,18 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   let translationFallback: TrackController | null = null;
 
   /* ---- 划词翻译 ----
-   * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。 */
+   * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。
+   * 命中翻译黑名单的默认不挂，但用户能从 popup / App 顶栏暂时放行（translateHere）：
+   * 翻译器、截图翻译、popup 看到的状态都问同一个 translationAllowed，别让三处各判各的。 */
   const translator = makeTranslator(articleId, pageUrl, title, () => settings, opts.tapRoot);
-  const screenshot = screenshotAction(() => translator, () => !torn && !isUrlExcluded(pageUrl, settings.translationExcludedUrls));
+  let translationExcluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
+  /** 命中黑名单时用户点过「本页暂时开启」，只对本次加载有效。 */
+  let translateOverride = false;
+  const translationAllowed = (): boolean => !translationExcluded || translateOverride;
+  const screenshot = screenshotAction(() => translator, () => !torn && translationAllowed());
   let translatorOn = false;
   const syncTranslator = (): void => {
-    const want = settings.translateEnabled && !isUrlExcluded(pageUrl, settings.translationExcludedUrls);
+    const want = settings.translateEnabled && translationAllowed();
     if (want === translatorOn) return;
     translatorOn = want;
     if (want) translator.start();
@@ -629,7 +652,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   machine.bootstrap();
 
-  return {
+  const controller: TrackController = {
     state: () => translationFallback ? translationFallback.state() : state(),
     setVisible: (v) => {
       // 宿主直接调的，不在 finish 摘掉的那组监听里：收摊之后再通知可见也不该重新计时
@@ -637,8 +660,18 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     },
     stop: (reason = "unload") => { finish(reason)(); translationFallback?.stop(reason); },
     screenshot: () => translationFallback ? translationFallback.screenshot() : screenshot.run(),
-    translateHere: () => translationFallback?.translateHere(),
+    translateHere: () => {
+      if (translationFallback) { translationFallback.translateHere(); return; }
+      if (torn) return;
+      // 命中翻译黑名单的文章页：用户点的这一下是「暂时无视黑名单」，只对本次加载有效
+      translateOverride = true;
+      syncTranslator();
+    },
   };
+  // 模型判断期间就点过「本页启用划词翻译」：判成文章也不能把这个选择丢掉。
+  // 没被排除的文章页本来就挂着，这一下只在命中黑名单时才真起作用。
+  if (wantedTranslation) controller.translateHere();
+  return controller;
 
   /** 滚到锚点段落，并把落点微调到离开时的那个偏移。 */
   function scrollToAnchor(el: Element, offset: number): void {
@@ -837,23 +870,31 @@ function screenshotAction(getTranslator: () => SelectionTranslator, allowed: () 
  * 在邮件、聊天这类网页应用里选中一段文字，不该悄悄发给 MiniMax。
  * 用户在 popup 里点一下才挂，且只对本次加载有效，刷新即回到默认。
  *
- * 总开关和排除域名照样管着它：关掉就摘监听；开关回来时，用户这次的选择还在。
+ * 总开关照样管着它：关掉就摘监听；开关回来时，用户这次的选择还在。
+ * 翻译黑名单命中时同样默认不挂，但那一下点的同时也是「暂时无视黑名单」：只对本次加载有效，
+ * 运行中被加进黑名单则作废——那是更新的一次选择。
  */
 function translateOnly(pageUrl: string, host: string, initial: Settings, reason = "未识别为文章页", tapRoot?: HTMLElement): TrackController {
   let settings = initial;
   /** 用户点过「本页启用划词翻译」。 */
   let wanted = false;
   let excluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
+  /**
+   * 用户点的那一下同时也是「暂时无视翻译黑名单」：命中黑名单的页面照样能开，截图翻译跟着放开。
+   * 和 wanted 分开记，是因为运行中被加进黑名单要把它作废、而 wanted 还在——总开关那条路就是这么处理的。
+   */
+  let override = false;
+  const allowed = (): boolean => !excluded || override;
   let translator: SelectionTranslator | null = null;
   let on = false;
   let stopped = false;
   const screenshot = screenshotAction(() => {
     translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings, tapRoot);
     return translator;
-  }, () => !stopped && !excluded);
+  }, () => !stopped && allowed());
 
   const sync = (): void => {
-    const want = wanted && settings.translateEnabled && !excluded;
+    const want = wanted && settings.translateEnabled && allowed();
     if (want === on) return;
     on = want;
     if (!want) {
@@ -868,8 +909,11 @@ function translateOnly(pageUrl: string, host: string, initial: Settings, reason 
   const onSettingsChanged: SettingsListener = (changes, area) => {
     if (area !== "local" || !changes["settings"]) return;
     settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
+    const wasExcluded = excluded;
     excluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
-    if (excluded) { screenshot.stop(); translator?.stop(); }
+    // 运行中被加进黑名单：那是比「暂时开启」更新的一次选择，这次的开启作废，再点一次才回来
+    if (excluded && !wasExcluded) override = false;
+    if (!allowed()) { screenshot.stop(); translator?.stop(); }
     sync();
   };
   chrome.storage.onChanged.addListener(onSettingsChanged);
@@ -877,9 +921,10 @@ function translateOnly(pageUrl: string, host: string, initial: Settings, reason 
   return {
     state: () => {
       const st: PageState = { tracked: false, reason: excluded ? "命中翻译黑名单；" + reason : reason };
-      if (!excluded) st.screenshot = "available";
-      // 划词被排除、或总开关关着：不给字段，popup 就不会画一个点不动的按钮
-      if (!excluded && settings.translateEnabled) st.translateHere = on ? "on" : "available";
+      if (excluded) st.translationExcluded = true;
+      if (allowed()) st.screenshot = "available";
+      // 总开关关着：不给字段，popup 就不会画一个点不动的按钮。命中黑名单照给——那是「暂时放行」的入口
+      if (settings.translateEnabled) st.translateHere = on ? "on" : "available";
       return st;
     },
     setVisible: () => undefined,
@@ -888,12 +933,14 @@ function translateOnly(pageUrl: string, host: string, initial: Settings, reason 
       screenshot.stop();
       translator?.stop();
       wanted = false;
+      override = false;
       sync();
       chrome.storage.onChanged.removeListener(onSettingsChanged);
     },
     screenshot: screenshot.run,
     translateHere: () => {
       wanted = true;
+      override = true;
       sync();
     },
   };

@@ -99,7 +99,7 @@ function renderCurrent(st: PageState | null): void {
   }
   if (!st.tracked) {
     const box = el("div", { class: "empty" }, [el("div", {}, [st.reason ?? "未追踪"])]);
-    if (st.translateHere) box.append(translateHereNode(st.translateHere));
+    if (st.translateHere) box.append(...translateHereNodes(st));
     if (st.screenshot === "available") box.append(screenshotNode());
     box.append(archiveNode());
     root.append(box);
@@ -157,7 +157,9 @@ function renderCurrent(st: PageState | null): void {
   root.append(kv(rows));
   // 依据那句靠负外边距贴着「预计还需」的数字（popup.css 的 .basis），它和 kv 表之间不能插东西——插了就叠在一起
   if (est && est.words > 0) root.append(el("div", { class: "muted small basis" }, [describeBasis(est)]));
-  if (st.screenshot === "available") root.append(el("div", { class: "actions" }, [screenshotNode()]));
+  // 命中翻译黑名单的文章页：翻译器没挂，这里给「暂时开启」的入口；截图翻译要等放行之后才有
+  const actions = [...(st.translateHere ? translateHereNodes(st, true) : []), ...(st.screenshot === "available" ? [screenshotNode()] : [])];
+  if (actions.length > 0) root.append(el("div", { class: "actions" }, actions));
 
   if (st.articleId) void appendReviewLine(root, st.articleId);
 
@@ -181,21 +183,31 @@ function screenshotNode(): HTMLElement {
 }
 
 /**
- * 非文章页上的划词翻译入口。
+ * 划词翻译的临时入口。
  *
- * 这类页面默认不挂选区监听（在网页应用里选中文本不该悄悄联网），这里点一下才挂，
- * 而且只对当前这次加载生效——刷新就回到默认。应答里带着更新后的状态，直接重画。
+ * 两种页面上出现：没识别为文章的页面默认不挂选区监听（在网页应用里选中文本不该悄悄联网），
+ * 这里点一下才挂；命中翻译黑名单的页面（文章页也一样）默认也不挂，这里点一下是**暂时无视黑名单**。
+ * 都只对当前这次加载生效——刷新就回到默认。应答里带着更新后的状态，直接重画。
+ * 文章页的布局里没有那行「为什么没追踪」，黑名单这件事得在这里自己说（explain）。
  */
-function translateHereNode(state: NonNullable<PageState["translateHere"]>): HTMLElement {
-  if (state === "on") return el("div", { class: "small translate-on" }, ["划词翻译已在本页开启，刷新后失效"]);
-  const btn = el("button", { type: "button", class: "btn" }, ["本页启用划词翻译"]);
+function translateHereNodes(st: PageState, explain = false): HTMLElement[] {
+  const excluded = st.translationExcluded === true;
+  if (st.translateHere === "on") {
+    return [el("div", { class: "small translate-on" }, [
+      excluded ? "划词翻译已在本页暂时开启（本站在翻译黑名单里），刷新后失效" : "划词翻译已在本页开启，刷新后失效",
+    ])];
+  }
+  const nodes: HTMLElement[] = [];
+  if (excluded && explain) nodes.push(el("div", { class: "muted small" }, ["本站在翻译黑名单里，划词翻译没有挂上"]));
+  const btn = el("button", { type: "button", class: "btn" }, [excluded ? "本页暂时开启划词翻译" : "本页启用划词翻译"]);
   btn.addEventListener("click", () => {
     btn.disabled = true;
     // 应答就是更新后的状态；拿不到（页面刚好跳走了）就再问一遍
     void askPage<PageState>({ type: "page:translate-here" })
-      .then(async (st) => renderCurrent(st ?? (await fetchPageState())));
+      .then(async (next) => renderCurrent(next ?? (await fetchPageState())));
   });
-  return btn;
+  nodes.push(btn);
+  return nodes;
 }
 
 /**
