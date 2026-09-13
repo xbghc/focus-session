@@ -1,3 +1,5 @@
+import type { TranslationBackendTiming, TranslationTrace } from "./lib/translationDiagnostics.ts";
+
 /** 一个 session 结束的原因，用于事后分析走神模式。 */
 export type EndReason =
   | "idle" // 超过 idleTimeout 没有任何活动信号
@@ -262,6 +264,7 @@ export interface PageState {
 /* ---------- 消息协议 ---------- */
 
 export type ContentToBg =
+  | { type: "translation:trace"; trace: TranslationTrace }
   | { type: "article:local-state"; articleId: string }
   | { type: "archive:save"; payload: import("./archive/types.ts").ArchiveCapture }
   | { type: "page:capture" }
@@ -703,7 +706,7 @@ export interface LlmTiming {
   totalMs: number;
   /** 模型开口的时刻；非流式为 null */
   firstTextMs: number | null;
-  /** 浮层第一次显示出译文的时刻；只有流式翻译有 */
+  /** 模型译文字段闭合的时刻；不是页面实际展示时刻 */
   firstFieldMs: number | null;
   /** 实际发出去几次请求。>1 说明撞上过 429/529，totalMs 里有一段是自己退避掉的 */
   attempts: number;
@@ -771,14 +774,15 @@ export interface AppError {
  * "当时这台机器上都发生了什么"，分成三个文件只会让人少发过来两个。
  */
 export interface LlmLogBundle {
-  /** 2 起多了 `timings`、`fetches`、`errors` */
-  schema: 2;
+  /** 3 起多了从用户操作到浮层渲染完成的 `translations`。 */
+  schema: 3;
   exportedAt: number;
   /** 扩展版本，来自 manifest */
   version: string;
   llm: ExportBundle["llm"];
   failures: LlmFailure[];
   timings: LlmTiming[];
+  translations: TranslationTrace[];
   /** 阅读器抓取现场。只有 App 会往里写，扩展恒为空数组 */
   fetches: ReaderFetch[];
   /** 没被接住的运行时错误。同上，只有 App */
@@ -810,8 +814,8 @@ export interface PartialTranslation {
 
 /** 一次翻译的最终结果，background 与 content script 共用。 */
 export type TranslateReply =
-  | { ok: true; snippet: Snippet; cached: boolean }
-  | { ok: false; error: string; needsConfig: boolean };
+  | { ok: true; snippet: Snippet; cached: boolean; diagnostics?: TranslationBackendTiming }
+  | { ok: false; error: string; needsConfig: boolean; diagnostics?: TranslationBackendTiming };
 
 /* ---- 追问 ---- */
 

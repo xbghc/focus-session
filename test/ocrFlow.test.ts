@@ -232,7 +232,10 @@ test("完整控制器路径：预热不等待、冻结帧裁剪、识别文本�
     }
     await tick();
     assert.equal(document.getElementById("focus-session-screenshot"), null);
-    assert.deepEqual(messages.map((m) => m.type), ["ocr:warm", "page:capture", "ocr:recognize"]);
+    // 收尾时轨迹也送去后台。这个环境没有 rAF，complete() 一到就同步收束，所以它紧跟在识别之后
+    assert.deepEqual(messages.map((m) => m.type), ["ocr:warm", "page:capture", "ocr:recognize", "translation:trace"]);
+    const trace = (messages.at(-1) as unknown as { trace: { source: string; text: string; kind: string } }).trace;
+    assert.equal(trace.source, "image"); assert.equal(trace.text, "hello world"); assert.equal(trace.kind, "phrase");
     assert.deepEqual(requests, [{ articleId: "https://app.example.com/inbox", url: location.href, articleTitle: "页面标题",
       text: "hello world", context: "hello world", kind: "phrase", explainVocab: true }]);
     assert.equal(controller.state().translateHere, "available"); assert.equal(count("mouseup"), 0);

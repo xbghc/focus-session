@@ -212,6 +212,8 @@ const MAX_QUESTION_CHARS = 200;
 const PIN_SLACK_PX = 24;
 
 export interface PopoverActions {
+  /** 最终 left/top 已设置；观察器按帧取实际位置，不统计临时归零。 */
+  onPositioned?: (box: HTMLElement) => void;
   /** 用户点了「翻译」（长选区需要确认时才出现这个按钮）。 */
   onConfirm: () => void;
   onOpenOptions: () => void;
@@ -349,6 +351,7 @@ export class Popover {
 
     box.style.left = `${Math.round(left)}px`;
     box.style.top = `${Math.round(top)}px`;
+    this.actions.onPositioned?.(box);
   }
 
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void): void {

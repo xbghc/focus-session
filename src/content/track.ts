@@ -812,6 +812,7 @@ function streamAsk(req: AskRequest, onDelta: (text: string) => void, signal: Abo
 /** 划词翻译器的接线。文章页和临时开启的非文章页用同一份，别让两边的依赖悄悄分叉。 */
 function makeTranslator(articleId: string, url: string, title: string, settings: () => Settings, tapRoot?: HTMLElement): SelectionTranslator {
   return new SelectionTranslator({
+    recordTrace: trace => send({ type: "translation:trace", trace }),
     tapRoot,
     articleId,
     url,

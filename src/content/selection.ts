@@ -12,6 +12,8 @@ import type {
 import { judgeSelection } from "../lib/lang.ts";
 import { Popover } from "./popover.ts";
 import { bindTapTranslation, type TapKind } from "./tapTranslation.ts";
+import { TranslationTraceRecorder } from "./translationTrace.ts";
+import type { TranslationInputTiming, TranslationTrace } from "../lib/translationDiagnostics.ts";
 
 /**
  * 划词翻译的触发与编排。
@@ -63,6 +65,7 @@ function coarsePointer(): boolean {
 }
 
 export interface SelectionDeps {
+  recordTrace?: (trace: TranslationTrace) => void;
   /** App 阅读器传正文容器，启用单击单词、双击句子。 */
   tapRoot?: HTMLElement;
   articleId: string;
@@ -100,6 +103,9 @@ export class SelectionTranslator {
   private popover: Popover;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private taps: ReturnType<typeof bindTapTranslation> | null = null;
+  private trace: TranslationTraceRecorder | null = null;
+  private gestureStarted: number | null = null;
+  private inputTiming: TranslationInputTiming | null = null;
   private detach: Array<() => void> = [];
   private closeDetach: Array<() => void> = [];
   /** 递增的请求序号：慢响应回来时若已经不是最新一次选择，就丢弃。 */
@@ -121,6 +127,7 @@ export class SelectionTranslator {
       onConfirm: () => void this.runPending(),
       onOpenOptions: () => this.deps.openOptions(),
       onAsk: (question) => void this.runAsk(question),
+      onPositioned: box => this.trace?.positioned(box),
     });
   }
 
@@ -130,10 +137,10 @@ export class SelectionTranslator {
     const on = this.listen(this.detach);
 
     if (this.deps.tapRoot) {
-      this.taps = bindTapTranslation(this.deps.tapRoot, (range, kind) => {
+      this.taps = bindTapTranslation(this.deps.tapRoot, (range, kind, timing) => {
         this.dismiss();
         this.warm();
-        this.evaluateRange(range, kind);
+        this.evaluateRange(range, kind, timing);
       });
       this.detach.push(() => { this.taps?.stop(); this.taps = null; });
       return;
@@ -149,10 +156,12 @@ export class SelectionTranslator {
     if (coarsePointer()) {
       on(document, "touchstart", (e) => {
         if (this.insidePopover(e)) this.lastPopoverTouch = Date.now();
+        else this.gestureStarted = performance.now();
       }, { capture: true, passive: true });
       on(document, "selectionchange", () => {
         if (Date.now() - this.lastPopoverTouch < POPOVER_TOUCH_GRACE_MS) return;
         if (this.timer !== null) clearTimeout(this.timer);
+        this.inputTiming = { source: "touch-selection", started: this.gestureStarted ?? performance.now(), committed: performance.now() };
         this.timer = setTimeout(() => this.evaluate(), TOUCH_DEBOUNCE_MS);
       });
     }
@@ -176,6 +185,7 @@ export class SelectionTranslator {
       // App 的两次轻点由 taps 合并；触摸合成的 mousedown 也不能取消刚发起的整句翻译。
       if (this.deps.tapRoot && e.composedPath().includes(this.deps.tapRoot)) return;
       this.dismiss();
+      this.gestureStarted = performance.now();
       // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
       if (this.detach.length) this.warm();
     }, { capture: true });
@@ -198,6 +208,9 @@ export class SelectionTranslator {
   async translateImage(png: string, rect: DOMRect): Promise<void> {
     this.dismiss();
     this.ensureClosing();
+    const now = performance.now();
+    this.trace = new TranslationTraceRecorder({ source: "image", started: now, committed: now, debounceEnded: now }, "", "word", log => this.deps.recordTrace?.(log));
+    this.trace.mark("ocrStart");
     const mine = ++this.seq;
     const ctrl = new AbortController();
     this.inflight = ctrl;
@@ -209,9 +222,11 @@ export class SelectionTranslator {
       reply = { ok: false, error: String(err) };
     }
     if (mine !== this.seq) return;
+    this.trace?.mark("ocrEnd");
     this.inflight = null;
     if (!reply?.ok) {
       this.popover.showError(rect, reply?.error ?? "识别失败：后台未就绪", false);
+      this.trace?.complete("error", reply?.error ?? "识别失败：后台未就绪");
       return;
     }
     this.popover.setTerm(reply.text);
@@ -220,6 +235,7 @@ export class SelectionTranslator {
     if (!verdict.ok) {
       this.popover.showError(rect, verdict.reason === "选区过长"
         ? "识别文字过长，请缩小框选范围" : "没认出英文，请重新框选清晰的英文文字", false);
+      this.trace?.complete("error", verdict.reason);
       return;
     }
     const req: TranslateRequest = {
@@ -227,7 +243,12 @@ export class SelectionTranslator {
       text: verdict.text, context: verdict.text, kind: verdict.kind, explainVocab: settings.explainVocab,
     };
     this.pending = { rect, req };
-    if (verdict.needsConfirm) this.popover.showConfirm(rect, verdict.text, verdict.words, "image");
+    if (this.trace) Object.assign(this.trace.log, { text: req.text.slice(0, 160), textChars: req.text.length, kind: req.kind });
+    this.trace?.mark("prepared");
+    if (verdict.needsConfirm) {
+      this.trace?.mark("confirmShown");
+      this.popover.showConfirm(rect, verdict.text, verdict.words, "image");
+    }
     else await this.runPending();
   }
 
@@ -243,6 +264,10 @@ export class SelectionTranslator {
   }
 
   dismiss(): void {
+    this.trace?.finish("cancelled", "浮层关闭、选择改变或页面离开");
+    this.trace = null;
+    this.gestureStarted = null;
+    this.inputTiming = null;
     this.taps?.cancel();
     if (!this.detach.length) {
       for (const off of this.closeDetach) off();
@@ -269,6 +294,8 @@ export class SelectionTranslator {
   private schedule(e: Event): void {
     if (this.insidePopover(e)) return;
     if (this.timer !== null) clearTimeout(this.timer);
+    const now = performance.now();
+    this.inputTiming = { source: e.type === "keyup" ? "keyboard" : "mouse", started: this.gestureStarted ?? now, committed: now };
     this.timer = setTimeout(() => this.evaluate(), DEBOUNCE_MS);
   }
 
@@ -292,10 +319,12 @@ export class SelectionTranslator {
       return;
     }
 
-    this.evaluateRange(sel.getRangeAt(0));
+    const now = performance.now();
+    this.evaluateRange(sel.getRangeAt(0), undefined,
+      { ...(this.inputTiming ?? { source: "mouse", started: now, committed: now }), resolved: now, debounceEnded: now });
   }
 
-  private evaluateRange(range: Range, kind?: TapKind): void {
+  private evaluateRange(range: Range, kind?: TapKind, input?: TranslationInputTiming): void {
     const settings = this.deps.settings();
     // 明确点词也允许 I / a；双击的短句始终按句子记录，不生成词组复习卡。
     const verdict = judgeSelection(range.toString(), kind ? { ...settings, minSelectionChars: 1 } : settings);
@@ -307,6 +336,11 @@ export class SelectionTranslator {
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return;
 
+    this.dismiss();
+    const now = performance.now();
+    this.trace = new TranslationTraceRecorder(input ?? { source: "mouse", started: now, committed: now, debounceEnded: now },
+      verdict.text, kind ?? verdict.kind, log => this.deps.recordTrace?.(log));
+
     const req: TranslateRequest = {
       articleId: this.deps.articleId,
       url: this.deps.url,
@@ -317,8 +351,10 @@ export class SelectionTranslator {
       explainVocab: settings.explainVocab,
     };
     this.pending = { rect, req };
+    this.trace.mark("prepared");
 
     if (verdict.needsConfirm) {
+      this.trace.mark("confirmShown");
       this.popover.showConfirm(rect, verdict.text, verdict.words);
       return;
     }
@@ -330,6 +366,7 @@ export class SelectionTranslator {
     if (!pending) return;
     const mine = ++this.seq;
     const { rect, req } = pending;
+    const trace = this.trace;
     this.answered = null;
     this.turns = [];
 
@@ -338,13 +375,17 @@ export class SelectionTranslator {
     this.inflight = ctrl;
 
     this.popover.showStreaming(rect, req.text);
+    trace?.mark("requestStart");
     let res: TranslateResponse;
     try {
       res = await this.deps.translate(
         req,
         // 迟到的增量属于上一次选择，丢掉
         (p) => {
-          if (mine === this.seq) this.popover.updateStream(p);
+          if (mine === this.seq) {
+            if (trace) trace.partial(p, () => this.popover.updateStream(p));
+            else this.popover.updateStream(p);
+          }
         },
         ctrl.signal,
       );
@@ -353,13 +394,23 @@ export class SelectionTranslator {
     }
     // 期间用户又选了别的、或者关掉了浮层——这次结果已经过期
     if (mine !== this.seq) return;
+    trace?.mark("responseReceived");
+    if (trace) {
+      trace.log.backend = res.diagnostics ?? null;
+      trace.log.cached = res.ok ? res.cached : null;
+    }
     if (this.inflight === ctrl) this.inflight = null;
     if (res.ok) {
       this.answered = { snippet: res.snippet, context: req.context };
       this.popover.showResult(rect, res.snippet);
+      trace?.mark("firstTranslationDom");
       // 翻出来了才给追问入口：没有译文可倚，追问问的是空气
       this.popover.enableAsk();
-    } else this.popover.showError(rect, res.error, res.needsConfig);
+      trace?.complete("success");
+    } else {
+      this.popover.showError(rect, res.error, res.needsConfig);
+      trace?.complete("error", res.error);
+    }
   }
 
   /**

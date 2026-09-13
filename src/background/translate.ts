@@ -11,6 +11,7 @@ import { LlmError, askStream, assist, translate, translateStream } from "../lib/
 import type { AssistMode } from "../types.ts";
 import { addSnippet, addUsage, getLlmConfig } from "./vocab.ts";
 import { type FailureContext, recordFailure, recordTiming } from "./llmLog.ts";
+import type { TranslationBackendTiming } from "../lib/translationDiagnostics.ts";
 
 /**
  * 翻译请求的门面：缓存、并发去重、用量记账都在这里，
@@ -69,6 +70,7 @@ async function report(err: unknown, config: LlmConfig, ctx: FailureContext): Pro
 
 /** 一次进行中的流式翻译。多个订阅者共用一条请求（双击选词会同时开两条）。 */
 interface Live {
+  timing: TranslationBackendTiming;
   ctrl: AbortController;
   subs: Set<(p: PartialTranslation) => void>;
   /** 最近一次快照，给中途加入的订阅者补上已经到达的字段。 */
@@ -85,7 +87,11 @@ export interface StreamHandle {
 }
 
 async function runStream(req: TranslateRequest, key: string, e: Live): Promise<TranslateReply> {
+  const start = performance.now();
+  const metrics = e.timing;
   const config = await getLlmConfig();
+  metrics.configMs = performance.now() - start;
+  const modelStart = performance.now();
   try {
     const { result, usage, timing } = await translateStream(
       req,
@@ -102,8 +108,17 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
       },
       e.ctrl.signal,
     );
+    metrics.modelMs = performance.now() - modelStart;
+    metrics.firstTextMs = timing.firstTextMs;
+    metrics.firstFieldMs = timing.firstFieldMs;
+    metrics.attempts = timing.attempts;
+    let stageStart = performance.now();
     await addUsage(usage.inputTokens, usage.outputTokens);
+    metrics.accountingMs = performance.now() - stageStart;
+    stageStart = performance.now();
     await recordTiming("translate", config, timing, usage);
+    metrics.diagnosticWriteMs = performance.now() - stageStart;
+    stageStart = performance.now();
     const { snippet } = await addSnippet({
       articleId: req.articleId,
       url: req.url,
@@ -114,9 +129,16 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
       result,
       now: Date.now(),
     });
+    metrics.snippetWriteMs = performance.now() - stageStart;
     remember(key, snippet);
     return { ok: true, snippet, cached: false };
   } catch (err) {
+    metrics.modelMs ??= performance.now() - modelStart;
+    if (err instanceof LlmError && err.timing) {
+      metrics.firstTextMs = err.timing.firstTextMs;
+      metrics.firstFieldMs = err.timing.firstFieldMs;
+      metrics.attempts = err.timing.attempts;
+    }
     // 主动取消和缺配置都不算"调用失败"，别污染用量统计
     const skip = err instanceof LlmError && (err.kind === "abort" || err.kind === "config");
     if (!skip) await addUsage(0, 0, true);
@@ -134,6 +156,7 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
       partialShown: Boolean(e.last?.translation),
     });
   } finally {
+    metrics.totalMs = performance.now() - start;
     live.delete(key);
   }
 }
@@ -143,17 +166,25 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
  * 回头再划同一个词应当是瞬时的。
  */
 export function streamTranslate(req: TranslateRequest, onPartial: (p: PartialTranslation) => void): StreamHandle {
+  const subscribed = performance.now();
+  const timing = (cache: TranslationBackendTiming["cache"]): TranslationBackendTiming => ({
+    cache, subscriberMs: 0, totalMs: 0, configMs: null, modelMs: null, firstTextMs: null, firstFieldMs: null,
+    attempts: 0, accountingMs: null, diagnosticWriteMs: null, snippetWriteMs: null,
+  });
   const key = keyOf(req);
 
   const hit = cache.get(key);
   if (hit) {
-    return { done: Promise.resolve({ ok: true, snippet: hit, cached: true }), cancel: () => undefined };
+    const diagnostics = timing("hit");
+    diagnostics.totalMs = diagnostics.subscriberMs = performance.now() - subscribed;
+    return { done: Promise.resolve({ ok: true, snippet: hit, cached: true, diagnostics }), cancel: () => undefined };
   }
 
   let entry = live.get(key);
+  const joined = !!entry;
   if (!entry) {
     // 先入表再起跑：runStream 的 finally 会 live.delete(key)，顺序反了就删了个空
-    const e: Live = { ctrl: new AbortController(), subs: new Set(), last: null, done: null as never };
+    const e: Live = { ctrl: new AbortController(), subs: new Set(), last: null, done: null as never, timing: timing("miss") };
     live.set(key, e);
     e.done = runStream(req, key, e);
     entry = e;
@@ -164,7 +195,8 @@ export function streamTranslate(req: TranslateRequest, onPartial: (p: PartialTra
 
   let off = false;
   return {
-    done: shared.done,
+    done: shared.done.then(res => ({ ...res, diagnostics: { ...shared.timing,
+      cache: joined ? "shared" : "miss", subscriberMs: performance.now() - subscribed } })),
     cancel: () => {
       if (off) return;
       off = true;
