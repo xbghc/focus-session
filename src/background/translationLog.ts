@@ -5,7 +5,13 @@ import { TRACE_MARKS, traceDurations, type PopupPosition, type TranslationBacken
 export const KEY_TRANSLATION_TRACE = "translationTraces";
 export const MAX_TRANSLATION_TRACES = 100;
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+/** 相对毫秒数：有限、不超过 1e12（约 31 年），挡住 Infinity 与离谱值。 */
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e12;
+/**
+ * 墙钟时间戳单独校验。Date.now() 早在 2001 年就过了 1e12，拿相对毫秒的上限去卡它，
+ * 每条真实轨迹都会在这里被丢掉、一条也落不了盘——这个 bug 真出过。
+ */
+const timestamp = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0 && v < 1e14;
 const count = (v: unknown): number => finite(v) ? Math.max(0, Math.floor(v)) : 0;
 const short = (v: unknown, max: number): string => typeof v === "string" ? v.slice(0, max) : "";
 const milliseconds = (v: unknown): number | null => finite(v) && v >= 0 ? Math.round(v * 100) / 100 : null;
@@ -19,7 +25,7 @@ function position(v: unknown): PopupPosition | null {
 /** 从内容脚本过来的日志只允许已知字段，不透传上下文、任意对象或密钥。 */
 export function sanitizeTranslationTrace(raw: unknown): TranslationTrace | null {
   const r = object(raw);
-  if (!r.id || typeof r.id !== "string" || !finite(r.ts)) return null;
+  if (!r.id || typeof r.id !== "string" || !timestamp(r.ts)) return null;
   if (!["tap", "double-tap", "mouse", "keyboard", "touch-selection", "image"].includes(String(r.source)) ||
     !["success", "error", "cancelled", "render-timeout", "unobserved"].includes(String(r.status)) ||
     !["word", "phrase", "sentence"].includes(String(r.kind))) return null;

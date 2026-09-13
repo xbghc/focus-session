@@ -206,9 +206,9 @@ const logSummary = $("log-summary");
 const logTiming = $("log-timing");
 const logApp = $("log-app");
 
-/** 提示里报的条数。四份都要数：只报失败的话，用户不知道抓取记录也一起带出去了。 */
+/** 提示里报的条数。五份都要数：只报失败的话，用户不知道翻译轨迹（带选中的文本）和抓取记录也一起带出去了。 */
 const counts = (b: LlmLogBundle): string =>
-  `${b.failures.length} 条失败 + ${b.timings.length} 条耗时 + ${b.fetches.length} 条抓取 + ${b.errors.length} 条错误`;
+  `${b.failures.length} 条失败 + ${b.timings.length} 条耗时 + ${b.translations.length} 条翻译轨迹 + ${b.fetches.length} 条抓取 + ${b.errors.length} 条错误`;
 /** App 的设置页也要用它（分享日志），所以导出。 */
 export async function fetchLog(): Promise<LlmLogBundle> {
   return (await chrome.runtime.sendMessage({ type: "llm:log" })) as LlmLogBundle;

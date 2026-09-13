@@ -6,7 +6,27 @@ const MAX_PARTIALS = 100;
 const SETTLE_TIMEOUT_MS = 2_000;
 const rounded = (n: number): number => Math.round(n * 100) / 100;
 
-/** 仅翻译浮层生命周期启用；按动画帧采样，排除 position() 里先归零的不可见中间值。 */
+/** 生成轨迹 id 用得到的那一点 crypto，测试拿它塞一个没有 randomUUID 的桩。 */
+export interface TraceIdSource {
+  randomUUID?: () => string;
+  getRandomValues: Crypto["getRandomValues"];
+}
+
+/**
+ * 轨迹 id。http 页面不是安全上下文，那里的 crypto 没有 randomUUID——内容脚本跑在别人的网页上，
+ * 这种页面并不少见，直接调会抛 TypeError，选中文本就再也翻不出来。getRandomValues 在哪都有，
+ * 退回去拼 32 位十六进制，唯一性一样够。
+ */
+export function traceId(source: TraceIdSource = crypto): string {
+  if (typeof source.randomUUID === "function") return source.randomUUID();
+  const bytes = source.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 仅翻译浮层生命周期启用；位置按动画帧采样，排除 position() 里先归零的不可见中间值。
+ * 每次定位后只采一帧，只有最终内容更新之后才逐帧连续采，等它稳定下来。
+ */
 export class TranslationTraceRecorder {
   readonly log: TranslationTrace;
   private start: number;
@@ -25,7 +45,7 @@ export class TranslationTraceRecorder {
     this.now = now;
     this.save = save;
     this.log = {
-      id: crypto.randomUUID(), ts: Date.now() - Math.max(0, now() - input.started), source: input.source,
+      id: traceId(), ts: Date.now() - Math.max(0, now() - input.started), source: input.source,
       text: text.slice(0, 160), textChars: text.length, kind, status: "cancelled", reason: null, cached: null,
       marks: { inputStart: 0 }, durations: {}, partials: [], backend: null,
       popup: { measurement: typeof requestAnimationFrame === "function" ? "animation-frame" : "unavailable",
@@ -44,7 +64,11 @@ export class TranslationTraceRecorder {
     this.mark("firstPartial");
     const before = this.now();
     render();
-    if (p.translation) this.mark("firstTranslationDom");
+    if (p.translation) {
+      this.mark("firstTranslationDom");
+      // 译文进了 DOM 就补一帧：firstTranslationVisible 记的是它露出来的那一帧，不能等到收尾才量
+      this.queueFrame();
+    }
     if (!this.done && this.log.partials.length < MAX_PARTIALS) this.log.partials.push({
       atMs: rounded(before - this.start), renderMs: rounded(this.now() - before),
       fields: Object.entries(p).filter(([, v]) => Array.isArray(v) ? v.length > 0 : !!v).map(([k]) => k),
@@ -63,7 +87,9 @@ export class TranslationTraceRecorder {
     this.frame = requestAnimationFrame(() => {
       this.frame = null;
       this.sample();
-      if (!this.done) this.queueFrame();
+      // 只在等渲染稳定的那一段连续采样。此前每次定位后采一帧就够：position() 先归零再摆正，
+      // 帧回调里量到的才是摆正后的位置；长选区等确认时浮层能开很久，每帧量一次布局纯属白费。
+      if (!this.done && this.finalStatus) this.queueFrame();
     });
   }
 
@@ -114,6 +140,12 @@ export class TranslationTraceRecorder {
 
   finish(status: TranslationTrace["status"], reason?: string): void {
     if (this.done) return;
+    // 最终内容已经更新、只是还没等到渲染稳定就被关掉：成功还是失败早定了，不能记成 cancelled；
+    // 失败原因也留着，关闭的缘由只在没有原因可写时才补上
+    if (status === "cancelled" && this.finalStatus) {
+      status = this.finalStatus;
+      if (this.log.reason !== null) reason = undefined;
+    }
     this.mark("ended");
     this.done = true;
     if (this.frame !== null) cancelAnimationFrame(this.frame);

@@ -17,6 +17,7 @@ import {
   recordLlmFailure,
   recordTiming,
 } from "../src/background/llmLog.ts";
+import { getTranslationTraces, recordTranslationTrace } from "../src/background/translationLog.ts";
 import { getAppErrors, getFetchLog, recordAppError, recordFetch } from "../src/background/appLog.ts";
 import { setLlmConfig } from "../src/background/vocab.ts";
 import { clearData } from "../src/background/store.ts";
@@ -49,6 +50,12 @@ beforeEach(() => {
 });
 
 const CFG = { ...DEFAULT_LLM, apiKey: "k", model: "M-test" };
+/** 一条合法的翻译链路轨迹，够验证它跟着一起导出、一起清。字段本身在 translationDiagnostics.test.ts 里测。 */
+const TRACE = {
+  id: "trace-1", ts: Date.now(), source: "mouse", status: "success", kind: "word", text: "river", textChars: 5,
+  reason: null, cached: false, marks: { inputStart: 0, ended: 12 }, durations: {}, partials: [], backend: null,
+  popup: { measurement: "unavailable", positionCalls: 0, positionChanges: 0, samples: 0, initial: null, final: null, moves: [], movesTruncated: false },
+};
 
 /** App 那两份各一条，够验证它们跟着一起清、一起导出。字段本身在 appLog.test.ts 里测。 */
 const FETCH: ReaderFetch = {
@@ -214,15 +221,17 @@ test("耗时落盘失败同样不抛给调用方", async () => {
   await recordTiming("translate", CFG, TIMING);
 });
 
-test("清空日志四样一起清——按钮清的是整份诊断日志，不只 LLM 那两份", async () => {
+test("清空日志五样一起清——按钮清的是整份诊断日志，不只 LLM 那两份", async () => {
   await recordTiming("translate", CFG, TIMING);
   await recordLlmFailure(entry());
   await recordFetch(FETCH);
   await recordAppError(APP_ERROR);
+  await recordTranslationTrace(TRACE);
   await clearLlmLog();
   assert.deepEqual(await getLlmTimings(), []);
   assert.deepEqual(await getLlmLog(), []);
   assert.deepEqual(await getFetchLog(), []);
+  assert.deepEqual(await getTranslationTraces(), []);
   assert.deepEqual(await getAppErrors(), []);
 });
 
@@ -232,8 +241,9 @@ test("导出包带版本与配置，不含 apiKey", async () => {
   await recordTiming("translate", CFG, TIMING);
   await recordFetch(FETCH);
   await recordAppError(APP_ERROR);
+  await recordTranslationTrace(TRACE);
   const b = await llmLogBundle("0.3.0");
-  assert.equal(b.schema, 2); // 2 起多了 timings、fetches、errors
+  assert.equal(b.schema, 3); // 2 起多了 timings、fetches、errors；3 起多了 translations
   assert.equal(b.version, "0.3.0");
   assert.equal(b.llm.model, "M-x");
   assert.equal(b.llm.apiKeySet, true);
@@ -242,6 +252,7 @@ test("导出包带版本与配置，不含 apiKey", async () => {
   // 抓取与运行时错误也在同一份里：分成三个文件只会让人少发过来两个
   assert.equal(b.fetches.length, 1);
   assert.equal(b.errors.length, 1);
+  assert.equal(b.translations.length, 1); // 翻译链路轨迹也在同一份里
   assert.ok(!JSON.stringify(b).includes("secret-key"));
 });
 
