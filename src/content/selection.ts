@@ -10,6 +10,7 @@ import type {
   TranslateRequest,
 } from "../types.ts";
 import { judgeSelection } from "../lib/lang.ts";
+import { coarsePointer } from "../lib/pointer.ts";
 import { Popover } from "./popover.ts";
 import { bindTapTranslation, type TapKind } from "./tapTranslation.ts";
 import { TranslationTraceRecorder } from "./translationTrace.ts";
@@ -54,15 +55,6 @@ const POPOVER_TOUCH_GRACE_MS = 1_000;
  * 20s 补一发足够压住冷启动，又不至于让 SW 长期常驻。
  */
 const WARM_INTERVAL_MS = 20_000;
-
-/** 主指针是不是手指。触屏笔记本接着鼠标时是 false，手机上是 true。 */
-function coarsePointer(): boolean {
-  try {
-    return typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
-  } catch {
-    return false;
-  }
-}
 
 export interface SelectionDeps {
   recordTrace?: (trace: TranslationTrace) => void;

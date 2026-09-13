@@ -1,4 +1,5 @@
 import type { PartialTranslation, Snippet, SnippetKind, VocabNote } from "../types.ts";
+import { coarsePointer } from "../lib/pointer.ts";
 import { fillMeta, stopSpeaking } from "../lib/speak.ts";
 
 /**
@@ -248,9 +249,9 @@ export class Popover {
   private anchor: DOMRect | null = null;
   /**
    * 这个锚点上定下来的框：贴选区上方还是下方、左边在哪、钉住的是哪条边（edge 是那条边的 y）。
-   * 一个锚点只挑一次边（见 place），之后每次贴位都照它摆。
+   * dock：手机上放上方时贴屏幕顶，不贴选区（见 place）。一个锚点只挑一次边，之后每次贴位都照它摆。
    */
-  private frame: { above: boolean; left: number; pin: "top" | "bottom"; edge: number } | null = null;
+  private frame: { above: boolean; dock: boolean; left: number; pin: "top" | "bottom"; edge: number } | null = null;
   /**
    * 流式期间缓存的节点。译文、音标、语境解释、生词是分批到的，
    * 每来一批都重建 DOM 会闪，所以搭一次骨架、之后只改 textContent。
@@ -342,6 +343,9 @@ export class Popover {
    * 所以流式时按选区种类预估（expected），浮层钉住预留好的上边往下长；确认、报错这类
    * 一次成型的内容就量现在的高度，贴着选区放、钉住下边。
    *
+   * 手机上（主指针是手指）放上方时不贴选区，贴屏幕顶：窄屏上浮层本来就占满整宽，固定在顶上，
+   * 每次点词都在同一个地方出现。上方可用的是从顶边到选区之间那一截，放不下预估的高度才落到选区下方。
+   *
    * 两边都放不下时挑空间大的那边，浮层收矮、内容在里面滚；两边都挤不出 MIN_ROOM 才贴顶——
    * 那时选区本身占了大半屏（比如截图框），压住也认了。
    * 用 fixed 定位 + viewport 坐标，页面滚动时浮层会关掉，不需要跟随。
@@ -352,17 +356,20 @@ export class Popover {
     this.anchor = rect;
     const vh = document.documentElement.clientHeight;
     const need = Math.min(vh * 0.7, MAX_HEIGHT, expected ?? naturalHeight(box));
-    const above = rect.top - 2 * MARGIN;
+    const dock = coarsePointer() ? dockTop() : null;
+    const above = rect.top - MARGIN - (dock ?? MARGIN);
     const below = vh - rect.bottom - 2 * MARGIN;
     const left = rect.left;
     if (above >= need || (below < need && above >= below && above >= MIN_ROOM)) {
-      this.frame = expected === undefined
-        ? { above: true, left, pin: "bottom", edge: rect.top - MARGIN }
-        : { above: true, left, pin: "top", edge: Math.max(MARGIN, rect.top - MARGIN - need) };
+      this.frame = dock !== null
+        ? { above: true, dock: true, left, pin: "top", edge: dock }
+        : expected === undefined
+          ? { above: true, dock: false, left, pin: "bottom", edge: rect.top - MARGIN }
+          : { above: true, dock: false, left, pin: "top", edge: Math.max(MARGIN, rect.top - MARGIN - need) };
     } else if (below >= need || below >= MIN_ROOM) {
-      this.frame = { above: false, left, pin: "top", edge: rect.bottom + MARGIN };
+      this.frame = { above: false, dock: false, left, pin: "top", edge: rect.bottom + MARGIN };
     } else {
-      this.frame = { above: false, left, pin: "top", edge: MARGIN };
+      this.frame = { above: false, dock: false, left, pin: "top", edge: dock ?? MARGIN };
     }
     this.position();
   }
@@ -371,11 +378,12 @@ export class Popover {
    * 照定好的框摆放。内容每变一次都调：流式每一批、收尾、追问的每一段答案。
    *
    * 钉住的那条边不动，浮层只往另一头长，长到这一边的空间（和 MAX_HEIGHT）为止，再长就在里面滚。
-   * 所以流式期间浮层不挪：贴上方钉的是预留好的上边，贴下方钉的是选区下沿。宽度是 CSS 定死的，
-   * 左边也就不会跟着内容变。钉下边直接写 CSS 的 bottom，浮层多高交给浏览器排，不用先量再倒推 top。
+   * 所以流式期间浮层不挪：贴上方钉的是预留好的上边（手机上是屏幕顶），贴下方钉的是选区下沿。
+   * 宽度是 CSS 定死的，左边也就不会跟着内容变；贴屏幕顶的左右居中。钉下边直接写 CSS 的 bottom，
+   * 浮层多高交给浏览器排，不用先量再倒推 top。
    *
    * 两种情况改钉下边：流式结束后内容比预留的那一格高——估低了，往上让一次，比把讲解的尾巴和
-   * 追问入口藏进滚动条里强；以及点开追问之后（见 holdBottom）。
+   * 追问入口藏进滚动条里强；以及点开追问之后（见 holdBottom）。贴屏幕顶的两样都不做：顶上没地方可让。
    */
   private position(): void {
     const box = this.box;
@@ -387,12 +395,13 @@ export class Popover {
     // 浮层下沿最低能到哪：贴上方时是选区顶上那条缝，否则是视口底
     const floor = f.above ? rect.top - MARGIN : vh - MARGIN;
     // 量高度用 scrollHeight，不临时放开 max-height 再量：那一下会把用户在浮层里滚到的位置归零
-    if (f.above && f.pin === "top" && !this.stream && naturalHeight(box) > floor - f.edge) {
+    if (f.above && !f.dock && f.pin === "top" && !this.stream && naturalHeight(box) > floor - f.edge) {
       f.pin = "bottom";
       f.edge = floor;
     }
     const room = Math.floor(Math.max(0, Math.min(vh * 0.7, MAX_HEIGHT, f.pin === "bottom" ? f.edge - MARGIN : floor - f.edge)));
-    const left = Math.min(Math.max(MARGIN, f.left), Math.max(MARGIN, vw - box.offsetWidth - MARGIN));
+    const width = box.offsetWidth;
+    const left = f.dock ? (vw - width) / 2 : Math.min(Math.max(MARGIN, f.left), Math.max(MARGIN, vw - width - MARGIN));
     box.style.maxHeight = `${room}px`;
     box.style.left = `${Math.round(left)}px`;
     box.style.top = f.pin === "top" ? `${Math.round(f.edge)}px` : "auto";
@@ -403,11 +412,11 @@ export class Popover {
   /**
    * 点开追问时钉住浮层当时的下沿。追问在浮层底部来回——输入框、正在写的答案都在那儿；
    * 之后答案越长浮层越往上长，底下这一块不动，上面已经读过的译文往上让。
-   * 贴下方的浮层本来就钉着上边往下长，答案接在最后，不用改。
+   * 贴下方的浮层本来就钉着上边往下长，答案接在最后，不用改；贴屏幕顶的也不改，顶上没地方可让。
    */
   private holdBottom(): void {
     const f = this.frame;
-    if (!this.box || !f?.above || f.pin === "bottom") return;
+    if (!this.box || !f?.above || f.dock || f.pin === "bottom") return;
     f.pin = "bottom";
     f.edge = this.box.getBoundingClientRect().bottom;
   }
@@ -770,6 +779,15 @@ export class Popover {
 /** 内容撑开时浮层有多高（含边框），不受 max-height 截断。 */
 function naturalHeight(box: HTMLElement): number {
   return box.scrollHeight + box.offsetHeight - box.clientHeight;
+}
+
+/**
+ * 手机上浮层贴屏幕顶时的顶边：让开状态栏和刘海。App 的宿主把它们压在 WebView 上的高度
+ * 写在 --inset-top 上（见 app/native.ts）；扩展里没有这个变量，就只留 MARGIN。
+ */
+function dockTop(): number {
+  const inset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--inset-top"));
+  return MARGIN + (inset > 0 ? inset : 0);
 }
 
 /**
