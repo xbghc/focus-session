@@ -24,7 +24,7 @@ export function traceId(source: TraceIdSource = crypto): string {
 }
 
 /**
- * 仅翻译浮层生命周期启用；位置按动画帧采样，排除 position() 里先归零的不可见中间值。
+ * 仅翻译浮层生命周期启用；位置按动画帧采样，量的是这次定位真正画出来的那一帧。
  * 每次定位后只采一帧，只有最终内容更新之后才逐帧连续采，等它稳定下来。
  */
 export class TranslationTraceRecorder {
@@ -87,8 +87,8 @@ export class TranslationTraceRecorder {
     this.frame = requestAnimationFrame(() => {
       this.frame = null;
       this.sample();
-      // 只在等渲染稳定的那一段连续采样。此前每次定位后采一帧就够：position() 先归零再摆正，
-      // 帧回调里量到的才是摆正后的位置；长选区等确认时浮层能开很久，每帧量一次布局纯属白费。
+      // 只在等渲染稳定的那一段连续采样。此前每次定位后采一帧就够，量的是那次定位画出来的样子；
+      // 长选区等确认时浮层能开很久，每帧量一次布局纯属白费。
       if (!this.done && this.finalStatus) this.queueFrame();
     });
   }

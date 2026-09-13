@@ -374,7 +374,7 @@ export class SelectionTranslator {
     const ctrl = new AbortController();
     this.inflight = ctrl;
 
-    this.popover.showStreaming(rect, req.text);
+    this.popover.showStreaming(rect, req.text, req.kind);
     trace?.mark("requestStart");
     let res: TranslateResponse;
     try {
