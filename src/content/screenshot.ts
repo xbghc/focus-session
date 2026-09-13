@@ -89,14 +89,14 @@ export function selectRegion(dataUrl: string, opts?: { crop?: CropFn }): Promise
       style.textContent = `
         :host { all: initial; }
         .overlay { position:fixed; inset:0; overflow:hidden; cursor:crosshair; touch-action:none;
-          user-select:none; background:#1f1b16; font-family:Georgia,"Songti SC","SimSun",serif; }
+          user-select:none; background:#3a342e; font-family:Georgia,"Songti SC","SimSun",serif; }
         canvas { position:absolute; inset:0; width:100%; height:100%; }
         .shade { position:absolute; inset:0; background:rgba(31,27,22,.55); }
-        .region { position:absolute; box-sizing:border-box; border:1px solid #a4551f;
+        .region { position:absolute; box-sizing:border-box; border:1px solid #9c4d14;
           box-shadow:0 0 0 9999px rgba(31,27,22,.55); }
         .hint { position:absolute; top:18px; left:50%; transform:translateX(-50%); max-width:calc(100% - 32px);
-          width:max-content; box-sizing:border-box; padding:9px 14px; border:1px solid #e0d8cb; border-top:3px solid #a4551f;
-          border-radius:3px; background:#fffdfa; color:#1f1b16; pointer-events:none;
+          width:max-content; box-sizing:border-box; padding:9px 14px; border:1px solid #d3cbbd; border-top:3px solid #9c4d14;
+          border-radius:3px; background:#f6f0e7; color:#3a342e; pointer-events:none;
           font:14px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
       `;
       const overlay = document.createElement("div");

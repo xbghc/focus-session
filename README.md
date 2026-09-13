@@ -870,8 +870,10 @@ cd android && ./gradlew assembleDebug   # APK；preBuild 会自己跑一遍 buil
 无框架，运行时依赖是 `@mozilla/readability`、`ts-fsrs` 和扩展 OCR 用的 `tesseract.js`。测试用 Node 内置 test runner +
 类型擦除，不需要额外的测试框架或转译步骤。
 
-界面是纸墨配色（暖纸底 + 赭石 accent），配色 token 集中在 `src/popup/popup.css` 的 `:root`，
-四个页面和划词浮层共用。拉丁衬线 Source Serif 4 打包在 `dist/fonts/`（三个 woff2，共 68KB，
+界面是纸墨配色（暖纸底 + 赭石 accent），亮度两头都收着：纸不是白、墨不是黑，深色那套的底和字同理——
+正文对比度 10:1 上下，而不是白底黑字的 21:1。配色 token 集中在 `src/popup/popup.css` 的 `:root`，
+四个页面共用；划词浮层这类跑在网页 shadow root 里的卡片读不到它们，各自抄着同一组数字（`src/content/`），
+App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改。拉丁衬线 Source Serif 4 打包在 `dist/fonts/`（三个 woff2，共 68KB，
 构建时从 `@fontsource/source-serif-4` 复制），中文交给系统宋体——界面里的中文全部来自 LLM
 输出，子集必漏字，全量又是 10MB 起。浮层要用这些字体，所以 manifest 声明了
 `web_accessible_resources`；副作用是网页能探测到本扩展的存在。注意 `--experimental-strip-types` 是 strip-only 模式，
