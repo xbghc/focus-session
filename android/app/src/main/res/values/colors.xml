@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 与 src/popup/popup.css 的纸墨配色同一组数字 -->
-    <color name="paper">#FAF7F2</color>
-    <color name="ink">#1C1917</color>
-    <color name="ochre">#A4551F</color>
-    <color name="card">#FFFDFA</color>
+    <!-- 与 src/popup/popup.css 的纸墨配色同一组数字：paper / card / ochre 是浅色那套，ink 是深色那套的底 -->
+    <color name="paper">#EFE9DE</color>
+    <color name="ink">#2B2724</color>
+    <color name="ochre">#9C4D14</color>
+    <color name="card">#F6F0E7</color>
+    <!-- 启动图标的底。图标是一张画（前景里的颜色也是写死的），不跟着界面配色走 -->
+    <color name="launcher_bg">#FAF7F2</color>
 </resources>

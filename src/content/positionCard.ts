@@ -31,10 +31,10 @@ const CSS = `
   gap: 10px;
   padding: 9px 10px 9px 13px;
   border-radius: 3px;
-  border: 1px solid #e0d8cb;
-  border-left: 3px solid #a4551f;
-  background: #fffdfa;
-  color: #1f1b16;
+  border: 1px solid #d3cbbd;
+  border-left: 3px solid #9c4d14;
+  background: #f6f0e7;
+  color: #3a342e;
   box-shadow: 0 1px 2px rgba(31, 27, 22, 0.06), 0 10px 28px rgba(31, 27, 22, 0.14);
   font: 13px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   animation: rise 240ms cubic-bezier(0.2, 0.8, 0.3, 1);
@@ -50,23 +50,23 @@ const CSS = `
 }
 .label { display: flex; flex-direction: column; gap: 1px; }
 .title { font-weight: 600; letter-spacing: -0.01em; }
-.sub { color: #6f6558; font-size: 11.5px; }
+.sub { color: #6c6254; font-size: 11.5px; }
 button {
   font: inherit;
   cursor: pointer;
   border-radius: 2px;
-  border: 1px solid #e0d8cb;
-  background: #f7f2e9;
-  color: #4a4238;
+  border: 1px solid #d3cbbd;
+  background: #ebe5db;
+  color: #574e44;
   padding: 5px 11px;
   transition: color 120ms, border-color 120ms;
 }
-button:hover { color: #a4551f; border-color: #a4551f; }
+button:hover { color: #9c4d14; border-color: #9c4d14; }
 @media (prefers-color-scheme: dark) {
-  .card { background: #262220; color: #e8e0d5; border-color: #332f2a; border-left-color: #e18d5a; }
-  .sub { color: #9a8f7f; }
-  button { background: #1c1917; color: #bdb3a4; border-color: #3d3833; }
-  button:hover { background: #332f2a; color: #e18d5a; border-color: #e18d5a; }
+  .card { background: #342f2c; color: #d6cec3; border-color: #423e38; border-left-color: #e18d5a; }
+  .sub { color: #a39889; }
+  button { background: #2b2724; color: #b7aea0; border-color: #4c4741; }
+  button:hover { background: #423e38; color: #e18d5a; border-color: #e18d5a; }
 }
 `;
 
