@@ -602,6 +602,66 @@ test("换一段选区就重新挑边", () => {
   }
 });
 
+/** 手机：主指针是手指；insetTop 是宿主写进 --inset-top 的状态栏高度。返回还原函数。 */
+const phone = (insetTop = 0): (() => void) => {
+  g["matchMedia"] = (q: string) => ({ matches: q === "(pointer: coarse)" });
+  g["getComputedStyle"] = () => ({ getPropertyValue: (p: string) => (p === "--inset-top" ? `${insetTop}px` : "") });
+  return () => {
+    delete g["matchMedia"];
+    delete g["getComputedStyle"];
+  };
+};
+
+test("手机上浮层贴屏幕顶：让开状态栏，左右居中，往下长到选区上沿为止", () => {
+  const restore = phone(24);
+  layout(900, 120);
+  try {
+    pop.showStreaming(rectAt(600), "leaks", "word");
+    assert.equal(geom().top, 32); // 8 + 24
+    assert.equal(boxEl().style.left, "350px"); // (1000 - 300) / 2
+    assert.equal(boxEl().style.maxHeight, "520px"); // 顶边到选区上沿有 560px，被 520 封顶
+  } finally {
+    unlayout();
+    restore();
+  }
+});
+
+test("手机上贴顶的浮层怎么长都不挪：内容超出不往上让，点开追问也不改钉下边", () => {
+  const restore = phone();
+  layout(900, 120);
+  try {
+    pop.showStreaming(rectAt(300), "leaks", "word"); // 顶边 8 到选区上沿 292 有 284px，放得下 270
+    const at = { top: boxEl().style.top, left: boxEl().style.left, bottom: boxEl().style.bottom };
+    assert.equal(at.top, "8px");
+    content = 320;
+    pop.updateStream(partial());
+    pop.showResult(rectAt(300), SNIPPET); // 比 284px 高：贴着选区的会往上让，贴顶的只能在里面滚
+    pop.enableAsk();
+    assert.deepEqual({ top: boxEl().style.top, left: boxEl().style.left, bottom: boxEl().style.bottom }, at);
+    assert.equal(boxEl().style.maxHeight, "284px");
+    click(root().querySelector('[data-act="ask"]'));
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    content = 420;
+    pop.updateAnswer("因为……");
+    assert.deepEqual({ top: boxEl().style.top, left: boxEl().style.left, bottom: boxEl().style.bottom }, at);
+  } finally {
+    unlayout();
+    restore();
+  }
+});
+
+test("手机上选区太靠上、顶上放不下：照旧落到选区下方", () => {
+  const restore = phone();
+  layout(900, 120);
+  try {
+    pop.showStreaming(rectAt(150), "leaks", "word"); // 顶边 8 到选区上沿 142 只有 134px
+    assert.equal(geom().top, 178); // 170 + 8
+  } finally {
+    unlayout();
+    restore();
+  }
+});
+
 test("识别标题转圈，译文空着；切换流式沿用同一骨架", () => {
   pop.showRecognizing(RECT);
   assert.equal(txt(".term"), "正在识别图中文字… ");
