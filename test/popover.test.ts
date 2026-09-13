@@ -421,51 +421,182 @@ test("重新划一个词：追问那块跟着整块作废", () => {
 });
 
 /*
- * 定位。jsdom 不排版，getBoundingClientRect 一律返回全零，所以视口尺寸和浮层
- * 自身的尺寸都得手动喂进去——量的是浮层，锚点 rect 是外面传进来的普通对象，
- * 不走原型，不受这里的替换影响。
+ * 定位。jsdom 不排版，尺寸一律是 0，视口和浮层的尺寸都得手动喂：content 是浮层内容撑开有多高，
+ * scrollHeight 照它报，offsetHeight / clientHeight 报被 max-height 截过的样子；浮层画在哪由 geom
+ * 照 top 或 bottom 倒算。锚点 rect 是外面传进来的普通对象，不受这里的替换影响。
  */
-const realRect = dom.window.HTMLElement.prototype.getBoundingClientRect;
-const layout = (vh: number, boxH: number): void => {
-  const num = (v: number) => ({ value: v, configurable: true });
-  Object.defineProperty(document.documentElement, "clientHeight", num(vh));
-  Object.defineProperty(document.documentElement, "clientWidth", num(1000));
-  dom.window.HTMLElement.prototype.getBoundingClientRect = () =>
-    ({ width: 300, height: boxH, top: 0, left: 0, right: 300, bottom: boxH, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+const proto = dom.window.HTMLElement.prototype;
+const METRICS = ["scrollHeight", "offsetHeight", "clientHeight", "offsetWidth", "getBoundingClientRect"] as const;
+const originals = new Map(METRICS.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)] as const));
+let content = 0;
+const boxEl = (): HTMLElement => root().querySelector(".box") as HTMLElement;
+/** 浮层此刻画在哪：钉上边时照 top 算，钉下边时照 bottom 算。 */
+const geom = (): { top: number; bottom: number } => {
+  const s = boxEl().style;
+  const height = Math.min(content, parseFloat(s.maxHeight));
+  if (s.top !== "auto") return { top: parseFloat(s.top), bottom: parseFloat(s.top) + height };
+  const bottom = document.documentElement.clientHeight - parseFloat(s.bottom);
+  return { top: bottom - height, bottom };
+};
+const layout = (vh: number, h: number): void => {
+  content = h;
+  const own = (v: number) => ({ value: v, configurable: true });
+  Object.defineProperty(document.documentElement, "clientHeight", own(vh));
+  Object.defineProperty(document.documentElement, "clientWidth", own(1000));
+  const capped = function (this: HTMLElement): number {
+    const max = parseFloat(this.style.maxHeight);
+    return Number.isNaN(max) ? content : Math.min(content, max);
+  };
+  Object.defineProperty(proto, "scrollHeight", { get: () => content, configurable: true });
+  Object.defineProperty(proto, "offsetHeight", { get: capped, configurable: true });
+  Object.defineProperty(proto, "clientHeight", { get: capped, configurable: true });
+  Object.defineProperty(proto, "offsetWidth", { get: () => 300, configurable: true });
+  Object.defineProperty(proto, "getBoundingClientRect", {
+    value: () => ({ ...geom(), left: 0, right: 300, width: 300, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect,
+    configurable: true, writable: true,
+  });
 };
 const unlayout = (): void => {
-  dom.window.HTMLElement.prototype.getBoundingClientRect = realRect;
+  for (const [k, d] of originals) {
+    if (d) Object.defineProperty(proto, k, d);
+    else Reflect.deleteProperty(proto, k);
+  }
   Reflect.deleteProperty(document.documentElement, "clientHeight");
   Reflect.deleteProperty(document.documentElement, "clientWidth");
 };
 const rectAt = (top: number): DOMRect => ({ ...RECT, top, bottom: top + 20, y: top }) as DOMRect;
-const boxTop = (): string => (root().querySelector(".box") as HTMLElement).style.top;
 
-test("上方放得下就放上方：让开选区下面还没读的那片", () => {
-  layout(800, 200);
+test("流式时按选区种类预估的高度挑边：上方留得出就放上方，钉住预留好的上边", () => {
+  layout(800, 120); // 骨架刚出来只有 120px，挑边不能照它
   try {
-    pop.showStreaming(rectAt(400), "leaks");
-    assert.equal(boxTop(), "192px"); // 400 - 200 - 8
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    assert.deepEqual(geom(), { top: 122, bottom: 242 }); // 400 - 8 - 270
+    assert.equal(boxEl().style.maxHeight, "270px", "往下长到选区上沿为止，不压住选区");
   } finally {
     unlayout();
   }
 });
 
-test("上方放不下才落到下方", () => {
-  layout(800, 200);
+test("流式内容一批批长高，浮层不挪；收尾摘掉尾灯、挂上追问入口也不挪", () => {
+  layout(800, 120);
   try {
-    pop.showStreaming(rectAt(100), "leaks"); // 上方只有 100px，塞不下 200px
-    assert.equal(boxTop(), "128px"); // 120 + 8
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    const at = { top: boxEl().style.top, left: boxEl().style.left };
+    for (const h of [160, 210, 255]) {
+      content = h;
+      pop.updateStream(partial({ contextNote: "本文里…" }));
+      assert.deepEqual({ top: boxEl().style.top, left: boxEl().style.left }, at);
+    }
+    content = 230;
+    pop.showResult(rectAt(400), SNIPPET);
+    content = 262;
+    pop.enableAsk();
+    assert.deepEqual({ top: boxEl().style.top, left: boxEl().style.left }, at);
   } finally {
     unlayout();
   }
 });
 
-test("上下都放不下就贴顶——同样是把下面让出来", () => {
+test("流式结束后内容比预留的高：钉住选区上沿往上让一次，不把尾巴藏进滚动条", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    content = 320;
+    pop.updateStream(partial());
+    assert.equal(geom().top, 122, "流式期间装不下先在里面滚，不挪");
+    pop.showResult(rectAt(400), SNIPPET);
+    assert.deepEqual(geom(), { top: 72, bottom: 392 }); // 下沿钉在 400 - 8，往上长 320
+  } finally {
+    unlayout();
+  }
+});
+
+test("上方留不出预估的高度就放下方，之后只往下长", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(100), "leaks", "word"); // 上方只有 84px
+    assert.equal(geom().top, 128); // 120 + 8
+    content = 400;
+    pop.updateStream(partial());
+    pop.showResult(rectAt(100), SNIPPET);
+    assert.equal(geom().top, 128);
+  } finally {
+    unlayout();
+  }
+});
+
+test("两边都放不下预估的高度：挑宽的那边，收矮了在里面滚，不贴顶压住选区", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(300), "Every abstraction leaks.", "sentence"); // 整句按上限 520 预估；上方 284、下方 464
+    assert.equal(geom().top, 328);
+    assert.equal(boxEl().style.maxHeight, "464px");
+  } finally {
+    unlayout();
+  }
+});
+
+test("两边都挤不出一个像样的浮层才贴顶：选区本身占了大半屏", () => {
   layout(300, 200);
   try {
-    pop.showStreaming(rectAt(100), "leaks");
-    assert.equal(boxTop(), "8px");
+    pop.showStreaming({ ...RECT, top: 90, bottom: 230, height: 140 } as DOMRect, "leaks", "word"); // 上方 74、下方 54
+    assert.equal(geom().top, 8);
+  } finally {
+    unlayout();
+  }
+});
+
+test("确认、报错这类一次成型的内容：量现在的高度，贴着选区放", () => {
+  layout(800, 90);
+  try {
+    pop.showConfirm(rectAt(400), "hello", 201);
+    assert.deepEqual(geom(), { top: 302, bottom: 392 });
+    pop.showError(rectAt(100), "HTTP 500", false); // 上方 84px 放不下 90px
+    assert.equal(geom().top, 128);
+  } finally {
+    unlayout();
+  }
+});
+
+test("点开追问后钉住当时的下沿：答案越长浮层往上长，输入框那一块不动", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    content = 240;
+    pop.showResult(rectAt(400), SNIPPET);
+    pop.enableAsk();
+    const { bottom } = geom(); // 122 + 240
+    click(root().querySelector('[data-act="ask"]'));
+    content = 280;
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    content = 330;
+    pop.updateAnswer("因为……");
+    assert.deepEqual(geom(), { top: bottom - 330, bottom });
+  } finally {
+    unlayout();
+  }
+});
+
+test("截图识别转翻译沿用同一个框，不按单词重新挑边", () => {
+  layout(800, 100);
+  try {
+    pop.showRecognizing(rectAt(700)); // 认出来之前按整句预留：700 - 8 - 520
+    assert.equal(geom().top, 172);
+    pop.setTerm("hello");
+    pop.showStreaming(rectAt(700), "hello", "word");
+    assert.equal(geom().top, 172);
+  } finally {
+    unlayout();
+  }
+});
+
+test("换一段选区就重新挑边", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    assert.equal(geom().top, 122);
+    pop.showStreaming(rectAt(100), "another", "word");
+    assert.equal(geom().top, 128);
   } finally {
     unlayout();
   }

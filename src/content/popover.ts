@@ -1,4 +1,4 @@
-import type { PartialTranslation, Snippet, VocabNote } from "../types.ts";
+import type { PartialTranslation, Snippet, SnippetKind, VocabNote } from "../types.ts";
 import { fillMeta, stopSpeaking } from "../lib/speak.ts";
 
 /**
@@ -15,6 +15,17 @@ import { fillMeta, stopSpeaking } from "../lib/speak.ts";
 
 const HOST_ID = "focus-session-popover";
 const MARGIN = 8;
+/** 同 CSS 里 .box 那条 max-height：min(70vh, 520px)。挑边要算「这一边放不放得下」，JS 这边也得知道。 */
+const MAX_HEIGHT = 520;
+/** 挑边时一边至少得有这么高，才算放得下一个能看的浮层；两边都不到就贴顶，压住选区也认了。 */
+const MIN_ROOM = 120;
+/**
+ * 流式开始时预计浮层会长到多高（算上收尾挂的追问入口），按选区种类估——那一刻内容还没来，量不出来。
+ * 贴上方时照这个高度预留，浮层钉住上边往下长。数字是在 Chrome 里真排版量出来的：单词 250–260px，
+ * 带两个生词的短语 390–400px，整句基本顶到上限。估高了是浮层和选区之间空一截，估低了是收尾时
+ * 往上让一次（见 position）；两样都比流式期间一路挪好受。
+ */
+const EXPECTED_HEIGHT: Record<SnippetKind, number> = { word: 270, phrase: 400, sentence: MAX_HEIGHT };
 
 /*
  * 字体 URL 只能在运行时拼：Shadow DOM 里的 `url()` 是相对宿主页面解析的，
@@ -48,10 +59,12 @@ const CSS = `
 .box {
   position: fixed;
   z-index: 2147483647;
-  /* 手机屏幕比 380px 窄：两边各留 8px，别顶穿视口 */
-  max-width: min(380px, calc(100vw - 16px));
-  min-width: min(220px, calc(100vw - 16px));
-  /* 讲解能有五条，长句加满就是大半屏。给个上限让它自己滚，别顶穿视口 */
+  /*
+   * 宽度一上来就定死，不跟着内容撑：译文、讲解一批批到，宽度一变行就重新折，
+   * 贴右边的浮层还得往左挪。手机屏幕比 380px 窄：两边各留 8px，别顶穿视口。
+   */
+  width: min(380px, calc(100vw - 16px));
+  /* 讲解能有五条，长句加满就是大半屏。给个上限让它自己滚；贴位时再按那一边的空间收（见 position） */
   max-height: min(70vh, 520px);
   overflow-y: auto;
   box-sizing: border-box;
@@ -214,7 +227,7 @@ const MAX_QUESTION_CHARS = 200;
 const PIN_SLACK_PX = 24;
 
 export interface PopoverActions {
-  /** 最终 left/top 已设置；观察器按帧取实际位置，不统计临时归零。 */
+  /** 这次贴位的样式已经写好；观察器按帧去量真正画出来的位置。 */
   onPositioned?: (box: HTMLElement) => void;
   /** 用户点了「翻译」（长选区需要确认时才出现这个按钮）。 */
   onConfirm: () => void;
@@ -233,6 +246,11 @@ export class Popover {
   private actions: PopoverActions;
   /** 当前锚定的选区矩形，内容变长后重新贴位要用。 */
   private anchor: DOMRect | null = null;
+  /**
+   * 这个锚点上定下来的框：贴选区上方还是下方、左边在哪、钉住的是哪条边（edge 是那条边的 y）。
+   * 一个锚点只挑一次边（见 place），之后每次贴位都照它摆。
+   */
+  private frame: { above: boolean; left: number; pin: "top" | "bottom"; edge: number } | null = null;
   /**
    * 流式期间缓存的节点。译文、音标、语境解释、生词是分批到的，
    * 每来一批都重建 DOM 会闪，所以搭一次骨架、之后只改 textContent。
@@ -316,58 +334,97 @@ export class Popover {
   }
 
   /**
-   * 定位到选区上方；空间不够时落到下方，左右两侧夹进视口。
+   * 给新锚点定框：贴选区上方还是下方、钉住哪条边。之后内容再怎么变，position 只照这个框摆。
    *
    * 优先放上方：选区上面的字通常已经读过了，压住无所谓；放下方会挡住接着往下
-   * 读、往下选的那片。上下都放不下就贴顶，同样是把下面让出来。
+   * 读、往下选的那片。挑边看的是浮层**会长到多高**，不是它此刻多高——流式骨架刚出来
+   * 只有两三行，照它挑边，内容长到上面塞不下就得翻到下方，那是流式期间最晃眼的一下。
+   * 所以流式时按选区种类预估（expected），浮层钉住预留好的上边往下长；确认、报错这类
+   * 一次成型的内容就量现在的高度，贴着选区放、钉住下边。
+   *
+   * 两边都放不下时挑空间大的那边，浮层收矮、内容在里面滚；两边都挤不出 MIN_ROOM 才贴顶——
+   * 那时选区本身占了大半屏（比如截图框），压住也认了。
    * 用 fixed 定位 + viewport 坐标，页面滚动时浮层会关掉，不需要跟随。
    */
-  private place(rect: DOMRect): void {
+  private place(rect: DOMRect, expected?: number): void {
+    const box = this.box;
+    if (!box) return;
     this.anchor = rect;
+    const vh = document.documentElement.clientHeight;
+    const need = Math.min(vh * 0.7, MAX_HEIGHT, expected ?? naturalHeight(box));
+    const above = rect.top - 2 * MARGIN;
+    const below = vh - rect.bottom - 2 * MARGIN;
+    const left = rect.left;
+    if (above >= need || (below < need && above >= below && above >= MIN_ROOM)) {
+      this.frame = expected === undefined
+        ? { above: true, left, pin: "bottom", edge: rect.top - MARGIN }
+        : { above: true, left, pin: "top", edge: Math.max(MARGIN, rect.top - MARGIN - need) };
+    } else if (below >= need || below >= MIN_ROOM) {
+      this.frame = { above: false, left, pin: "top", edge: rect.bottom + MARGIN };
+    } else {
+      this.frame = { above: false, left, pin: "top", edge: MARGIN };
+    }
     this.position();
   }
 
   /**
-   * 按当前内容重新贴位。流式期间每批新字段到达都要调一次。
+   * 照定好的框摆放。内容每变一次都调：流式每一批、收尾、追问的每一段答案。
    *
-   * 测量前必须把 left 归零：`position: fixed` 只设了 left 时，可用宽度是
-   * `视口宽 - left`，贴在右边缘的浮层量出来会比实际窄。归零和最终定位在同一个
-   * 同步任务里完成，浏览器不会在中间绘制，所以不需要 visibility 那一套遮掩。
+   * 钉住的那条边不动，浮层只往另一头长，长到这一边的空间（和 MAX_HEIGHT）为止，再长就在里面滚。
+   * 所以流式期间浮层不挪：贴上方钉的是预留好的上边，贴下方钉的是选区下沿。宽度是 CSS 定死的，
+   * 左边也就不会跟着内容变。钉下边直接写 CSS 的 bottom，浮层多高交给浏览器排，不用先量再倒推 top。
+   *
+   * 两种情况改钉下边：流式结束后内容比预留的那一格高——估低了，往上让一次，比把讲解的尾巴和
+   * 追问入口藏进滚动条里强；以及点开追问之后（见 holdBottom）。
    */
   private position(): void {
     const box = this.box;
     const rect = this.anchor;
-    if (!box || !rect) return;
-    box.style.left = "0px";
-    box.style.top = "0px";
-    const { width, height } = box.getBoundingClientRect();
+    const f = this.frame;
+    if (!box || !rect || !f) return;
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
-
-    let top = rect.top - height - MARGIN;
-    if (top < MARGIN) {
-      const below = rect.bottom + MARGIN;
-      top = below + height <= vh - MARGIN ? below : MARGIN;
+    // 浮层下沿最低能到哪：贴上方时是选区顶上那条缝，否则是视口底
+    const floor = f.above ? rect.top - MARGIN : vh - MARGIN;
+    // 量高度用 scrollHeight，不临时放开 max-height 再量：那一下会把用户在浮层里滚到的位置归零
+    if (f.above && f.pin === "top" && !this.stream && naturalHeight(box) > floor - f.edge) {
+      f.pin = "bottom";
+      f.edge = floor;
     }
-    const left = Math.min(Math.max(MARGIN, rect.left), Math.max(MARGIN, vw - width - MARGIN));
-
+    const room = Math.floor(Math.max(0, Math.min(vh * 0.7, MAX_HEIGHT, f.pin === "bottom" ? f.edge - MARGIN : floor - f.edge)));
+    const left = Math.min(Math.max(MARGIN, f.left), Math.max(MARGIN, vw - box.offsetWidth - MARGIN));
+    box.style.maxHeight = `${room}px`;
     box.style.left = `${Math.round(left)}px`;
-    box.style.top = `${Math.round(top)}px`;
+    box.style.top = f.pin === "top" ? `${Math.round(f.edge)}px` : "auto";
+    box.style.bottom = f.pin === "bottom" ? `${Math.round(vh - f.edge)}px` : "auto";
     this.actions.onPositioned?.(box);
   }
 
-  private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void): void {
+  /**
+   * 点开追问时钉住浮层当时的下沿。追问在浮层底部来回——输入框、正在写的答案都在那儿；
+   * 之后答案越长浮层越往上长，底下这一块不动，上面已经读过的译文往上让。
+   * 贴下方的浮层本来就钉着上边往下长，答案接在最后，不用改。
+   */
+  private holdBottom(): void {
+    const f = this.frame;
+    if (!this.box || !f?.above || f.pin === "bottom") return;
+    f.pin = "bottom";
+    f.edge = this.box.getBoundingClientRect().bottom;
+  }
+
+  private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void, expected?: number): void {
     const box = this.ensure();
     this.recognizing = false;
     this.stream = null; // 整块重建，旧骨架的引用全作废
     this.ask = null;
     box.innerHTML = html;
     wire?.(box);
-    this.place(rect);
+    this.place(rect, expected);
   }
 
   showRecognizing(rect: DOMRect): void {
-    this.showStreaming(rect, "正在识别图中文字…");
+    // 认出来的多半是一段话，按整句预留：接着翻译会沿用这个框，等认完再挑边就晚了
+    this.showStreaming(rect, "正在识别图中文字…", "sentence");
     this.recognizing = true;
     const n = this.stream!;
     n.termEl.insertAdjacentHTML("beforeend", ' <span class="spin"></span>');
@@ -384,14 +441,16 @@ export class Popover {
   /**
    * 搭好最终形态的骨架，译文位置先放一个转圈。
    * 骨架和 showResult 完全同构，所以后面补内容不会引起整块跳动。
+   * kind 用来预估浮层会长多高，据此挑边、预留位置（见 EXPECTED_HEIGHT）。
    */
-  showStreaming(rect: DOMRect, term: string): void {
-    // 识别与翻译沿用同一骨架，避免识别刚结束就把整块浮层拆了重画。
+  showStreaming(rect: DOMRect, term: string, kind: SnippetKind = "word"): void {
+    // 识别与翻译沿用同一骨架，避免识别刚结束就把整块浮层拆了重画；框也沿用，不重新挑边。
     if (this.recognizing && this.stream) {
       this.recognizing = false;
+      this.anchor = rect;
       this.setTerm(term);
       this.stream.tr.innerHTML = '<span class="spin"></span>';
-      this.place(rect);
+      this.position();
       return;
     }
     this.render(
@@ -420,6 +479,7 @@ export class Popover {
         nodes.termEl.textContent = truncate(term, 90);
         this.stream = nodes;
       },
+      EXPECTED_HEIGHT[kind],
     );
   }
 
@@ -565,6 +625,7 @@ export class Popover {
   private openAsk(): void {
     const a = this.ask;
     if (!a) return;
+    this.holdBottom();
     a.engaged = true;
     a.bar.textContent = "";
 
@@ -702,7 +763,13 @@ export class Popover {
     this.stream = null;
     this.ask = null;
     this.anchor = null;
+    this.frame = null;
   }
+}
+
+/** 内容撑开时浮层有多高（含边框），不受 max-height 截断。 */
+function naturalHeight(box: HTMLElement): number {
+  return box.scrollHeight + box.offsetHeight - box.clientHeight;
 }
 
 /**
