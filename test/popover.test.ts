@@ -691,3 +691,117 @@ test("长文本确认按来源区分选中和识别", () => {
   pop.showConfirm(RECT, "hello", 201, "image");
   assert.equal(txt(".meta"), "识别出 201 个词，较长，确认后再翻译");
 });
+
+/* ---- 原文：长了只露开头，点一下展开全文，再点收起 ---- */
+
+const LONG = "Leaky abstractions are the ones that fail to hide the details they were meant to hide, so you end up learning those details anyway.";
+const term = (): HTMLElement => root().querySelector(".term") as HTMLElement;
+/** 在节点上按一个键；返回 dispatchEvent 的结果，默认动作被拦掉时是 false。 */
+const press = (el: Element, key: string): boolean =>
+  el.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+
+test("长原文只露前 90 个字，点一下展开全文，再点收起", () => {
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`);
+  assert.equal(term().getAttribute("aria-expanded"), "false");
+  click(term());
+  assert.equal(txt(".term"), LONG);
+  assert.equal(term().getAttribute("aria-expanded"), "true");
+  click(term());
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`);
+  assert.equal(term().getAttribute("aria-expanded"), "false");
+});
+
+test("没截断的原文不可点：点了不变，也不挂按钮的角色", () => {
+  pop.showResult(RECT, SNIPPET);
+  assert.equal(term().getAttribute("role"), null);
+  assert.equal(term().getAttribute("aria-expanded"), null);
+  click(term());
+  assert.equal(txt(".term"), "leaks");
+});
+
+test("长选区等确认时也能点开，看清要翻的是哪一整段", () => {
+  pop.showConfirm(RECT, LONG, 201);
+  assert.equal(txt(".term"), `${LONG.slice(0, 80)}…`);
+  click(term());
+  assert.equal(txt(".term"), LONG);
+});
+
+test("流式期间点开的原文，收尾补最终结果时不收回去", () => {
+  pop.showStreaming(RECT, LONG, "sentence");
+  click(term());
+  const node = term();
+  pop.updateStream(partial());
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  assert.equal(term(), node, "同一个节点，就地补的最终值");
+  assert.equal(txt(".term"), LONG);
+  click(term());
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`, "收尾之后照样能收起");
+});
+
+test("截图认出的长段落也能点开；识别转翻译沿用骨架，展开着的不收回", () => {
+  pop.showRecognizing(RECT);
+  assert.equal(term().getAttribute("aria-expanded"), null, "识别中的标题不可点");
+  pop.setTerm(LONG);
+  click(term());
+  assert.equal(txt(".term"), LONG);
+  pop.showStreaming(RECT, LONG, "sentence");
+  assert.equal(txt(".term"), LONG);
+});
+
+test("换一段选区回到收起", () => {
+  pop.showStreaming(RECT, LONG, "sentence");
+  click(term());
+  pop.showStreaming(RECT, `${LONG} Again.`, "sentence");
+  assert.equal(term().getAttribute("aria-expanded"), "false");
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`);
+});
+
+test("截断的原文当按钮用：Tab 能到，回车、空格都能展开收起", () => {
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  assert.equal(term().getAttribute("role"), "button");
+  assert.equal(term().getAttribute("tabindex"), "0");
+  press(term(), "Enter");
+  assert.equal(txt(".term"), LONG);
+  assert.equal(press(term(), " "), false, "空格的默认动作是滚动浮层，得拦掉");
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`);
+  press(term(), "a");
+  assert.equal(txt(".term"), `${LONG.slice(0, 90)}…`, "别的键不算");
+});
+
+test("追问框里的回车不去动原文", () => {
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  pop.enableAsk();
+  click(root().querySelector('[data-act="ask"]'));
+  press(root().querySelector(".qin")!, "Enter");
+  assert.equal(term().getAttribute("aria-expanded"), "false");
+});
+
+test("展开后比预留的那一格高：同流式收尾，钉住选区上沿往上让一次；收起不再挪回去", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(500), LONG, "phrase"); // 预留 400：上边钉在 500 - 8 - 400
+    content = 350;
+    pop.showResult(rectAt(500), { ...SNIPPET, text: LONG });
+    assert.deepEqual(geom(), { top: 92, bottom: 442 });
+    content = 480;
+    click(term());
+    assert.deepEqual(geom(), { top: 12, bottom: 492 }); // 下沿钉在 500 - 8，往上长 480
+    content = 350;
+    click(term());
+    assert.deepEqual(geom(), { top: 142, bottom: 492 });
+  } finally {
+    unlayout();
+  }
+});
+
+test("收起时滚回浮层顶上：不然还停在读全文时滚到的地方，刚收起的原文反倒看不见", () => {
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  const box = boxEl();
+  // jsdom 不排版，scrollTop 恒为 0；挂一个能写的值，当作读全文时往下滚过
+  Object.defineProperty(box, "scrollTop", { value: 300, writable: true, configurable: true });
+  click(term());
+  assert.equal(box.scrollTop, 300, "展开不去动滚动位置");
+  click(term());
+  assert.equal(box.scrollTop, 0);
+});
