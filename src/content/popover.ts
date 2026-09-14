@@ -81,6 +81,13 @@ const CSS = `
 }
 .head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
 .term { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+/*
+ * 截断过的原文可以点：点一下展开全文，再点收起（见 fillTerm）。没截断的不挂 aria-expanded，不可点也不变色。
+ * 不学音标描虚线：一整段粗体原文底下拖一道线太吵，结尾那个「…」本身就在说后面还有。
+ */
+.term[aria-expanded] { cursor: pointer; }
+@media (hover: hover) { .term[aria-expanded]:hover { color: #9c4d14; } }
+.term[aria-expanded]:active { color: #9c4d14; }
 /* 注脚一律无衬线，和 popup / dashboard 同一套分工 */
 .meta {
   color: #6c6254; font-size: 11.5px;
@@ -204,6 +211,7 @@ button:active { background: #e3dbcf; border-color: #9c4d14; color: #9c4d14; }
   .meta, .vm, .vn, .qq { color: #a39889; }
   .ph { border-bottom-color: #756a5d; }
   @media (hover: hover) { .ph:hover { color: #e18d5a; border-bottom-color: #e18d5a; } }
+  @media (hover: hover) { .term[aria-expanded]:hover { color: #e18d5a; } }
   .note, .usage, .vd, .aa { color: #b7aea0; }
   .usage::before { color: #a39889; }
   .ctx, .vocab, .ask { border-top-color: #3a3632; }
@@ -215,7 +223,7 @@ button:active { background: #e3dbcf; border-color: #9c4d14; color: #9c4d14; }
   .iconbtn { background: transparent; border-color: transparent; color: #a39889; }
   @media (hover: hover) { .iconbtn:hover { background: transparent; border-color: transparent; color: #e18d5a; } }
   button:active { background: #4c4741; border-color: #e18d5a; color: #e18d5a; }
-  .ph:active, .iconbtn:active { color: #e18d5a; }
+  .ph:active, .iconbtn:active, .term[aria-expanded]:active { color: #e18d5a; }
   /* 出错那句：浅色那份深棕放在深色卡片上只剩 2:1 */
   .err { color: #d4a373; }
 }
@@ -285,6 +293,8 @@ export class Popover {
     send: HTMLButtonElement | null;
     engaged: boolean;
   } | null = null;
+  /** 截断过的原文，点开、收起时照它重填 .term（见 fillTerm）。没截断就是 null，整块重建时跟着作废。 */
+  private origin: { el: Element; text: string; max: number } | null = null;
   /** 同一帧里的多次贴位合并成一次，见 reposition。 */
   private repositioning = false;
   private recognizing = false;
@@ -324,6 +334,16 @@ export class Popover {
       // 这时选区塌掉不要紧——要问的那一段早就在 selection.ts 手里了。
       if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
       e.preventDefault();
+    });
+    // 截断过的原文点一下展开、再点收起。它挂着 role="button"，键盘上的回车、空格也得认
+    box.addEventListener("click", (e) => {
+      if ((e.target as Element | null)?.closest(".term[aria-expanded]")) this.toggleTerm();
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (!(e.target as Element | null)?.closest(".term[aria-expanded]")) return;
+      e.preventDefault(); // 空格的默认动作是滚动浮层
+      this.toggleTerm();
     });
 
     root.append(style, box);
@@ -426,6 +446,7 @@ export class Popover {
     this.recognizing = false;
     this.stream = null; // 整块重建，旧骨架的引用全作废
     this.ask = null;
+    this.origin = null;
     box.innerHTML = html;
     wire?.(box);
     this.place(rect, expected);
@@ -443,7 +464,42 @@ export class Popover {
   setTerm(text: string): void {
     if (!this.stream) return;
     this.stream.term = text;
-    this.stream.termEl.textContent = truncate(text, 90);
+    this.fillTerm(this.stream.termEl, text, 90);
+    this.position();
+  }
+
+  /**
+   * 把选中的原文填进 .term。长了只露前 max 个字；截掉了的可以点，展开全文、再点收起——
+   * 长选区等确认时、截图认出一整段时，截掉的那半在别处看不到。
+   *
+   * 展开与否记在节点自己的 aria-expanded 上：识别完转翻译、流式收尾补最终值都是就地重填，
+   * 不能把人刚点开的全文又收回去；换一段选区是整块重建，节点是新的，自然回到收起。
+   */
+  private fillTerm(el: Element, text: string, max: number): void {
+    const long = text.length > max;
+    const open = long && el.getAttribute("aria-expanded") === "true";
+    el.textContent = open ? text : truncate(text, max);
+    this.origin = long ? { el, text, max } : null;
+    if (long) {
+      el.setAttribute("role", "button");
+      el.setAttribute("tabindex", "0");
+      el.setAttribute("aria-expanded", String(open));
+    } else {
+      for (const a of ["role", "tabindex", "aria-expanded"]) el.removeAttribute(a);
+    }
+  }
+
+  /** 点了截断过的原文：展开全文，或收回截断。之后照定好的框重新贴位，钉住的那条边不动。 */
+  private toggleTerm(): void {
+    const o = this.origin;
+    const box = this.box;
+    if (!o || !box) return;
+    const open = o.el.getAttribute("aria-expanded") !== "true";
+    o.el.setAttribute("aria-expanded", String(open));
+    this.fillTerm(o.el, o.text, o.max);
+    // 收起时滚回顶上：全文长到要在浮层里往下滚着读的话，缩回去还停在原来的滚动位置，
+    // 露出来的是半截讲解，刚收起的原文反倒在视野外
+    if (!open) box.scrollTop = 0;
     this.position();
   }
 
@@ -485,7 +541,7 @@ export class Popover {
           drawn: 0,
         };
         // 和 showResult 用同一个长度：骨架是复用的，长度不一样会让词在收尾时抖一下
-        nodes.termEl.textContent = truncate(term, 90);
+        this.fillTerm(nodes.termEl, term, 90);
         this.stream = nodes;
       },
       EXPECTED_HEIGHT[kind],
@@ -530,7 +586,7 @@ export class Popover {
        <div class="meta">${source === "image" ? "识别出" : "选中了"} ${words} 个词，较长，确认后再翻译</div>
        <div class="ctx"><button data-act="go">翻译这段</button></div>`,
       (box) => {
-        box.querySelector(".term")!.textContent = truncate(term, 80);
+        this.fillTerm(box.querySelector(".term")!, term, 80);
         box.querySelector('[data-act="go"]')!.addEventListener("click", () => this.actions.onConfirm());
       },
     );
@@ -544,7 +600,7 @@ export class Popover {
     const n = this.stream;
     if (n) {
       this.anchor = rect;
-      n.termEl.textContent = truncate(s.text, 90);
+      this.fillTerm(n.termEl, s.text, 90);
       fillMeta(n.meta, meta);
       n.tr.textContent = s.translation;
       n.note.textContent = s.contextNote;
@@ -568,7 +624,7 @@ export class Popover {
        <div class="vocab"></div>
        <div class="ask"></div>`,
       (box) => {
-        box.querySelector(".term")!.textContent = truncate(s.text, 90);
+        this.fillTerm(box.querySelector(".term")!, s.text, 90);
         fillMeta(box.querySelector(".meta")!, meta);
         box.querySelector(".tr")!.textContent = s.translation;
         const note = box.querySelector(".note")!;
@@ -771,6 +827,7 @@ export class Popover {
     this.host = this.root = this.box = null;
     this.stream = null;
     this.ask = null;
+    this.origin = null;
     this.anchor = null;
     this.frame = null;
   }
