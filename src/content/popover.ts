@@ -78,6 +78,9 @@ const CSS = `
   box-shadow: 0 1px 2px rgba(31, 27, 22, 0.06), 0 10px 28px rgba(31, 27, 22, 0.12);
   font: 14px/1.7 "Source Serif 4", Georgia, "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
   overflow-wrap: break-word;
+  /* 浮层里的字要能选中复制。有的网站给 html 挂 user-select: none 防复制，不写明的话浮层会跟着继承过来 */
+  -webkit-user-select: text;
+  user-select: text;
 }
 .head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
 .term { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
@@ -132,6 +135,9 @@ button {
   font-size: 12px; cursor: pointer;
   padding: 4px 11px; border-radius: 3px;
   border: 1px solid #d0c8ba; background: #efe9de; color: #574e44;
+  /* 拖选浮层里的字时，别把按钮上的字也圈进去 */
+  -webkit-user-select: none;
+  user-select: none;
 }
 @media (hover: hover) { button:hover { border-color: #9c4d14; color: #9c4d14; } }
 button:active { background: #e3dbcf; border-color: #9c4d14; color: #9c4d14; }
@@ -314,6 +320,26 @@ export class Popover {
     return this.host;
   }
 
+  /**
+   * 浮层里此刻有没有选中的字。
+   *
+   * 划词那边判选区前得先问这一句：Chrome 的 document.getSelection() 会把浮层里的选区原样交出来，
+   * 照常判下去，浮层自己的字就成了一段新选区——人只是想复制，浮层却被收掉或顶掉（见 selection.ts 的 evaluate）。
+   * 认选区在不在浮层里用 getComposedRanges：传进这个 shadow root，它才把里面的范围交出来，不传就折到宿主外面；
+   * 没有它的旧 Chrome 退回 shadow root 自己的 getSelection。
+   */
+  holdsSelection(): boolean {
+    const root = this.root;
+    const sel = root ? document.getSelection() : null;
+    if (!root || !sel || sel.rangeCount === 0) return false;
+    const s = sel as unknown as { getComposedRanges?: (options: { shadowRoots: ShadowRoot[] }) => StaticRange[] };
+    if (typeof s.getComposedRanges === "function") {
+      return s.getComposedRanges({ shadowRoots: [root] }).some((r) => !r.collapsed && root.contains(r.startContainer));
+    }
+    const own = (root as unknown as { getSelection?: () => Selection | null }).getSelection?.();
+    return !!own && !own.isCollapsed && root.contains(own.anchorNode);
+  }
+
   private ensure(): HTMLDivElement {
     if (this.box) return this.box;
     const host = document.createElement("div");
@@ -333,17 +359,16 @@ export class Popover {
     const box = document.createElement("div");
     box.className = "box";
 
-    // 关键：按下浮层时不能让浏览器清掉选区，否则点按钮的瞬间
-    // getSelection() 就空了，"翻译这段选中的文字"直接失效。
+    // 按在按钮上拦住默认动作：页面上的选区不塌、还亮着，看得出浮层讲的是哪一段。
+    // 字上不拦——译文、讲解、答案都得能选中复制
     box.addEventListener("mousedown", (e) => {
-      // 唯一的例外是追问的输入框：拦掉默认行为它就永远拿不到焦点，一个字也打不进去。
-      // 这时选区塌掉不要紧——要问的那一段早就在 selection.ts 手里了。
-      if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
-      e.preventDefault();
+      if ((e.target as Element | null)?.closest("button")) e.preventDefault();
     });
-    // 截断过的原文点一下展开、再点收起。它挂着 role="button"，键盘上的回车、空格也得认
+    // 截断过的原文点一下展开、再点收起。它挂着 role="button"，键盘上的回车、空格也得认。
+    // 在原文上拖着选字，松手那一下也会来一个 click：手里有选区时不算点
     box.addEventListener("click", (e) => {
-      if ((e.target as Element | null)?.closest(".term[aria-expanded]")) this.toggleTerm();
+      if (!(e.target as Element | null)?.closest(".term[aria-expanded]") || this.holdsSelection()) return;
+      this.toggleTerm();
     });
     box.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
@@ -492,7 +517,9 @@ export class Popover {
   private fillTerm(el: Element, text: string, max: number): void {
     const long = text.length > max;
     const open = long && el.getAttribute("aria-expanded") === "true";
-    el.textContent = open ? text : truncate(text, max);
+    const shown = open ? text : truncate(text, max);
+    // 没变就不重写：识别转翻译、流式收尾都会原样再填一遍，重写会把人正选着的字冲掉
+    if (el.textContent !== shown) el.textContent = shown;
     this.origin = long ? { el, text, max } : null;
     if (long) {
       el.setAttribute("role", "button");
@@ -571,9 +598,9 @@ export class Popover {
     if (!n) return; // 已经被 hide / 其他 render 顶掉了
     // 空的一批不覆盖已经到的：流式只会往上加字段，收到空多半是这一帧还没生成到
     if (p.phonetic || p.pos) fillMeta(n.meta, { phonetic: p.phonetic, pos: p.pos, word: n.term });
-    if (p.translation) n.tr.textContent = p.translation;
-    if (p.contextNote) n.note.textContent = p.contextNote;
-    if (p.usage) n.usage.textContent = p.usage;
+    if (p.translation) setText(n.tr, p.translation);
+    if (p.contextNote) setText(n.note, p.contextNote);
+    if (p.usage) setText(n.usage, p.usage);
     this.growVocab(n, p.vocab);
     // 译文一到就点亮尾灯：后面还有用法和生词，别让人以为已经完事了
     if (p.translation) n.more.classList.add("on");
@@ -616,10 +643,10 @@ export class Popover {
       this.anchor = rect;
       this.fillTerm(n.termEl, s.text, 90);
       fillMeta(n.meta, meta);
-      n.tr.textContent = s.translation;
-      n.note.textContent = s.contextNote;
+      setText(n.tr, s.translation);
+      setText(n.note, s.contextNote);
       if (!s.contextNote) n.note.remove();
-      n.usage.textContent = s.usage ?? "";
+      setText(n.usage, s.usage ?? "");
       if (!s.usage) n.usage.remove();
       this.growVocab(n, s.vocab);
       if (s.vocab.length === 0) n.vocab.remove();
@@ -777,12 +804,12 @@ export class Popover {
     if (a.send) a.send.disabled = busy;
   }
 
-  /** 答案的增量。参数是**到目前为止的全部答案**，直接覆盖。 */
+  /** 答案的增量。参数是**到目前为止的全部答案**；接着已经写出的往后长，见 setText。 */
   updateAnswer(text: string): void {
     const slot = this.ask?.answer;
     if (!slot) return;
     // 直接来自模型，只能当文本填，不能拼进 HTML
-    this.pinBottom(() => void (slot.textContent = text));
+    this.pinBottom(() => setText(slot, text));
     this.reposition();
   }
 
@@ -790,7 +817,7 @@ export class Popover {
     const a = this.ask;
     if (!a?.answer) return;
     // 一个字都没吐出来（被截断、被拦）时别留个空框加转圈在那儿转
-    a.answer.textContent = text || "（这一问没有得到回答）";
+    setText(a.answer, text || "（这一问没有得到回答）");
     a.answer = null;
     this.setAskBusy(false);
     this.position();
@@ -881,6 +908,23 @@ function spinner(): HTMLElement {
   const el = document.createElement("span");
   el.className = "spin";
   return el;
+}
+
+/**
+ * 字真变了才写。流式每来一批都会把已经到的字段原样再带一遍，照写就是换一个新的文本节点，
+ * 人在浮层里正选着的字跟着没了。越写越长的（追问的答案），只把新长出来的那截接上去。
+ */
+function setText(el: Element, text: string): void {
+  const node = el.childNodes.length === 1 ? el.firstChild : null;
+  if (node?.nodeType === 3) {
+    const t = node as Text;
+    if (t.data === text) return;
+    if (text.startsWith(t.data)) {
+      t.appendData(text.slice(t.data.length));
+      return;
+    }
+  }
+  el.textContent = text;
 }
 
 function truncate(s: string, n: number): string {

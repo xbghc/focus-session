@@ -868,3 +868,73 @@ test("收起时滚回浮层顶上：不然还停在读全文时滚到的地方�
   click(term());
   assert.equal(box.scrollTop, 0);
 });
+
+/* ---- 浮层里的字能选中复制 ---- */
+
+/** 在节点上按下鼠标；返回 dispatchEvent 的结果，默认动作被拦掉时是 false。 */
+const mousedown = (el: Element): boolean =>
+  el.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+
+/** 让浮层以为页面的选区落在 node 上。jsdom 的 Selection 没有 getComposedRanges，桩一个。返回还原函数。 */
+const selectAt = (node: Node, collapsed = false): (() => void) => {
+  const fake = { rangeCount: 1, getComposedRanges: () => [{ collapsed, startContainer: node }] };
+  (document as unknown as { getSelection: () => unknown }).getSelection = () => fake;
+  return () => void Reflect.deleteProperty(document, "getSelection");
+};
+
+test("按在字上不拦默认动作，浮层里的字选得中；按在按钮上照旧拦住，页面上的选区不塌", () => {
+  pop.showResult(RECT, SNIPPET);
+  pop.enableAsk();
+  assert.equal(mousedown(root().querySelector(".tr")!), true, "拦住就选不了字");
+  assert.equal(mousedown(root().querySelector(".note")!), true);
+  assert.equal(mousedown(term()), true);
+  assert.equal(mousedown(root().querySelector('[data-act="ask"]')!), false);
+});
+
+test("浮层说得出自己手里有没有选区：选在浮层里才算，光标和页面上的选区不算", () => {
+  pop.showResult(RECT, SNIPPET);
+  const inside = root().querySelector(".tr")!.firstChild!;
+  for (const [node, collapsed, want] of [[inside, false, true], [inside, true, false], [document.body, false, false]] as const) {
+    const restore = selectAt(node, collapsed);
+    try {
+      assert.equal(pop.holdsSelection(), want);
+    } finally {
+      restore();
+    }
+  }
+  assert.equal(pop.holdsSelection(), false, "jsdom 自己的 Selection 没有 getComposedRanges，也不该炸");
+});
+
+test("在原文上拖着选字，松手那一下不算点：不展开也不收起", () => {
+  pop.showResult(RECT, { ...SNIPPET, text: LONG });
+  const restore = selectAt(term().firstChild!);
+  try {
+    click(term());
+    assert.equal(term().getAttribute("aria-expanded"), "false");
+  } finally {
+    restore();
+  }
+  click(term());
+  assert.equal(term().getAttribute("aria-expanded"), "true", "没选着字时照常展开");
+});
+
+test("流式里原样再带来的字段不换文本节点，选着的字不会被下一批冲掉", () => {
+  pop.showStreaming(RECT, "Every abstraction leaks.", "sentence");
+  pop.updateStream(partial());
+  const tr = root().querySelector(".tr")!.firstChild;
+  pop.updateStream(partial({ contextNote: "本文里…" }));
+  pop.showResult(RECT, { ...SNIPPET, text: "Every abstraction leaks.", translation: "抽象总会泄漏" });
+  assert.equal(root().querySelector(".tr")!.firstChild, tr);
+  assert.equal(txt(".tr"), "抽象总会泄漏");
+});
+
+test("答案越写越长只接上新长出来的那截，已经写出的字不换节点", () => {
+  const input = openAsk();
+  ask(input, "为什么？");
+  pop.updateAnswer("主语是");
+  const node = root().querySelector(".aa")!.firstChild;
+  pop.updateAnswer("主语是 abstraction");
+  pop.finishAnswer("主语是 abstraction");
+  assert.equal(root().querySelector(".aa")!.firstChild, node);
+  assert.equal(txt(".aa"), "主语是 abstraction");
+});

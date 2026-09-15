@@ -300,6 +300,12 @@ export class SelectionTranslator {
      * 打到一半凭空消失。而追问要问的那一段早就存进 answered 了，选区此刻已无用。
      */
     if (this.popover.asking) return;
+    /*
+     * 选区在浮层里：人正在浮层里选字复制。照常判下去，浮层自己的字就成了一段新选区——中文译文判不成英文，
+     * 浮层直接收掉；选中的是原文里的英文，就被拿去再翻一遍、把浮层顶掉。拖选拖出浮层的边（松手落在页面上）、
+     * 在浮层里按 shift+方向键，都会走到这里。
+     */
+    if (this.popover.holdsSelection()) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       this.dismiss();
