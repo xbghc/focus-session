@@ -558,20 +558,83 @@ test("确认、报错这类一次成型的内容：量现在的高度，贴着�
   }
 });
 
-test("点开追问后钉住当时的下沿：答案越长浮层往上长，输入框那一块不动", () => {
+test("发出一问时给答案留出地方：上边往上提一次，之后答案怎么长浮层都不挪", () => {
   layout(800, 120);
   try {
     pop.showStreaming(rectAt(400), "leaks", "word");
     content = 240;
     pop.showResult(rectAt(400), SNIPPET);
     pop.enableAsk();
-    const { bottom } = geom(); // 122 + 240
+    const shown = geom(); // 上边钉在预留的 122，长 240
     click(root().querySelector('[data-act="ask"]'));
-    content = 280;
+    assert.deepEqual(geom(), shown, "点开输入框不挪");
+    content = 290;
     ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
-    content = 330;
+    assert.equal(geom().top, 8, "底下只剩 30px，上边提到头，给答案腾出地方");
+    for (const h of [330, 380, 460]) {
+      content = h;
+      pop.updateAnswer("因为……");
+      assert.equal(geom().top, 8, "答案流出来的时候不挪");
+    }
+    pop.finishAnswer("因为……");
+    assert.equal(geom().top, 8);
+    assert.equal(boxEl().style.maxHeight, "384px", "往下长到选区上沿为止，再长在里面滚");
+  } finally {
+    unlayout();
+  }
+});
+
+test("底下本来就留得出答案的地方：发出一问也不挪", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(700), "Every abstraction leaks.", "sentence"); // 整句预留 520：上边钉在 172
+    content = 200;
+    pop.showResult(rectAt(700), { ...SNIPPET, text: "Every abstraction leaks." });
+    pop.enableAsk();
+    click(root().querySelector('[data-act="ask"]'));
+    content = 240;
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    assert.equal(geom().top, 172);
+    content = 380;
     pop.updateAnswer("因为……");
-    assert.deepEqual(geom(), { top: bottom - 330, bottom });
+    assert.equal(geom().top, 172);
+  } finally {
+    unlayout();
+  }
+});
+
+test("收尾往上让过一次、钉着下沿的浮层：发出一问时改钉上边，答案往下长", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    content = 320;
+    pop.showResult(rectAt(400), SNIPPET); // 比预留的 270 高：下沿钉在 392
+    pop.enableAsk();
+    click(root().querySelector('[data-act="ask"]'));
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    const { top } = geom();
+    for (const h of [360, 420, 500]) {
+      content = h;
+      pop.updateAnswer("因为……");
+      assert.equal(geom().top, top, "答案流出来的时候不挪");
+    }
+  } finally {
+    unlayout();
+  }
+});
+
+test("放在选区下方的浮层：发出一问不挪，答案往下长", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(100), "leaks", "word"); // 上方只有 84px，落到下方：上边钉在 128
+    content = 240;
+    pop.showResult(rectAt(100), SNIPPET);
+    pop.enableAsk();
+    click(root().querySelector('[data-act="ask"]'));
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    content = 400;
+    pop.updateAnswer("因为……");
+    assert.equal(geom().top, 128);
   } finally {
     unlayout();
   }
