@@ -235,6 +235,12 @@ const MAX_QUESTION_CHARS = 200;
 /** 离底不到这么远就算「贴着底」，见 pinBottom。 */
 const PIN_SLACK_PX = 24;
 
+/**
+ * 发出一问时给答案留的高度，见 reserveAnswer。提示词让模型把答案控制在 150 字以内；
+ * 在 Chrome 里量过，150 个汉字的答案比「问题 + 转圈」多长出 117px。再长的就在浮层里滚。
+ */
+const ANSWER_ROOM = 120;
+
 export interface PopoverActions {
   /** 这次贴位的样式已经写好；观察器按帧去量真正画出来的位置。 */
   onPositioned?: (box: HTMLElement) => void;
@@ -402,8 +408,9 @@ export class Popover {
    * 宽度是 CSS 定死的，左边也就不会跟着内容变；贴屏幕顶的左右居中。钉下边直接写 CSS 的 bottom，
    * 浮层多高交给浏览器排，不用先量再倒推 top。
    *
-   * 两种情况改钉下边：流式结束后内容比预留的那一格高——估低了，往上让一次，比把讲解的尾巴和
-   * 追问入口藏进滚动条里强；以及点开追问之后（见 holdBottom）。贴屏幕顶的两样都不做：顶上没地方可让。
+   * 只有一种情况改钉下边：流式结束后内容比预留的那一格高——估低了，往上让一次，比把讲解的尾巴和
+   * 追问入口藏进滚动条里强。贴屏幕顶的不让，顶上没地方可让；追问期间也不让：答案的地方在发出一问时
+   * 就留好了（见 reserveAnswer），这时再让，浮层就跟着答案一路往上爬。
    */
   private position(): void {
     const box = this.box;
@@ -415,7 +422,7 @@ export class Popover {
     // 浮层下沿最低能到哪：贴上方时是选区顶上那条缝，否则是视口底
     const floor = f.above ? rect.top - MARGIN : vh - MARGIN;
     // 量高度用 scrollHeight，不临时放开 max-height 再量：那一下会把用户在浮层里滚到的位置归零
-    if (f.above && !f.dock && f.pin === "top" && !this.stream && naturalHeight(box) > floor - f.edge) {
+    if (f.above && !f.dock && f.pin === "top" && !this.stream && !this.asking && naturalHeight(box) > floor - f.edge) {
       f.pin = "bottom";
       f.edge = floor;
     }
@@ -430,15 +437,22 @@ export class Popover {
   }
 
   /**
-   * 点开追问时钉住浮层当时的下沿。追问在浮层底部来回——输入框、正在写的答案都在那儿；
-   * 之后答案越长浮层越往上长，底下这一块不动，上面已经读过的译文往上让。
-   * 贴下方的浮层本来就钉着上边往下长，答案接在最后，不用改；贴屏幕顶的也不改，顶上没地方可让。
+   * 发出一问时给答案留出地方，之后答案怎么长浮层都不挪。
+   *
+   * 答案是一小段一小段流出来的。浮层要是钉住下沿跟着往上长，整块就一路往上爬，连同上面的译文一起晃——
+   * 生成期间最扎眼的就是这个。所以只在发送这一下挪：贴在选区上方的浮层下沿本来就贴着选区，底下没空，
+   * 就把上边往上提，提到放得下 ANSWER_ROOM 为止，然后钉住上边往下长；提到头也放不下，答案就在浮层里滚。
+   * 放下方的、贴屏幕顶的，钉的本来就是上边，往下长不用挪。
    */
-  private holdBottom(): void {
+  private reserveAnswer(): void {
+    const box = this.box;
+    const rect = this.anchor;
     const f = this.frame;
-    if (!this.box || !f?.above || f.dock || f.pin === "bottom") return;
-    f.pin = "bottom";
-    f.edge = this.box.getBoundingClientRect().bottom;
+    if (!box || !rect || !f?.above || f.dock) return;
+    const vh = document.documentElement.clientHeight;
+    const want = Math.min(vh * 0.7, MAX_HEIGHT, naturalHeight(box) + ANSWER_ROOM);
+    f.pin = "top";
+    f.edge = Math.max(MARGIN, Math.min(box.getBoundingClientRect().top, rect.top - MARGIN - want));
   }
 
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void, expected?: number): void {
@@ -690,7 +704,6 @@ export class Popover {
   private openAsk(): void {
     const a = this.ask;
     if (!a) return;
-    this.holdBottom();
     a.engaged = true;
     a.bar.textContent = "";
 
@@ -751,6 +764,7 @@ export class Popover {
     qa.append(qq, slot);
     a.answer = slot;
     this.pinBottom(() => a.qas.append(qa));
+    this.reserveAnswer();
 
     this.actions.onAsk(q);
     this.position();
