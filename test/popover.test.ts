@@ -429,6 +429,8 @@ const proto = dom.window.HTMLElement.prototype;
 const METRICS = ["scrollHeight", "offsetHeight", "clientHeight", "offsetWidth", "getBoundingClientRect"] as const;
 const originals = new Map(METRICS.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)] as const));
 let content = 0;
+/** 宿主此刻画在视口的哪里。页面往下滚 dy，宿主就到 -dy；浮层（贴屏幕顶的除外）跟着它挪。 */
+let hostAt = { left: 0, top: 0 };
 const boxEl = (): HTMLElement => root().querySelector(".box") as HTMLElement;
 /** 浮层此刻画在哪：钉上边时照 top 算，钉下边时照 bottom 算。 */
 const geom = (): { top: number; bottom: number } => {
@@ -440,6 +442,7 @@ const geom = (): { top: number; bottom: number } => {
 };
 const layout = (vh: number, h: number): void => {
   content = h;
+  hostAt = { left: 0, top: 0 };
   const own = (v: number) => ({ value: v, configurable: true });
   Object.defineProperty(document.documentElement, "clientHeight", own(vh));
   Object.defineProperty(document.documentElement, "clientWidth", own(1000));
@@ -452,7 +455,17 @@ const layout = (vh: number, h: number): void => {
   Object.defineProperty(proto, "clientHeight", { get: capped, configurable: true });
   Object.defineProperty(proto, "offsetWidth", { get: () => 300, configurable: true });
   Object.defineProperty(proto, "getBoundingClientRect", {
-    value: () => ({ ...geom(), left: 0, right: 300, width: 300, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect,
+    value: function (this: HTMLElement): DOMRect {
+      if (this.id === "focus-session-popover") {
+        const { left, top } = hostAt;
+        return { left, top, right: left, bottom: top, width: 0, height: 0, x: left, y: top, toJSON: () => ({}) } as DOMRect;
+      }
+      // 浮层照 geom() 摆在宿主里：页面滚过（hostAt 挪了）就跟着挪，贴屏幕顶的钉在屏幕上不跟
+      const at = geom();
+      const by = boxEl().classList.contains("dock") ? { left: 0, top: 0 } : hostAt;
+      return { left: by.left, right: by.left + 300, top: at.top + by.top, bottom: at.bottom + by.top, width: 300,
+        height: at.bottom - at.top, x: by.left, y: at.top + by.top, toJSON: () => ({}) } as DOMRect;
+    },
     configurable: true, writable: true,
   });
 };
@@ -722,6 +735,129 @@ test("手机上选区太靠上、顶上放不下：照旧落到选区下方", ()
   } finally {
     unlayout();
     restore();
+  }
+});
+
+/* ---- 滚动：浮层挂在冻结的宿主里跟着原文走，看不见了才关 ---- */
+
+const hostOf = (): HTMLElement => pop.hostElement!;
+
+/** 让浮层以为页面滚到了 (x, y)。返回还原函数。 */
+const scrolledTo = (x: number, y: number): (() => void) => {
+  Object.defineProperty(document, "defaultView", { value: { scrollX: x, scrollY: y }, configurable: true });
+  return () => void Reflect.deleteProperty(document, "defaultView");
+};
+
+test("定位时宿主冻结成这一刻的视口，浮层照旧按视口坐标摆在里面", () => {
+  layout(800, 120);
+  const restore = scrolledTo(40, 1200);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    const s = hostOf().style;
+    assert.deepEqual([s.left, s.top, s.width, s.height], ["40px", "1200px", "1000px", "800px"]);
+    assert.deepEqual(geom(), { top: 122, bottom: 242 }, "框的算法不变");
+    assert.equal(boxEl().classList.contains("dock"), false);
+  } finally {
+    restore();
+    unlayout();
+  }
+});
+
+test("站点给 html 加了 margin：宿主量一次，补回视口原点", () => {
+  layout(800, 120);
+  hostAt = { left: 0, top: 32 };
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    assert.equal(hostOf().style.top, "-32px");
+  } finally {
+    unlayout();
+  }
+});
+
+test("内容真溢出才挡住滚动接力；放得下时不挡，滚轮照常滚页面", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word"); // 预留 270
+    assert.equal(boxEl().classList.contains("scrolls"), false);
+    content = 320;
+    pop.updateStream(partial());
+    assert.equal(boxEl().classList.contains("scrolls"), true);
+    content = 200;
+    pop.updateStream(partial());
+    assert.equal(boxEl().classList.contains("scrolls"), false);
+  } finally {
+    unlayout();
+  }
+});
+
+test("贴选区的浮层跟着页面滚走，滚到只露出不到 40px 才算看不见", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word"); // 上边 122，高 120
+    const scroll = (dy: number): boolean => {
+      hostAt = { left: 0, top: -dy };
+      return pop.followAnchor(rectAt(400 - dy));
+    };
+    assert.equal(scroll(120), true);
+    assert.equal(boxEl().style.transform, "", "原文跟着文档走，不用补");
+    assert.equal(scroll(200), true, "还露出 42px");
+    assert.equal(scroll(210), false, "只露出 32px");
+    assert.equal(scroll(-700), false, "往回滚，浮层从视口底下出去了");
+  } finally {
+    unlayout();
+  }
+});
+
+test("原文在内部滚动容器里、没跟着文档走：浮层补上差值跟过去，scrollShift 算上这一截", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(400), "leaks", "word");
+    assert.equal(pop.followAnchor(rectAt(300)), true);
+    assert.equal(boxEl().style.transform, "translate(0px, -100px)");
+    assert.deepEqual(pop.scrollShift(), { x: 0, y: -100 });
+    hostAt = { left: 0, top: -50 };
+    pop.followAnchor(rectAt(350)); // 文档也滚了 50，原文跟着文档走的那一截不用补
+    assert.equal(boxEl().style.transform, "");
+    assert.deepEqual(pop.scrollShift(), { x: 0, y: -50 });
+  } finally {
+    unlayout();
+  }
+});
+
+test("贴屏幕顶的浮层不跟：原文挪开 1/4 屏以上，并且被浮层遮住或出了屏幕，才算看不见", () => {
+  const restore = phone();
+  layout(900, 120);
+  try {
+    pop.showStreaming(rectAt(600), "leaks", "word"); // 顶上 8，高 120
+    assert.equal(boxEl().classList.contains("dock"), true);
+    hostAt = { left: 0, top: -500 };
+    assert.equal(pop.followAnchor(rectAt(400)), true, "挪了 200，不到 225");
+    assert.equal(pop.followAnchor(rectAt(300)), true, "挪够了，词还露在浮层下面");
+    assert.equal(pop.followAnchor(rectAt(100)), false, "挪够了，整个压在浮层底下");
+    assert.equal(pop.followAnchor(rectAt(-40)), false, "滚出了屏幕顶");
+    assert.equal(pop.followAnchor(rectAt(950)), false, "往回滚，从屏幕底下出去了");
+    assert.equal(pop.followAnchor(rectAt(880)), true, "挪了 280，词还在屏幕上");
+    assert.deepEqual(pop.scrollShift(), { x: 0, y: 0 }, "钉在屏幕上，不算被滚动带着挪");
+  } finally {
+    unlayout();
+    restore();
+  }
+});
+
+test("滚过之后再追问：给答案留地方照框里的坐标算，不被页面滚动带偏", () => {
+  layout(800, 120);
+  try {
+    pop.showStreaming(rectAt(700), "Every abstraction leaks.", "sentence"); // 上边钉在 172
+    content = 200;
+    pop.showResult(rectAt(700), { ...SNIPPET, text: "Every abstraction leaks." });
+    pop.enableAsk();
+    click(root().querySelector('[data-act="ask"]'));
+    hostAt = { left: 0, top: -100 };
+    content = 240;
+    ask(root().querySelector(".qin") as HTMLInputElement, "为什么？");
+    assert.equal(geom().top, 172);
+  } finally {
+    unlayout();
   }
 });
 
