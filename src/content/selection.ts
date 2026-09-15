@@ -112,6 +112,13 @@ export class SelectionTranslator {
   private answered: { snippet: Snippet; context: string } | null = null;
   /** 这个浮层里已经问过的几轮。换一次选区就清空——追问只跟着眼前这一段。 */
   private turns: AskTurn[] = [];
+  /**
+   * 浮层讲的那段原文：range 是划词、点词时的 Range（截图翻译没有），rect 是记下时的视口矩形，x / y 是那时页面的滚动位置。
+   * 浮层不再一滚就关，确认、识别、流式失败都可能在人滚过之后才重新贴位，得用原文此刻的位置，见 anchorRect。
+   */
+  private anchor: { range: Range | null; rect: DOMRect; x: number; y: number } | null = null;
+  /** 排着的那一帧跟随检查，见 queueFollow。 */
+  private followFrame: number | null = null;
 
   constructor(deps: SelectionDeps) {
     this.deps = deps;
@@ -119,7 +126,7 @@ export class SelectionTranslator {
       onConfirm: () => void this.runPending(),
       onOpenOptions: () => this.deps.openOptions(),
       onAsk: (question) => void this.runAsk(question),
-      onPositioned: box => this.trace?.positioned(box),
+      onPositioned: box => this.trace?.positioned(box, () => this.popover.scrollShift()),
     });
   }
 
@@ -144,10 +151,15 @@ export class SelectionTranslator {
     }
 
     // mouseup 而不是 selectionchange：后者在拖选过程中连发几十次。
-    // keyup 补上 shift+方向键选中的情况。
-    on(document, "mouseup", (e) => this.schedule(e), { capture: true });
+    // keyup 补上 shift+方向键选中的情况。中键（自动滚动）、右键（菜单）松开不是划词，不去判选区——
+    // 中键按下还会把页面选区清掉，照常判下去就把开着的浮层关了
+    on(document, "mouseup", (e) => {
+      if (e.button === 0) this.schedule(e);
+    }, { capture: true });
     on(document, "keyup", (e) => {
-      if ((e as KeyboardEvent).key.startsWith("Arrow")) this.schedule(e);
+      // 不按 shift、页面上也没有选区的方向键是在滚页面、挪光标，不是在选字：不去判，不然滚一下就把浮层关了
+      // （点一下浮层里的字、中键按一下，页面选区都会塌）。先松开 shift 再松方向键时选区还在，照样判得到
+      if (e.key.startsWith("Arrow") && (e.shiftKey || !window.getSelection()?.isCollapsed)) this.schedule(e);
     });
 
     if (coarsePointer()) {
@@ -179,6 +191,8 @@ export class SelectionTranslator {
     on(document, "mousedown", (e) => {
       // 点在浮层里不算"点到别处"，否则按钮永远点不到
       if (this.insidePopover(e)) return;
+      // 只有主键按在页面上才算：中键是自动滚动、右键是菜单；按在页面滚动条上是在滚，Chrome 也照发一个 mousedown
+      if (e.button !== 0 || onRootScrollbar(e)) return;
       // 正文里的轻点归 taps 管：浮层开着时那一下负责关（见 bindTapTranslation 的 dismiss），关着时才点词。
       // 触摸合成的 mousedown 在抬指之后才到，这里再关一次，就会把刚发起的翻译掐掉。
       if (this.deps.tapRoot && e.composedPath().includes(this.deps.tapRoot)) return;
@@ -187,11 +201,14 @@ export class SelectionTranslator {
       // 按下就预热：等拖选结束、防抖走完，SW 已经醒了
       if (this.detach.length) this.warm();
     }, { capture: true });
+    // 滚动不再直接关：贴选区的浮层跟着原文走，贴屏幕顶的留在顶上，看不见了才关（见 follow）。
+    // 捕获阶段才收得到内部滚动容器的 scroll；resize 一并查，手机上弹键盘、转屏都会让原文挪位
     on(document, "scroll", () => {
-      // 追问期间不关：手机上弹出键盘就是一次滚动，正打着字的问题不该被这一下收走。
-      // 浮层是 fixed 的，滚动时它停在原处、和原文错开——比丢掉答案划算。
-      if (!this.popover.asking) this.dismiss();
+      // 页面还在滑的时候落下的那一下，多半是想按停滚动、不是点词：等着的单击作废
+      this.taps?.cancel();
+      this.queueFollow();
     }, { capture: true, passive: true });
+    on(window, "resize", () => this.queueFollow(), { passive: true });
     on(document, "keydown", (e) => {
       if ((e as KeyboardEvent).key === "Escape") this.dismiss();
     });
@@ -200,12 +217,15 @@ export class SelectionTranslator {
   showCaptureError(error: string): void {
     this.dismiss();
     this.ensureClosing();
-    this.popover.showError(new DOMRect((window.innerWidth - 200) / 2, 0, 200, 0), error, false);
+    const rect = new DOMRect((window.innerWidth - 200) / 2, 0, 200, 0);
+    this.anchor = { range: null, rect, x: window.scrollX, y: window.scrollY };
+    this.popover.showError(rect, error, false);
   }
 
   async translateImage(png: string, rect: DOMRect): Promise<void> {
     this.dismiss();
     this.ensureClosing();
+    this.anchor = { range: null, rect, x: window.scrollX, y: window.scrollY };
     const now = performance.now();
     this.trace = new TranslationTraceRecorder({ source: "image", started: now, committed: now, debounceEnded: now }, "", "word", log => this.deps.recordTrace?.(log));
     this.trace.mark("ocrStart");
@@ -222,8 +242,10 @@ export class SelectionTranslator {
     if (mine !== this.seq) return;
     this.trace?.mark("ocrEnd");
     this.inflight = null;
+    // 识别要好几秒，人可能已经滚过：之后重新贴位都照原文此刻的位置
+    const here = this.anchorRect() ?? rect;
     if (!reply?.ok) {
-      this.popover.showError(rect, reply?.error ?? "识别失败：后台未就绪", false);
+      this.popover.showError(here, reply?.error ?? "识别失败：后台未就绪", false);
       this.trace?.complete("error", reply?.error ?? "识别失败：后台未就绪");
       return;
     }
@@ -231,7 +253,7 @@ export class SelectionTranslator {
     const settings = this.deps.settings();
     const verdict = judgeSelection(reply.text, settings);
     if (!verdict.ok) {
-      this.popover.showError(rect, verdict.reason === "选区过长"
+      this.popover.showError(here, verdict.reason === "选区过长"
         ? "识别文字过长，请缩小框选范围" : "没认出英文，请重新框选清晰的英文文字", false);
       this.trace?.complete("error", verdict.reason);
       return;
@@ -245,7 +267,7 @@ export class SelectionTranslator {
     this.trace?.mark("prepared");
     if (verdict.needsConfirm) {
       this.trace?.mark("confirmShown");
-      this.popover.showConfirm(rect, verdict.text, verdict.words, "image");
+      this.popover.showConfirm(here, verdict.text, verdict.words, "image");
     }
     else await this.runPending();
   }
@@ -279,6 +301,9 @@ export class SelectionTranslator {
     this.seq += 1; // 让在途响应作废
     this.inflight?.abort();
     this.inflight = null;
+    this.anchor = null;
+    if (this.followFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.followFrame);
+    this.followFrame = null;
     this.popover.hide();
   }
 
@@ -287,6 +312,40 @@ export class SelectionTranslator {
     if (now - this.lastWarm < WARM_INTERVAL_MS) return;
     this.lastWarm = now;
     this.deps.warm();
+  }
+
+  /**
+   * 原文此刻在视口里的位置。Range 量得出来就用它，跟得上内部滚动容器；截图翻译没有 Range、
+   * 或站点把那段 DOM 换掉了，就拿记下的矩形按页面滚动推一推。
+   */
+  private anchorRect(): DOMRect | null {
+    const a = this.anchor;
+    if (!a) return null;
+    const live = a.range?.getBoundingClientRect();
+    if (live && (live.width || live.height)) return live;
+    return new DOMRect(a.rect.x + a.x - window.scrollX, a.rect.y + a.y - window.scrollY, a.rect.width, a.rect.height);
+  }
+
+  /** 滚动、resize 时排一帧去查浮层还看不看得见。同一帧里的几十次 scroll 合成一次。 */
+  private queueFollow(): void {
+    if (!this.popover.hostElement || this.followFrame !== null) return;
+    // 测试环境（jsdom）没有 rAF，退回同步
+    if (typeof requestAnimationFrame !== "function") {
+      this.follow();
+      return;
+    }
+    this.followFrame = requestAnimationFrame(() => {
+      this.followFrame = null;
+      this.follow();
+    });
+  }
+
+  private follow(): void {
+    const rect = this.popover.hostElement ? this.anchorRect() : null;
+    if (!rect) return;
+    // 追问中不关：手机上弹出键盘就是一次滚动加一次 resize，正打着字的问题不该被这一下收走。
+    // 浮层里正选着字也不关：拖选拖到边上会带着页面滚
+    if (!this.popover.followAnchor(rect) && !this.popover.asking && !this.popover.holdsSelection()) this.dismiss();
   }
 
   private schedule(e: Event): void {
@@ -323,8 +382,12 @@ export class SelectionTranslator {
       return;
     }
 
+    const range = sel.getRangeAt(0);
+    // 选区还是浮层正在讲的那一段：方向键滚页面、拖完滚动条松手这类不改选区的 keyup / mouseup 也会走到这里。
+    // 浮层滚动时不再关，照常判下去就是把开着的浮层拆了重建、重翻一遍，追问记录跟着没了
+    if (this.popover.hostElement && this.anchor?.range && sameRange(range, this.anchor.range)) return;
     const now = performance.now();
-    this.evaluateRange(sel.getRangeAt(0), undefined,
+    this.evaluateRange(range, undefined,
       { ...(this.inputTiming ?? { source: "mouse", started: now, committed: now }), resolved: now, debounceEnded: now });
   }
 
@@ -341,6 +404,7 @@ export class SelectionTranslator {
     if (rect.width === 0 && rect.height === 0) return;
 
     this.dismiss();
+    this.anchor = { range: range.cloneRange(), rect, x: window.scrollX, y: window.scrollY };
     const now = performance.now();
     this.trace = new TranslationTraceRecorder(input ?? { source: "mouse", started: now, committed: now, debounceEnded: now },
       verdict.text, kind ?? verdict.kind, log => this.deps.recordTrace?.(log));
@@ -369,7 +433,9 @@ export class SelectionTranslator {
     const pending = this.pending;
     if (!pending) return;
     const mine = ++this.seq;
-    const { rect, req } = pending;
+    const { req } = pending;
+    // 确认浮层可能开了好一会儿，人也可能滚过：按原文此刻的位置贴
+    const rect = this.anchorRect() ?? pending.rect;
     const trace = this.trace;
     this.answered = null;
     this.turns = [];
@@ -406,13 +472,14 @@ export class SelectionTranslator {
     if (this.inflight === ctrl) this.inflight = null;
     if (res.ok) {
       this.answered = { snippet: res.snippet, context: req.context };
-      this.popover.showResult(rect, res.snippet);
+      this.popover.showResult(this.anchorRect() ?? rect, res.snippet);
       trace?.mark("firstTranslationDom");
       // 翻出来了才给追问入口：没有译文可倚，追问问的是空气
       this.popover.enableAsk();
       trace?.complete("success");
     } else {
-      this.popover.showError(rect, res.error, res.needsConfig);
+      // 流式期间人可能又滚过：报错是整块重建、重新贴位，照原文此刻的位置
+      this.popover.showError(this.anchorRect() ?? rect, res.error, res.needsConfig);
       trace?.complete("error", res.error);
     }
   }
@@ -462,6 +529,21 @@ export class SelectionTranslator {
       this.turns.push({ question, answer: res.text });
       this.popover.finishAnswer(res.text);
     } else this.popover.failAnswer(res.error, res.needsConfig);
+  }
+}
+
+/** 按在页面自己的滚动条上。Chrome 把这一下当 mousedown 发给 html，坐标落在内容区外面。 */
+function onRootScrollbar(e: MouseEvent): boolean {
+  const de = document.documentElement;
+  return e.target === de && de.clientWidth > 0 && (e.clientX >= de.clientWidth || e.clientY >= de.clientHeight);
+}
+
+/** 两个 Range 起止都一样。比不了的（不在同一棵树上之类）算不一样。 */
+function sameRange(a: Range, b: Range): boolean {
+  try {
+    return a.compareBoundaryPoints(a.START_TO_START, b) === 0 && a.compareBoundaryPoints(a.END_TO_END, b) === 0;
+  } catch {
+    return false;
   }
 }
 

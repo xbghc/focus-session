@@ -180,7 +180,7 @@ test("停止控制器会作废迟到的截图失败", async () => {
   finish({ ok: false, error: "迟到" }); await tick(); assert.equal(root(), undefined);
 });
 
-test("截图失败锚在视口顶部中央的 200×0 矩形", async () => {
+test("截图失败锚在视口顶部中央的 200×0 矩形；滚一下不关，Esc 才关", async () => {
   const { Popover } = await import("../src/content/popover.ts");
   const original = Popover.prototype.showError;
   let anchor: DOMRect | undefined;
@@ -189,6 +189,8 @@ test("截图失败锚在视口顶部中央的 200×0 矩形", async () => {
     translator.showCaptureError("无法截图");
     assert.deepEqual(anchor!.toJSON(), new DOMRect(412, 0, 200, 0).toJSON());
     document.dispatchEvent(new dom.window.Event("scroll"));
+    assert.ok(root(), "滚动本身不关浮层"); assert.equal(count("scroll"), 1);
+    document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(root(), undefined); assert.equal(count("scroll"), 0);
   } finally { Popover.prototype.showError = original; }
 });
@@ -267,5 +269,139 @@ test("浮层里正选着字时，页面上松手引起的选区判定不关浮�
     assert.equal(root(), undefined, "浮层里没选着、页面上也没选中：照旧关掉");
   } finally {
     Popover.prototype.holdsSelection = original;
+  }
+});
+
+test("滚动、resize 时浮层看不见了才关；追问中、浮层里选着字时不关", async () => {
+  const { Popover } = await import("../src/content/popover.ts");
+  const follow = Popover.prototype.followAnchor;
+  const asking = Object.getOwnPropertyDescriptor(Popover.prototype, "asking")!;
+  const holds = Popover.prototype.holdsSelection;
+  let visible = true;
+  let isAsking = false;
+  let holding = false;
+  Popover.prototype.followAnchor = function() { return visible; };
+  Object.defineProperty(Popover.prototype, "asking", { get: () => isAsking, configurable: true });
+  Popover.prototype.holdsSelection = function() { return holding; };
+  const open = async (): Promise<void> => {
+    const pending = translator.translateImage("png", rect);
+    reply({ ok: true, text: "hello" }); await pending;
+    assert.ok(root());
+  };
+  const scroll = (): void => void document.dispatchEvent(new dom.window.Event("scroll"));
+  try {
+    await open();
+    scroll();
+    assert.ok(root(), "还看得见就留着");
+    visible = false; isAsking = true;
+    scroll();
+    assert.ok(root(), "追问中不关");
+    isAsking = false; holding = true;
+    scroll();
+    assert.ok(root(), "浮层里选着字不关");
+    holding = false;
+    scroll();
+    assert.equal(root(), undefined, "看不见了就关");
+    assert.equal(count("scroll"), 0, "没开划词时关闭组一起摘掉");
+    visible = true;
+    await open();
+    visible = false;
+    dom.window.dispatchEvent(new dom.window.Event("resize"));
+    assert.equal(root(), undefined, "resize 同样查一次");
+  } finally {
+    Popover.prototype.followAnchor = follow;
+    Object.defineProperty(Popover.prototype, "asking", asking);
+    Popover.prototype.holdsSelection = holds;
+  }
+});
+
+test("中键、按在页面滚动条上不算点到别处；主键按在页面上照旧关", async () => {
+  const pending = translator.translateImage("png", rect);
+  reply({ ok: true, text: "hello" }); await pending;
+  document.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 1 }));
+  assert.ok(root(), "中键是自动滚动");
+  const de = document.documentElement;
+  Object.defineProperty(de, "clientWidth", { value: 1000, configurable: true });
+  Object.defineProperty(de, "clientHeight", { value: 700, configurable: true });
+  try {
+    de.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 1005, clientY: 300 }));
+    assert.ok(root(), "按在页面滚动条上是在滚");
+    de.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 500, clientY: 300 }));
+    assert.equal(root(), undefined, "按在页面内容上照旧关");
+  } finally {
+    Reflect.deleteProperty(de, "clientWidth");
+    Reflect.deleteProperty(de, "clientHeight");
+  }
+});
+
+test("右键、中键松开不判选区：开着的浮层不因此关掉；主键松开照常判", async () => {
+  const proto = dom.window.Range.prototype;
+  const original = Object.getOwnPropertyDescriptor(proto, "getBoundingClientRect");
+  proto.getBoundingClientRect = () => new DOMRect(10, 10, 50, 20);
+  const settle = () => new Promise<void>((r) => setTimeout(r, 200));
+  const up = (button: number): void => void document.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true, button }));
+  try {
+    translator.start();
+    const r = document.createRange();
+    r.selectNodeContents(document.querySelector("p")!);
+    const sel = dom.window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(r);
+    up(0); await settle();
+    assert.equal(requests.length, 1);
+    sel.removeAllRanges(); // 中键按下会把页面选区清掉
+    up(1); up(2); await settle();
+    assert.ok(root(), "不是主键松开，不去判选区");
+    up(0); await settle();
+    assert.equal(root(), undefined, "主键松开照常判：选区没了就关");
+  } finally {
+    if (original) Object.defineProperty(proto, "getBoundingClientRect", original);
+    else Reflect.deleteProperty(proto, "getBoundingClientRect");
+  }
+});
+
+test("页面上没有选区时，不按 shift 的方向键（滚页面、挪光标）不去判选区；按着 shift 照常判", async () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 200));
+  const arrow = (shiftKey: boolean): void =>
+    void document.dispatchEvent(new dom.window.KeyboardEvent("keyup", { key: "ArrowDown", shiftKey, bubbles: true }));
+  translator.start();
+  const pending = translator.translateImage("png", rect);
+  reply({ ok: true, text: "hello" }); await pending;
+  dom.window.getSelection()!.removeAllRanges();
+  arrow(false); await settle();
+  assert.ok(root(), "没有选区、没按 shift：是在滚页面，不判");
+  arrow(true); await settle();
+  assert.equal(root(), undefined, "按着 shift：照常判，选区是空的就关");
+});
+
+test("选区没变的 keyup 不重建浮层；选区变了照常重翻", async () => {
+  const proto = dom.window.Range.prototype;
+  const original = Object.getOwnPropertyDescriptor(proto, "getBoundingClientRect");
+  proto.getBoundingClientRect = () => new DOMRect(10, 10, 50, 20);
+  const settle = () => new Promise<void>((r) => setTimeout(r, 200));
+  const text = document.querySelector("p")!.firstChild!;
+  const select = (end: number): void => {
+    const r = document.createRange();
+    r.setStart(text, 0);
+    r.setEnd(text, end);
+    const sel = dom.window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+  const arrow = (): void => void document.dispatchEvent(new dom.window.KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
+  try {
+    translator.start();
+    select(5); arrow(); await settle();
+    assert.equal(requests.length, 1);
+    const host = document.getElementById("focus-session-popover");
+    assert.ok(host);
+    arrow(); await settle();
+    assert.equal(requests.length, 1, "方向键滚页面，选区没变：不重翻");
+    assert.equal(document.getElementById("focus-session-popover"), host, "浮层没被拆了重建");
+    select(4); arrow(); await settle();
+    assert.equal(requests.length, 2, "选区变了照常翻");
+  } finally {
+    if (original) Object.defineProperty(proto, "getBoundingClientRect", original);
+    else Reflect.deleteProperty(proto, "getBoundingClientRect");
   }
 });

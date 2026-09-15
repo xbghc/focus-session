@@ -33,6 +33,8 @@ export class TranslationTraceRecorder {
   private now: () => number;
   private save: (log: TranslationTrace) => void;
   private box: HTMLElement | null = null;
+  /** 浮层此刻被滚动带着挪了多少，见 positioned。 */
+  private shift: (() => { x: number; y: number }) | null = null;
   private frame: number | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private done = false;
@@ -75,9 +77,14 @@ export class TranslationTraceRecorder {
     });
   }
 
-  positioned(box: HTMLElement): void {
+  /**
+   * shift：浮层被页面滚动（和跟随原文）带着挪了多少，见 Popover.scrollShift。量位置时减掉它——
+   * 浮层跟着原文滚走不是浮层自己挪；不减的话，收尾那两秒里人一滚，诊断里就多出几次「挪动」。
+   */
+  positioned(box: HTMLElement, shift?: () => { x: number; y: number }): void {
     if (this.done) return;
     this.box = box;
+    this.shift = shift ?? null;
     this.log.popup.positionCalls++;
     this.queueFrame();
   }
@@ -98,7 +105,8 @@ export class TranslationTraceRecorder {
     const r = this.box.getBoundingClientRect();
     if (!r.width || !r.height) return;
     const viewport = window.visualViewport;
-    const pos: PopupPosition = { x: rounded(r.left - (viewport?.offsetLeft ?? 0)), y: rounded(r.top - (viewport?.offsetTop ?? 0)),
+    const s = this.shift?.() ?? { x: 0, y: 0 };
+    const pos: PopupPosition = { x: rounded(r.left - s.x - (viewport?.offsetLeft ?? 0)), y: rounded(r.top - s.y - (viewport?.offsetTop ?? 0)),
       width: rounded(r.width), height: rounded(r.height), scale: viewport?.scale ?? 1 };
     const popup = this.log.popup;
     const prev = popup.final;

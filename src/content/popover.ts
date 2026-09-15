@@ -58,7 +58,11 @@ const FONT_FACES = `
 const CSS = `
 :host { all: initial; }
 .box {
-  position: fixed;
+  /*
+   * 挂在宿主里，宿主冻结成定位那一刻的视口（见 freeze）：页面滚动时浮层由浏览器带着和原文一起挪，
+   * 不用一滚就关，也不会比原文慢一拍。手机上贴屏幕顶的换成 fixed（.dock），钉在屏幕上不跟。
+   */
+  position: absolute;
   z-index: 2147483647;
   /*
    * 宽度一上来就定死，不跟着内容撑：译文、讲解一批批到，宽度一变行就重新折，
@@ -81,7 +85,15 @@ const CSS = `
   /* 浮层里的字要能选中复制。有的网站给 html 挂 user-select: none 防复制，不写明的话浮层会跟着继承过来 */
   -webkit-user-select: text;
   user-select: text;
+  /* 宿主盖住整个视口、不接指针（不然页面点不动也选不了字），浮层自己接回来 */
+  pointer-events: auto;
 }
+.box.dock { position: fixed; }
+/*
+ * 内容真溢出时才不把滚动接力给页面：长讲解滚到底就停住，页面不跟着走。
+ * 内容放得下时不加——实测 contain 在放得下的盒子上也会把滚轮吞掉，指针停在浮层上时页面就滚不动了。
+ */
+.box.scrolls { overscroll-behavior: contain; }
 .head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
 .term { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
 /*
@@ -247,6 +259,12 @@ const PIN_SLACK_PX = 24;
  */
 const ANSWER_ROOM = 120;
 
+/** 贴选区的浮层滚到只露出这么高（矮浮层按自身一半算）就算看不见了，见 followAnchor。 */
+const VISIBLE_MIN_PX = 40;
+
+/** 贴屏幕顶的浮层：原文离开原位超过屏幕高度的这一份、并且被浮层遮住或出了屏幕，才算看不见了，见 followAnchor。 */
+const DOCK_CLOSE_RATIO = 0.25;
+
 export interface PopoverActions {
   /** 这次贴位的样式已经写好；观察器按帧去量真正画出来的位置。 */
   onPositioned?: (box: HTMLElement) => void;
@@ -270,8 +288,14 @@ export class Popover {
   /**
    * 这个锚点上定下来的框：贴选区上方还是下方、左边在哪、钉住的是哪条边（edge 是那条边的 y）。
    * dock：手机上放上方时贴屏幕顶，不贴选区（见 place）。一个锚点只挑一次边，之后每次贴位都照它摆。
+   * 坐标都是定位那一刻的视口坐标：vw / vh 是那时的视口宽高，ox / oy 是那时宿主的视口坐标（见 freeze）。
    */
-  private frame: { above: boolean; dock: boolean; left: number; pin: "top" | "bottom"; edge: number } | null = null;
+  private frame: {
+    above: boolean; dock: boolean; left: number; pin: "top" | "bottom"; edge: number;
+    vw: number; vh: number; ox: number; oy: number;
+  } | null = null;
+  /** 原文没跟着文档滚（内部滚动容器、sticky）时给浮层补上的那一截，见 followAnchor。 */
+  private drift = { x: 0, y: 0 };
   /**
    * 流式期间缓存的节点。译文、音标、语境解释、生词是分批到的，
    * 每来一批都重建 DOM 会闪，所以搭一次骨架、之后只改 textContent。
@@ -344,8 +368,9 @@ export class Popover {
     if (this.box) return this.box;
     const host = document.createElement("div");
     host.id = HOST_ID;
-    // 宿主本身不参与布局，免得把页面撑出滚动条
-    host.style.cssText = "all:initial;position:static;";
+    // 宿主不参与布局，免得把页面撑出滚动条。定位时冻结成那一刻的视口（见 freeze），浮层挂在里面跟着文档走；
+    // 盖住视口的这一层不接指针。不能加 transform / filter / contain：那会让贴屏幕顶的 fixed 浮层改以宿主为包含块
+    host.style.cssText = "all:initial;position:absolute;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;overflow-anchor:none;";
     const root = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     // 字体地址带扩展 id，只能此刻才知道。取不到（扩展正在重载）就退回系统衬线。
@@ -399,29 +424,42 @@ export class Popover {
    *
    * 两边都放不下时挑空间大的那边，浮层收矮、内容在里面滚；两边都挤不出 MIN_ROOM 才贴顶——
    * 那时选区本身占了大半屏（比如截图框），压住也认了。
-   * 用 fixed 定位 + viewport 坐标，页面滚动时浮层会关掉，不需要跟随。
+   *
+   * 框用定位这一刻的视口坐标，宿主同时冻结成这一刻的视口、挂在文档上（见 freeze）：之后页面滚动，
+   * 浮层由浏览器带着和原文一起走，不跑 JS，不比原文慢一拍，也就不必一滚就关（什么时候关见 followAnchor）。
+   * 贴屏幕顶的浮层照旧 fixed，钉在屏幕上不跟。
    */
   private place(rect: DOMRect, expected?: number): void {
     const box = this.box;
-    if (!box) return;
+    const host = this.host;
+    if (!box || !host) return;
     this.anchor = rect;
+    const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
+    const origin = freeze(host, vw, vh);
+    const view = { vw, vh, ox: origin.left, oy: origin.top };
     const need = Math.min(vh * 0.7, MAX_HEIGHT, expected ?? naturalHeight(box));
     const dock = coarsePointer() ? dockTop() : null;
     const above = rect.top - MARGIN - (dock ?? MARGIN);
     const below = vh - rect.bottom - 2 * MARGIN;
     const left = rect.left;
+    let frame: NonNullable<Popover["frame"]>;
     if (above >= need || (below < need && above >= below && above >= MIN_ROOM)) {
-      this.frame = dock !== null
-        ? { above: true, dock: true, left, pin: "top", edge: dock }
+      frame = dock !== null
+        ? { above: true, dock: true, left, pin: "top", edge: dock, ...view }
         : expected === undefined
-          ? { above: true, dock: false, left, pin: "bottom", edge: rect.top - MARGIN }
-          : { above: true, dock: false, left, pin: "top", edge: Math.max(MARGIN, rect.top - MARGIN - need) };
+          ? { above: true, dock: false, left, pin: "bottom", edge: rect.top - MARGIN, ...view }
+          : { above: true, dock: false, left, pin: "top", edge: Math.max(MARGIN, rect.top - MARGIN - need), ...view };
     } else if (below >= need || below >= MIN_ROOM) {
-      this.frame = { above: false, dock: false, left, pin: "top", edge: rect.bottom + MARGIN };
+      frame = { above: false, dock: false, left, pin: "top", edge: rect.bottom + MARGIN, ...view };
     } else {
-      this.frame = { above: false, dock: false, left, pin: "top", edge: dock ?? MARGIN };
+      frame = { above: false, dock: false, left, pin: "top", edge: dock ?? MARGIN, ...view };
     }
+    this.frame = frame;
+    box.classList.toggle("dock", frame.dock);
+    // 新锚点从零算起：上一段原文补过的差值不作数
+    this.drift = { x: 0, y: 0 };
+    box.style.transform = "";
     this.position();
   }
 
@@ -442,8 +480,8 @@ export class Popover {
     const rect = this.anchor;
     const f = this.frame;
     if (!box || !rect || !f) return;
-    const vw = document.documentElement.clientWidth;
-    const vh = document.documentElement.clientHeight;
+    // 定位那一刻的视口：浮层挂在冻结的宿主里，之后视口怎么变，框都照那时的坐标摆
+    const { vw, vh } = f;
     // 浮层下沿最低能到哪：贴上方时是选区顶上那条缝，否则是视口底
     const floor = f.above ? rect.top - MARGIN : vh - MARGIN;
     // 量高度用 scrollHeight，不临时放开 max-height 再量：那一下会把用户在浮层里滚到的位置归零
@@ -458,6 +496,7 @@ export class Popover {
     box.style.left = `${Math.round(left)}px`;
     box.style.top = f.pin === "top" ? `${Math.round(f.edge)}px` : "auto";
     box.style.bottom = f.pin === "bottom" ? `${Math.round(vh - f.edge)}px` : "auto";
+    box.classList.toggle("scrolls", box.scrollHeight > box.clientHeight);
     this.actions.onPositioned?.(box);
   }
 
@@ -474,10 +513,11 @@ export class Popover {
     const rect = this.anchor;
     const f = this.frame;
     if (!box || !rect || !f?.above || f.dock) return;
-    const vh = document.documentElement.clientHeight;
-    const want = Math.min(vh * 0.7, MAX_HEIGHT, naturalHeight(box) + ANSWER_ROOM);
+    const want = Math.min(f.vh * 0.7, MAX_HEIGHT, naturalHeight(box) + ANSWER_ROOM);
+    // 浮层眼下的上边从框里算，不去量 getBoundingClientRect：页面滚过之后量出来的是另一套视口坐标
+    const top = f.pin === "top" ? f.edge : f.edge - box.offsetHeight;
     f.pin = "top";
-    f.edge = Math.max(MARGIN, Math.min(box.getBoundingClientRect().top, rect.top - MARGIN - want));
+    f.edge = Math.max(MARGIN, Math.min(top, rect.top - MARGIN - want));
   }
 
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void, expected?: number): void {
@@ -553,7 +593,6 @@ export class Popover {
     // 识别与翻译沿用同一骨架，避免识别刚结束就把整块浮层拆了重画；框也沿用，不重新挑边。
     if (this.recognizing && this.stream) {
       this.recognizing = false;
-      this.anchor = rect;
       this.setTerm(term);
       this.stream.tr.innerHTML = '<span class="spin"></span>';
       this.position();
@@ -640,7 +679,7 @@ export class Popover {
     // 而这里前后内容几乎一样，闪得毫无理由。
     const n = this.stream;
     if (n) {
-      this.anchor = rect;
+      // 框和锚点照流式开始时定的：人可能已经滚过，这里换成外面传进来的矩形，两套坐标就混了
       this.fillTerm(n.termEl, s.text, 90);
       fillMeta(n.meta, meta);
       setText(n.tr, s.translation);
@@ -862,6 +901,59 @@ export class Popover {
     else run();
   }
 
+  /* ==================== 滚动 ==================== */
+
+  /**
+   * 页面、或原文所在的滚动容器滚过之后调：照原文此刻的视口矩形跟一下，返回浮层还看不看得见（看不见就该关）。
+   *
+   * 贴选区的浮层挂在冻结的宿主里，文档滚动由浏览器带着走，这里只补原文没跟着文档走的那一截——
+   * 正文在内部滚动容器里、或是 sticky 的。滚出视口、只露出不到 VISIBLE_MIN_PX（矮浮层按一半算）才算看不见：
+   * 看得见的留着；看不见的要是还开着，App 里下一次点词会被它吞掉（浮层开着时点正文只关不翻）。
+   *
+   * 贴屏幕顶的浮层钉在屏幕上不跟，看的是原文：离开原位超过 DOCK_CLOSE_RATIO 屏，并且被浮层整个遮住或出了屏幕，
+   * 才算看不见。只看遮没遮住，词紧挨着浮层下沿时滚几像素就关；只看挪了多远，词还露在屏幕上浮层就没了。
+   */
+  followAnchor(anchorNow: DOMRect): boolean {
+    const box = this.box;
+    const host = this.host;
+    const f = this.frame;
+    const rect = this.anchor;
+    if (!box || !host || !f || !rect) return true;
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    if (f.dock) {
+      const b = box.getBoundingClientRect();
+      const moved = Math.abs(anchorNow.top - rect.top) >= f.vh * DOCK_CLOSE_RATIO;
+      const offscreen = anchorNow.bottom <= 0 || anchorNow.top >= vh;
+      const covered = anchorNow.top >= b.top && anchorNow.bottom <= b.bottom &&
+        anchorNow.left >= b.left && anchorNow.right <= b.right;
+      return !(moved && (offscreen || covered));
+    }
+    const h = host.getBoundingClientRect();
+    const dx = anchorNow.left - (rect.left + h.left - f.ox);
+    const dy = anchorNow.top - (rect.top + h.top - f.oy);
+    // 半个像素以内是取整误差，不去动它，免得滚动时浮层跟着抖
+    this.drift = Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 ? { x: 0, y: 0 } : { x: dx, y: dy };
+    box.style.transform = this.drift.x || this.drift.y ? `translate(${this.drift.x}px, ${this.drift.y}px)` : "";
+    const b = box.getBoundingClientRect();
+    if (!b.width || !b.height) return true;
+    const shownW = Math.min(b.right, vw) - Math.max(b.left, 0);
+    const shownH = Math.min(b.bottom, vh) - Math.max(b.top, 0);
+    return shownW > 0 && shownH >= Math.min(VISIBLE_MIN_PX, b.height / 2);
+  }
+
+  /**
+   * 浮层被滚动（和跟随原文）带着挪了多少。贴屏幕顶的不跟着滚，恒为 0。
+   * 翻译轨迹量位置时减掉它：浮层跟着原文走不算浮层自己挪。
+   */
+  scrollShift(): { x: number; y: number } {
+    const host = this.host;
+    const f = this.frame;
+    if (!host || !f || f.dock) return { x: 0, y: 0 };
+    const h = host.getBoundingClientRect();
+    return { x: h.left - f.ox + this.drift.x, y: h.top - f.oy + this.drift.y };
+  }
+
   hide(): void {
     stopSpeaking();
     this.host?.remove();
@@ -871,12 +963,34 @@ export class Popover {
     this.origin = null;
     this.anchor = null;
     this.frame = null;
+    this.drift = { x: 0, y: 0 };
   }
 }
 
 /** 内容撑开时浮层有多高（含边框），不受 max-height 截断。 */
 function naturalHeight(box: HTMLElement): number {
   return box.scrollHeight + box.offsetHeight - box.clientHeight;
+}
+
+/**
+ * 把宿主摆成此刻的视口：absolute 挂在文档上，之后页面怎么滚，它连同里面的浮层都跟着内容走。
+ * 站点给 html 加了 margin 或 position 时，absolute 的起点不在文档原点，量一次、差多少补多少。
+ * 返回宿主此刻的视口矩形（正常就在原点）。
+ */
+function freeze(host: HTMLElement, vw: number, vh: number): DOMRect {
+  const view = document.defaultView;
+  const x = view?.scrollX ?? 0;
+  const y = view?.scrollY ?? 0;
+  host.style.left = `${x}px`;
+  host.style.top = `${y}px`;
+  host.style.width = `${vw}px`;
+  host.style.height = `${vh}px`;
+  const r = host.getBoundingClientRect();
+  if (r.left || r.top) {
+    host.style.left = `${x - r.left}px`;
+    host.style.top = `${y - r.top}px`;
+  }
+  return host.getBoundingClientRect();
 }
 
 /**

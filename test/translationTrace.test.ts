@@ -135,6 +135,25 @@ test("位置变化：半个像素以内的抖动不算挪动，够半个像素�
   rec.finish("cancelled");
 });
 
+test("浮层被页面滚动带着走：量位置时减掉 shift，不算浮层自己挪", () => {
+  reset();
+  const rec = new TranslationTraceRecorder(input, "x", "word", () => undefined, now);
+  let shift = { x: 0, y: 0 };
+  rec.positioned(box, () => shift);
+  frame();
+  rect = { ...rect, top: rect.top - 300 };
+  shift = { x: 0, y: -300 };
+  rec.positioned(box, () => shift);
+  frame();
+  assert.equal(rec.log.popup.positionChanges, 0);
+  assert.deepEqual(rec.log.popup.final, { x: 10, y: 20, width: 100, height: 40, scale: 1 });
+  rect = { ...rect, top: rect.top + 12 };
+  rec.positioned(box, () => shift);
+  frame();
+  assert.equal(rec.log.popup.positionChanges, 1, "滚动之外真挪了才记");
+  rec.finish("cancelled");
+});
+
 test("最终内容已更新、稳定前被关掉：按结果记而不是 cancelled，失败原因留着；还没到最终内容才是真的取消", () => {
   reset();
   const saved: TranslationTrace[] = [];
