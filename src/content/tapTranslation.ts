@@ -91,19 +91,34 @@ export function textRangeAtPoint(root: HTMLElement, x: number, y: number, kind: 
   return range;
 }
 
-export function bindTapTranslation(root: HTMLElement, translate: (range: Range, kind: TapKind, timing: TranslationInputTiming) => void) {
-  let down: { id: number; x: number; y: number; time: number; started: number } | null = null;
+/**
+ * dismiss：每次轻点先问它——已经有浮层开着就关掉、返回 true。这一下只管关，点在词上、空白处、链接上都一样，
+ * 不翻译；手指紧跟着落下的第二下（本想双击）也算在这一下里，免得刚关的浮层又被一个单词请求弹回来。
+ * 浮层关着时才点词、双击整句。
+ */
+export function bindTapTranslation(root: HTMLElement, translate: (range: Range, kind: TapKind, timing: TranslationInputTiming) => void,
+  dismiss: () => boolean = () => false) {
+  let down: { id: number; x: number; y: number; time: number; started: number; interactive: boolean } | null = null;
   let pending: { x: number; y: number; time: number; range: Range; timing: TranslationInputTiming; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** 关掉浮层的那一下在哪、什么时候抬的指。 */
+  let closed: { x: number; y: number; time: number } | null = null;
   const cancel = (): void => {
     down = null;
     if (pending) clearTimeout(pending.timer);
     pending = null;
   };
   const onDown = (e: PointerEvent): void => {
-    if (!e.isPrimary || e.button !== 0 || (e.target as Element).closest(INTERACTIVE)) { cancel(); return; }
-    down = { id: e.pointerId, x: e.clientX, y: e.clientY, time: Date.now(), started: performance.now() };
+    const now = Date.now();
+    const followUp = closed !== null && now - closed.time <= DOUBLE_TAP_MS &&
+      Math.hypot(e.clientX - closed.x, e.clientY - closed.y) <= DOUBLE_TAP_PX;
+    closed = null;
+    if (!e.isPrimary || e.button !== 0 || followUp) { cancel(); return; }
+    // 链接、按钮、输入框：不点词，先前等着的单词也作废；手势照记，浮层开着时这一下同样先关浮层
+    const interactive = (e.target as Element).closest(INTERACTIVE) !== null;
+    if (interactive) cancel();
+    down = { id: e.pointerId, x: e.clientX, y: e.clientY, time: now, started: performance.now(), interactive };
     // 第二次已落指时暂缓单击，避免在这次抬指前发出单词请求。
-    if (pending && down.time - pending.time <= DOUBLE_TAP_MS &&
+    if (pending && now - pending.time <= DOUBLE_TAP_MS &&
         Math.hypot(e.clientX - pending.x, e.clientY - pending.y) <= DOUBLE_TAP_PX) clearTimeout(pending.timer);
   };
   const onMove = (e: PointerEvent): void => {
@@ -114,6 +129,12 @@ export function bindTapTranslation(root: HTMLElement, translate: (range: Range, 
     down = null;
     if (!gesture || gesture.id !== e.pointerId) return;
     if (Date.now() - gesture.time > 500 || Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > MOVE_PX) { cancel(); return; }
+    if (dismiss()) {
+      cancel();
+      closed = { x: e.clientX, y: e.clientY, time: Date.now() };
+      return;
+    }
+    if (gesture.interactive) return;
     const committed = performance.now();
     const range = textRangeAtPoint(root, e.clientX, e.clientY, "word");
     if (!range) { cancel(); return; }
