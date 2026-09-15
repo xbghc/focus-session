@@ -245,3 +245,27 @@ test("完整控制器路径：预热不等待、冻结帧裁剪、识别文本�
     dom.window.Element.prototype.setPointerCapture = oldCapture;
   }
 });
+
+test("浮层里正选着字时，页面上松手引起的选区判定不关浮层", async () => {
+  const { Popover } = await import("../src/content/popover.ts");
+  const original = Popover.prototype.holdsSelection;
+  let holding = true;
+  Popover.prototype.holdsSelection = function() { return holding; };
+  const settle = () => new Promise<void>((r) => setTimeout(r, 200));
+  try {
+    translator.start();
+    const pending = translator.translateImage("png", rect);
+    reply({ ok: true, text: "hello" }); await pending;
+    assert.ok(root());
+    // 拖选拖出了浮层的边，松手落在页面上：这一下会走一遍选区判定，可人选的字在浮层里，不能关
+    document.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true }));
+    await settle();
+    assert.ok(root(), "浮层里还选着字，不能关");
+    holding = false;
+    document.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true }));
+    await settle();
+    assert.equal(root(), undefined, "浮层里没选着、页面上也没选中：照旧关掉");
+  } finally {
+    Popover.prototype.holdsSelection = original;
+  }
+});
