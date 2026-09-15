@@ -133,6 +133,11 @@ export class SelectionTranslator {
         this.dismiss();
         this.warm();
         this.evaluateRange(range, kind, timing);
+      }, () => {
+        // 浮层开着时点在它外面，就是要关掉它：这一下不翻译，想查别的词等浮层关了再点
+        if (!this.popover.hostElement) return false;
+        this.dismiss();
+        return true;
       });
       this.detach.push(() => { this.taps?.stop(); this.taps = null; });
       return;
@@ -174,7 +179,8 @@ export class SelectionTranslator {
     on(document, "mousedown", (e) => {
       // 点在浮层里不算"点到别处"，否则按钮永远点不到
       if (this.insidePopover(e)) return;
-      // App 的两次轻点由 taps 合并；触摸合成的 mousedown 也不能取消刚发起的整句翻译。
+      // 正文里的轻点归 taps 管：浮层开着时那一下负责关（见 bindTapTranslation 的 dismiss），关着时才点词。
+      // 触摸合成的 mousedown 在抬指之后才到，这里再关一次，就会把刚发起的翻译掐掉。
       if (this.deps.tapRoot && e.composedPath().includes(this.deps.tapRoot)) return;
       this.dismiss();
       this.gestureStarted = performance.now();

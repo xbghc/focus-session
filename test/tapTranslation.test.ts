@@ -168,3 +168,50 @@ test("停止时取消单击等待、卸载监听，重新启动不叠加请求",
   translator.stop();
   assert.equal(signals[0]!.aborted, true);
 });
+
+/* ---- 浮层开着时，点浮层外面只关浮层 ---- */
+
+const popover = (): Element | null => document.getElementById("focus-session-popover");
+
+test("浮层开着时点正文里的词：这一下只关浮层、不发请求；关掉之后再点才翻译", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  tap(); t.mock.timers.tick(1000);
+  assert.ok(popover(), "点词出了浮层");
+  tap(); t.mock.timers.tick(1000);
+  assert.equal(popover(), null, "点在浮层外，浮层关掉");
+  assert.equal(requests.length, 1, "关浮层的这一下不翻译");
+  assert.equal(signals[0]!.aborted, true, "在途的请求一并掐掉");
+  tap(); t.mock.timers.tick(150);
+  assert.equal(requests.length, 2, "浮层关了，再点照常翻译");
+});
+
+test("浮层开着时点正文空白处、链接、按钮，也都只关浮层", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const targets: Array<[Element, number]> = [[hitNode.parentElement!, 1000], [root.querySelector("a")!, 15], [root.querySelector("button")!, 15]];
+  for (const [target, x] of targets) {
+    tap(); t.mock.timers.tick(1000);
+    assert.ok(popover());
+    pointer("pointerdown", target, x); pointer("pointerup", target, x);
+    t.mock.timers.tick(1000);
+    assert.equal(popover(), null, `点在 ${target.tagName} 上也要关浮层`);
+  }
+  assert.equal(requests.length, 3, "只有开浮层的那三下发了请求");
+});
+
+test("浮层开着时双击：第一下关浮层，紧跟着的第二下不算新的点词", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  tap(); t.mock.timers.tick(1000);
+  tap(); t.mock.timers.tick(100); tap();
+  t.mock.timers.tick(1000);
+  assert.equal(popover(), null);
+  assert.equal(requests.length, 1, "既不翻单词，也不翻整句");
+});
+
+test("点浮层本身不关；正文外（顶栏这类）照旧按下就关", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  tap(); t.mock.timers.tick(1000);
+  popover()!.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
+  assert.ok(popover(), "按钮都在浮层里，点它不能关");
+  document.getElementById("outside")!.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
+  assert.equal(popover(), null);
+});
