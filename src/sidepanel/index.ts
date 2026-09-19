@@ -26,8 +26,17 @@ async function currentTab(): Promise<chrome.tabs.Tab | undefined> {
 }
 
 async function render(): Promise<void> {
-  const tab = await currentTab();
   const list = $("list");
+  try { await paint(list); }
+  catch (err) {
+    // 后台刚醒或刚重启时会拒掉请求；不接的话这一栏就是一片空白
+    list.textContent = "";
+    list.append(el("div", "empty", `读取失败：${err instanceof Error ? err.message : String(err)}\n点下面的「刷新」再试一次。`));
+  }
+}
+
+async function paint(list: HTMLElement): Promise<void> {
+  const tab = await currentTab();
   list.textContent = "";
 
   const url = tab?.url;
@@ -76,7 +85,12 @@ async function render(): Promise<void> {
   }
 }
 
-$("refresh").addEventListener("click", () => void render());
+$("refresh").addEventListener("click", async () => {
+  // 内容没变的时候刷新什么也看不出来；按钮灰一下，至少知道点到了
+  const button = $<HTMLButtonElement>("refresh");
+  button.disabled = true;
+  try { await render(); } finally { button.disabled = false; }
+});
 $("open-dash").addEventListener("click", () => {
   void chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html") });
 });

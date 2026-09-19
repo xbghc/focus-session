@@ -30,7 +30,9 @@
       /* 可点朗读的音标 */
       .ph { cursor: pointer; border-bottom: 1px dotted currentColor; }
       .ph:hover { color: var(--accent); }
-      .empty { color: var(--muted); text-align: center; padding: 40px 8px; line-height: 1.8; }
+      /* pre-line：空状态那两句话是用换行分开的，不写这条就挤成一行 */
+      .empty { color: var(--muted); text-align: center; padding: 40px 8px; line-height: 1.8; white-space: pre-line; }
+      .foot button:disabled { opacity: 0.45; cursor: default; }
       .foot { margin-top: 14px; display: flex; gap: 8px; }
       .foot button {
         font-family: var(--sans); font-size: 11.5px; cursor: pointer; padding: 4px 10px;

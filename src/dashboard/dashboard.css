@@ -240,7 +240,8 @@ button.mini {
 .article-actions button, .classification-panel button, .blacklist-section button { padding: 7px 11px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--fg); font-size: 12px; line-height: 1.4; cursor: pointer; }
 .article-actions > button { padding: 7px 6px; }
 .article-actions .action-delete { color: var(--danger); }
-#pane-articles button:disabled { opacity: .4; cursor: default; }
+/* 全页都要：.mini 和评分键自己写死了颜色，浏览器给禁用按钮的那层灰盖不上来，不补就看不出哪个按不动 */
+button:disabled { opacity: .4; cursor: default; }
 #article-action-status:empty { display: none; }
 #article-action-status { margin: 10px 0; font-family: var(--sans); }
 .classification-panel { margin: 18px 0 14px; padding: 14px 16px; border: 0; border-radius: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); font-family: var(--sans); }
@@ -292,14 +293,19 @@ button.mini {
 /* 等着上传的画成空心圈：和「上不去」的实心点同是暖色，只靠颜色分不开 */
 .material-detail .dot[data-tone="busy"] { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
 .material-detail .dot[data-tone="warn"] { background: var(--warn); }
-/* 批量管理和逐篇判别时卡片是用来勾选的，不是用来读的 */
-.managing-articles .material-detail, .article-card.has-classification .material-detail { display: none; }
+/* 批量管理时卡片是用来勾选的：详情已经在状态里收掉了（见 index.ts），这里只把入口也拿走 */
+.managing-articles .detail-toggle { display: none; }
 #articles { margin-top: 14px; }
 @media (max-width: 640px) {
   .article-controls { gap: 8px; }
   body.dash { padding-left: 14px; padding-right: 14px; }
   .article-actions { gap: 6px; }
   .article-card { padding: 12px; }
+  /* 窄屏上一行放不下「词 + 译文」：截掉的恰好是展开详情要看的东西。缩进收掉，译文折到词下面 */
+  .material-detail { margin-left: 0; }
+  .material-detail li { flex-wrap: wrap; gap: 0 10px; }
+  .material-detail .word { max-width: 100%; white-space: normal; }
+  .material-detail .gloss { flex: 1 1 100%; white-space: normal; }
   .classification-result { grid-template-columns: 1fr; gap: 3px; }
   .classification-result > span { grid-column: 1; }
   .classification-heading > span { font-size: 10px; }

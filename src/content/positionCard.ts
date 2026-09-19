@@ -141,11 +141,27 @@ export class PositionCard {
       document.addEventListener("visibilitychange", onVisible);
       return;
     }
-    this.timer = setTimeout(() => {
-      // 淡出而不是直接消失：余光里突然少一块东西比它慢慢淡掉更扰人
-      card.classList.add("leaving");
-      this.timer = setTimeout(() => this.hide(), 220);
-    }, AUTO_HIDE_MS);
+    const start = (): void => {
+      this.timer = setTimeout(() => {
+        // 淡出而不是直接消失：余光里突然少一块东西比它慢慢淡掉更扰人
+        card.classList.add("leaving");
+        this.timer = setTimeout(() => this.hide(), 220);
+      }, AUTO_HIDE_MS);
+    };
+    /*
+     * 指针停在卡片上、或者键盘焦点在里面时不走表：人正读着那行说明、正要去点「回到顶部」，
+     * 按钮从指针底下淡出去就再也找不回来了。离开之后重新数满一轮。
+     */
+    const pause = (): void => {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      card.classList.remove("leaving");
+    };
+    card.addEventListener("pointerenter", pause);
+    card.addEventListener("focusin", pause);
+    card.addEventListener("pointerleave", () => { pause(); start(); });
+    card.addEventListener("focusout", () => { pause(); start(); });
+    start();
   }
 
   private clearVisibilityWatch(): void {

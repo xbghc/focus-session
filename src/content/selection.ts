@@ -10,6 +10,7 @@ import type {
   TranslateRequest,
 } from "../types.ts";
 import { judgeSelection } from "../lib/lang.ts";
+import { reasonOf } from "../lib/reason.ts";
 import { coarsePointer } from "../lib/pointer.ts";
 import { Popover } from "./popover.ts";
 import { bindTapTranslation, type TapKind } from "./tapTranslation.ts";
@@ -237,7 +238,7 @@ export class SelectionTranslator {
     try {
       reply = await this.deps.recognize(png, ctrl.signal);
     } catch (err) {
-      reply = { ok: false, error: String(err) };
+      reply = { ok: false, error: reasonOf(err) };
     }
     if (mine !== this.seq) return;
     this.trace?.mark("ocrEnd");
@@ -460,7 +461,7 @@ export class SelectionTranslator {
         ctrl.signal,
       );
     } catch (err) {
-      res = { ok: false, error: String(err), needsConfig: false };
+      res = { ok: false, error: reasonOf(err), needsConfig: false };
     }
     // 期间用户又选了别的、或者关掉了浮层——这次结果已经过期
     if (mine !== this.seq) return;
@@ -521,7 +522,7 @@ export class SelectionTranslator {
         ctrl.signal,
       );
     } catch (err) {
-      res = { ok: false, error: String(err), needsConfig: false };
+      res = { ok: false, error: reasonOf(err), needsConfig: false };
     }
     if (mine !== this.seq) return;
     if (this.inflight === ctrl) this.inflight = null;

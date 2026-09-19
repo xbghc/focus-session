@@ -17,6 +17,7 @@ import type { MaterialSync } from "../sync/engine.ts";
 import { formatDuration } from "../lib/stats.ts";
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
+import { reasonOf as reason } from "../lib/reason.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { BOOKS_KEY, parseChapterId, type Book } from "../books/types.ts";
 import { localStorage } from "../sync/storage.ts";
@@ -34,6 +35,23 @@ function el<K extends keyof HTMLElementTagNameMap>(
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+/**
+ * 取数的壳：空面板先说一声「正在读取」，取不到就说原因并给重试。
+ * 后台刚醒或重启时 sendMessage 会直接拒掉；不接的话面板就是一片空白，分不清是没数据还是坏了。
+ * 已经有内容时不插「正在读取」——刷新不该闪一下。
+ */
+async function guarded(box: HTMLElement, load: () => Promise<void>): Promise<void> {
+  if (!box.hasChildNodes()) box.append(el("div", "empty", "正在读取…"));
+  try { await load(); }
+  catch (err) {
+    const note = el("div", "empty", `读取失败：${reason(err)}`);
+    const retry = el("button", "mini", "重试");
+    retry.addEventListener("click", () => void guarded(box, load));
+    note.append(document.createElement("br"), retry);
+    box.replaceChildren(note);
+  }
 }
 
 const fmtDate = (ts: number): string =>
@@ -56,6 +74,12 @@ function show(pane: Pane, load = true): void {
   if (pane === "words") void loadWords();
   if (pane === "articles") void loadArticles();
 }
+
+// show() 改 hash 会留一条历史；不听 hashchange 的话按后退只有地址变、面板不动
+window.addEventListener("hashchange", () => {
+  const name = location.hash.slice(1).split(":")[0] as Pane;
+  if (PANES.includes(name) && $(`pane-${name}`).hidden) show(name);
+});
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>(".tab")) {
   btn.addEventListener("click", () => show(btn.dataset["tab"] as Pane));
@@ -84,6 +108,8 @@ let stopClassification = false;
 $("manage-articles").addEventListener("click", () => {
   managingArticles = !managingArticles;
   if (!managingArticles) selectedArticles.clear();
+  // 批量管理时卡片是用来勾的不是用来读的：详情在状态里收掉，而不是拿 CSS 藏——藏着的时候按钮还写着「收起」
+  if (managingArticles && expandedArticles.size) { expandedArticles.clear(); renderArticles(); }
   updateArticleSelection();
   for (const checkbox of document.querySelectorAll<HTMLInputElement>('#articles .row1 > input[type="checkbox"]')) {
     checkbox.hidden = !managingArticles;
@@ -102,7 +128,7 @@ let speed: SpeedSummary | null = null;
  * 在这篇里划过哪些词、它同步上去了没有，以前无处可看。展开才去取，取回来的留着——
  * 列表为了筛选、标记读完会整个重画，不能每画一次就重新问一遍。
  */
-interface MaterialDetail { sessions: Session[]; snippets: Snippet[]; sync: MaterialSync | null }
+interface MaterialDetail { sessions: Session[]; snippets: Snippet[]; /** null：没问到。和「只在本机」是两回事，不能混着说。 */ sync: MaterialSync | null }
 const expandedArticles = new Set<string>();
 const materialDetails = new Map<string, MaterialDetail | "loading" | { error: string }>();
 /** 长列表先给最近的几条；全摆出来的话，一篇读了三十回的文章能把下面的卡片全挤出屏幕。 */
@@ -178,7 +204,7 @@ function renderMaterialDetail(a: Article): HTMLElement {
   const sync = el("section");
   sync.append(el("h4", undefined, "同步"));
   const line = el("p", "sync-line");
-  const state = detail.sync?.state ?? "local";
+  const state = detail.sync?.state ?? "unknown";
   const dot = el("span", "dot");
   dot.dataset.tone = state === "synced" ? "ok" : state === "pending" ? "busy" : state === "blocked" ? "warn" : "";
   const waiting = detail.sync?.waiting.length ? spellCounts(detail.sync.waiting) : "";
@@ -186,7 +212,13 @@ function renderMaterialDetail(a: Article): HTMLElement {
     state === "synced" ? "已同步到服务器，名下的专注时段、段落和划词都在上面"
       : state === "pending" ? `有改动等下一轮同步上传：${waiting}`
       : state === "blocked" ? `无法上传，留在本机：${waiting}`
-      : "只存在这台设备上（没有启用同步，或这类材料不上传）"));
+      : state === "local" ? "只存在这台设备上（没有启用同步，或这类材料不上传）"
+      : "同步处境暂时查不到"));
+  if (state === "unknown") {
+    const retry = el("button", "mini", "重试");
+    retry.addEventListener("click", () => void loadMaterialDetail(a.id));
+    line.append(retry);
+  }
   sync.append(line);
   if (state === "blocked") for (const reason of detail.sync?.reasons ?? []) sync.append(el("p", "sync-reason", reason));
   box.append(sync);
@@ -194,6 +226,9 @@ function renderMaterialDetail(a: Article): HTMLElement {
 }
 
 async function loadArticles(): Promise<void> {
+  await guarded($("articles"), fetchArticles);
+}
+async function fetchArticles(): Promise<void> {
   const res = await send<{ articles: Article[]; speed?: SpeedSummary | null }>({ type: "articles:list" });
   articles = res.articles ?? [];
   // 走 localStorage() 而不是 chrome.storage.local：App 里数据在同步库那一份下，
@@ -201,6 +236,8 @@ async function loadArticles(): Promise<void> {
   books = ((await localStorage().get(BOOKS_KEY))[BOOKS_KEY] ?? {}) as Record<string, Book>;
   for (const id of selectedArticles) if (!articles.some(a => a.id === id)) selectedArticles.delete(id);
   for (const id of classifications.keys()) if (!articles.some(a => a.id === id)) classifications.delete(id);
+  for (const id of expandedArticles) if (!articles.some(a => a.id === id)) expandedArticles.delete(id);
+  for (const id of materialDetails.keys()) if (!articles.some(a => a.id === id)) materialDetails.delete(id);
   speed = res.speed ?? null;
   renderArticles();
 }
@@ -232,7 +269,7 @@ function renderArticles(): void {
   const box = $("articles");
   box.textContent = "";
   if (list.length === 0) {
-    box.append(el("div", "empty", loose.length ? "没有匹配的文章" : "还没有阅读记录"));
+    box.append(el("div", "empty", loose.length ? "没有匹配的文章" : "还没有阅读记录。打开一篇文章读一会儿，它就会出现在这里。"));
     return;
   }
 
@@ -252,14 +289,21 @@ function renderArticles(): void {
 
     const toggle = el("button", "mini", a.finished ? "标记未读完" : "标记读完");
     toggle.addEventListener("click", async () => {
-      const r = await send<{ ok: boolean; article: Article | null }>({
-        type: "article:finish",
-        articleId: a.id,
-        finished: !a.finished,
-      });
-      if (r.article) {
+      toggle.disabled = true;
+      try {
+        const r = await send<{ ok: boolean; article: Article | null }>({
+          type: "article:finish",
+          articleId: a.id,
+          finished: !a.finished,
+        });
+        if (!r.article) throw new Error("这篇文章的记录已经不在了");
         Object.assign(a, r.article);
         renderArticles();
+      } catch (err) {
+        // 就写在按钮上：批量操作那行状态在列表最顶上，离这儿可能隔着几十张卡片
+        toggle.disabled = false;
+        toggle.textContent = "没改成，再点一次";
+        toggle.title = reason(err);
       }
     });
 
@@ -276,8 +320,10 @@ function renderArticles(): void {
       updateArticleSelection();
     });
     row.append(select, title, pill);
-    const open = expandedArticles.has(a.id);
-    const more = el("button", "mini", open ? "收起" : "详情");
+    // 正在逐篇判别的卡片被压成了两行摘要，不在这时候展开详情
+    const open = expandedArticles.has(a.id) && !classifications.has(a.id);
+    const more = el("button", "mini detail-toggle", open ? "收起" : "详情");
+    more.hidden = classifications.has(a.id);
     more.setAttribute("aria-expanded", String(open));
     more.addEventListener("click", () => {
       if (expandedArticles.delete(a.id)) { renderArticles(); return; }
@@ -428,9 +474,11 @@ $("select-articles").addEventListener("change", () => {
 
 async function articleAction(work: () => Promise<void>): Promise<void> {
   articleActionBusy = true;
+  // 上一次的「已删除 3 篇」不该陪着这一次的操作一直挂着
+  $("article-action-status").textContent = "";
   renderArticles();
   try { await work(); }
-  catch (err) { $("article-action-status").textContent = "操作失败：" + (err instanceof Error ? err.message : String(err)); }
+  catch (err) { $("article-action-status").textContent = "操作失败：" + reason(err); }
   finally { articleActionBusy = false; renderArticles(); }
 }
 
@@ -439,7 +487,7 @@ $("delete-articles").addEventListener("click", () => {
   if (!ids.length || !confirm(`删除所选 ${ids.length} 篇文章及其阅读记录、正文、回顾卡？划词记录和生词卡会保留。此操作不可撤销。`)) return;
   void articleAction(async () => {
     const res = await send<{ ok: boolean; deleted: number }>({ type: "articles:delete", articleIds: ids });
-    if (!res.ok) throw new Error("删除失败");
+    if (!res.ok) throw new Error((res as { error?: string }).error || "删除失败");
     for (const id of ids) selectedArticles.delete(id);
     $("article-action-status").textContent = `已删除 ${res.deleted} 篇文章`;
     await loadArticles();
@@ -491,9 +539,11 @@ $("suggest-blacklist").addEventListener("click", () => {
 let snippets: Snippet[] = [];
 
 async function loadWords(): Promise<void> {
-  const res = await send<{ snippets: Snippet[] }>({ type: "snippets:list" });
-  snippets = res.snippets ?? [];
-  renderWords();
+  await guarded($("words"), async () => {
+    const res = await send<{ snippets: Snippet[] }>({ type: "snippets:list" });
+    snippets = res.snippets ?? [];
+    renderWords();
+  });
 }
 
 const KIND_LABEL: Record<Snippet["kind"], string> = { word: "单词", phrase: "短语", sentence: "句子" };
@@ -517,7 +567,7 @@ function renderWords(): void {
   const box = $("words");
   box.textContent = "";
   if (list.length === 0) {
-    box.append(el("div", "empty", snippets.length ? "没有匹配的记录" : "还没有划词记录"));
+    box.append(el("div", "empty", snippets.length ? "没有匹配的记录" : "还没有划词记录。在文章里选中一个词或一句话，它和译文就会记在这里。"));
     return;
   }
 
@@ -532,16 +582,43 @@ function renderWords(): void {
       // 整句默认不排期，但用户可以手动捞进来
       const add = el("button", "mini", "加入复习");
       add.addEventListener("click", async () => {
-        await send({ type: "snippet:enqueue", id: s.id });
-        await loadWords();
+        add.disabled = true;
+        try {
+          const res = await send<{ ok: boolean }>({ type: "snippet:enqueue", id: s.id });
+          if (!res?.ok) throw new Error("这条划词已经不在了");
+          await loadWords();
+        } catch (err) {
+          add.disabled = false;
+          add.textContent = "没加上，再点一次";
+          add.title = reason(err);
+        }
       });
       row.append(add);
     }
 
+    /*
+     * 删除要点两下。这一条没了，它名下那张复习卡（连同排期和复习进度）可能跟着没，后台没有撤销；
+     * 弹 confirm 又太重——一屏几十条，逐条清理时每条都弹窗会逼人不看就点确定。
+     */
     const del = el("button", "mini danger", "删除");
+    let armed: ReturnType<typeof setTimeout> | null = null;
     del.addEventListener("click", async () => {
-      await send({ type: "snippet:delete", id: s.id });
-      await loadWords();
+      if (armed === null) {
+        del.textContent = s.cardId ? "确认删除（连同复习进度）" : "确认删除";
+        armed = setTimeout(() => { armed = null; del.textContent = "删除"; }, 4000);
+        return;
+      }
+      clearTimeout(armed);
+      armed = null;
+      del.disabled = true;
+      try {
+        await send({ type: "snippet:delete", id: s.id });
+        await loadWords();
+      } catch (err) {
+        del.disabled = false;
+        del.textContent = "没删掉，再点一次";
+        del.title = reason(err);
+      }
     });
     row.append(del);
 
@@ -627,12 +704,14 @@ let revealed = false;
 
 async function loadReview(): Promise<void> {
   if (queueKind === "articles") return loadArticleQueue();
-  const res = await send<{ cards: ReviewCardView[]; stats: ReviewStats }>({ type: "review:due", limit: 60 });
-  queue = res.cards ?? [];
-  cursor = 0;
-  revealed = false;
-  renderStats(res.stats, "words");
-  renderReview();
+  await guarded($("review-area"), async () => {
+    const res = await send<{ cards: ReviewCardView[]; stats: ReviewStats }>({ type: "review:due", limit: 60 });
+    queue = res.cards ?? [];
+    cursor = 0;
+    revealed = false;
+    renderStats(res.stats, "words");
+    renderReview();
+  });
 }
 
 function renderStats(s: ReviewStats, kind: Queue): void {
@@ -738,7 +817,28 @@ function gradeBar(item: ReviewCardView): HTMLElement {
   return bar;
 }
 
+/**
+ * 评分在路上的时候不认第二下。连按两下「3」（或者按住不放）会让游标走两格：
+ * 下一张卡一眼没看就被跳过去，而它的排期根本没动。
+ */
+let grading = false;
+async function graded(work: () => Promise<void>): Promise<void> {
+  if (grading) return;
+  grading = true;
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>(".grades button")];
+  for (const b of buttons) b.disabled = true;
+  try { await work(); }
+  catch (err) {
+    // 没记上就留在这张卡上，让人再评一次；评分条重画之前先把按钮放开
+    for (const b of buttons) b.disabled = false;
+    $("review-area").append(el("p", "muted small", `评分没记上：${reason(err)}`));
+  } finally { grading = false; }
+}
+
 async function grade(item: ReviewCardView, g: 1 | 2 | 3 | 4): Promise<void> {
+  await graded(() => gradeWord(item, g));
+}
+async function gradeWord(item: ReviewCardView, g: 1 | 2 | 3 | 4): Promise<void> {
   await send({ type: "review:grade", cardId: item.card.id, grade: g });
   cursor += 1;
   revealed = false;
@@ -766,17 +866,23 @@ function assistBar(item: ReviewCardView): HTMLElement {
       out.hidden = false;
       out.textContent = "正在问 MiniMax…";
       for (const b of bar.querySelectorAll("button")) b.disabled = true;
-      const res = await send<{ ok: boolean; text?: string; error?: string; needsConfig?: boolean }>({
-        type: "review:assist",
-        cardId: item.card.id,
-        mode,
-      });
-      out.textContent = res.ok
-        ? (res.text ?? "")
-        : res.needsConfig
-          ? "还没配置 MiniMax API Key，去「设置」里填。"
-          : `失败：${res.error ?? "未知错误"}`;
-      for (const b of bar.querySelectorAll("button")) b.disabled = false;
+      // 后台拒掉请求（刚重启、还没醒）时也得把按钮放开，不然「正在问…」和一排死按钮要挂到刷新为止
+      try {
+        const res = await send<{ ok: boolean; text?: string; error?: string; needsConfig?: boolean }>({
+          type: "review:assist",
+          cardId: item.card.id,
+          mode,
+        });
+        out.textContent = res.ok
+          ? (res.text ?? "")
+          : res.needsConfig
+            ? "还没配置 MiniMax API Key，去「设置」里填。"
+            : `失败：${res.error ?? "未知错误"}`;
+      } catch (err) {
+        out.textContent = `失败：${reason(err)}。再点一次重试。`;
+      } finally {
+        for (const b of bar.querySelectorAll("button")) b.disabled = false;
+      }
     });
     bar.append(btn);
   }
@@ -804,6 +910,8 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (!open) return;
+  // 按住不放的自动重复不算数
+  if (e.repeat) return;
   const hit = GRADES.find((x) => x.key === e.key);
   if (!hit) return;
   e.preventDefault();
@@ -818,15 +926,17 @@ let aCursor = 0;
 let aRevealed = false;
 
 async function loadArticleQueue(): Promise<void> {
-  const res = await send<{ items: ArticleReviewView[]; stats: ReviewStats }>({
-    type: "article:review-due",
-    limit: 30,
+  await guarded($("review-area"), async () => {
+    const res = await send<{ items: ArticleReviewView[]; stats: ReviewStats }>({
+      type: "article:review-due",
+      limit: 30,
+    });
+    aQueue = res.items ?? [];
+    aCursor = 0;
+    aRevealed = false;
+    renderStats(res.stats, "articles");
+    renderArticleReview();
   });
-  aQueue = res.items ?? [];
-  aCursor = 0;
-  aRevealed = false;
-  renderStats(res.stats, "articles");
-  renderArticleReview();
 }
 
 /** 打开某一篇的回顾：装好这一篇就切过去，不要被队列的自动加载覆盖。 */
@@ -935,6 +1045,9 @@ function articleGradeBar(item: ArticleReviewView): HTMLElement {
 }
 
 async function gradeArticle(item: ArticleReviewView, g: 1 | 2 | 3 | 4): Promise<void> {
+  await graded(() => gradeArticleCard(item, g));
+}
+async function gradeArticleCard(item: ArticleReviewView, g: 1 | 2 | 3 | 4): Promise<void> {
   await send({ type: "article:review-grade", articleId: item.article.id, grade: g });
   aCursor += 1;
   aRevealed = false;
@@ -959,12 +1072,19 @@ function articleTools(item: ArticleReviewView, has: boolean): HTMLElement {
     out.hidden = false;
     out.textContent = "正在通读原文并整理…这一步要十几秒。";
     for (const b of bar.querySelectorAll("button")) b.disabled = true;
-    const res = await send<ArticleReviewOutcome>({
-      type: "article:review",
-      articleId: item.article.id,
-      regenerate: has,
-    });
-    for (const b of bar.querySelectorAll("button")) b.disabled = false;
+    let res: ArticleReviewOutcome;
+    try {
+      res = await send<ArticleReviewOutcome>({
+        type: "article:review",
+        articleId: item.article.id,
+        regenerate: has,
+      });
+    } catch (err) {
+      out.textContent = `失败：${reason(err)}。再点一次重试。`;
+      return;
+    } finally {
+      for (const b of bar.querySelectorAll("button")) b.disabled = false;
+    }
     if (res.ok && res.review) {
       item.review = res.review;
       aRevealed = false;

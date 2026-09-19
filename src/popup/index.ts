@@ -176,8 +176,10 @@ function renderCurrent(st: PageState | null): void {
 function screenshotNode(): HTMLElement {
   const btn = el("button", { type: "button", class: "btn", title: "截图翻译（也可按 Alt+Shift+S 或使用右键菜单）" }, ["截图翻译"]);
   btn.addEventListener("click", () => {
-    void askPage({ type: "page:screenshot" });
-    window.close();
+    // 等消息真的递出去再关：askPage 里先要查一次当前标签页，紧跟着就 close 的话，
+    // 弹窗常常在消息发出之前就没了，点了等于没点
+    btn.disabled = true;
+    void askPage({ type: "page:screenshot" }).finally(() => window.close());
   });
   return btn;
 }
@@ -379,6 +381,9 @@ async function renderOverview(): Promise<void> {
     return;
   }
   const readingPct = o.totalMs > 0 ? Math.round((o.readingMs / o.totalMs) * 100) : 0;
+  // 解读放最前面、用正文字号：它是这一栏唯一的结论，以前却缀在十三个数字后面、用最小最淡的字
+  // 只在数据支持时才说话——一句在任何数据下都显示的解读等于没有解读
+  for (const line of overviewInsights(o)) root.append(el("p", { class: "insight" }, [line]));
   root.append(
     kv([
       ["总专注时长", formatDuration(o.totalMs)],
@@ -392,21 +397,23 @@ async function renderOverview(): Promise<void> {
 
   // 回合是主指标：session 的边界是"输入信号中断"，量的是两次输入之间的间隔，不是注意力长度
   root.append(
-    el("div", { class: "muted small" }, [
-      "回合 · 同一篇文章内间隔不超过 " + formatDuration(o.episodeGapMs) + " 的片段合并",
-    ]),
-  );
-  root.append(
     kv([
       ["回合数", String(o.episodeCount)],
       ["回合中位数", formatDuration(o.episodeMedianMs)],
-      ["回合 P90", formatDuration(o.episodeP90Ms)],
-      ["最长回合", formatDuration(o.longestEpisodeMs)],
     ]),
   );
 
-  root.append(el("div", { class: "muted small" }, ["原始片段 · 供对照"]));
-  root.append(
+  // 分布的细目和供对照的原始片段收起来：380px 的弹窗里十三个数字一字排开，没有一个看得进去
+  const more = el("details", { class: "more" }, [el("summary", {}, ["回合与片段的明细"])]);
+  more.append(
+    el("div", { class: "muted small" }, [
+      "回合：同一篇文章内间隔不超过 " + formatDuration(o.episodeGapMs) + " 的片段合成一个",
+    ]),
+    kv([
+      ["回合 P90", formatDuration(o.episodeP90Ms)],
+      ["最长回合", formatDuration(o.longestEpisodeMs)],
+    ]),
+    el("div", { class: "muted small" }, ["原始片段 · 供对照"]),
     kv([
       ["片段数", String(o.sessionCount)],
       ["片段中位数", formatDuration(o.medianMs)],
@@ -420,10 +427,8 @@ async function renderOverview(): Promise<void> {
     .filter((r) => o.byReason[r].count > 0)
     .sort((a, b) => o.byReason[b].count - o.byReason[a].count)
     .map((r) => REASON_LABEL[r] + " " + o.byReason[r].count);
-  root.append(el("div", { class: "muted small" }, ["结束原因　" + reasons.join("　")]));
-
-  // 只在数据支持时才说话的解读——一句在任何数据下都显示的解读等于没有解读
-  for (const line of overviewInsights(o)) root.append(el("p", { class: "muted small" }, [line]));
+  more.append(el("div", { class: "muted small" }, ["结束原因　" + reasons.join("　")]));
+  root.append(more);
 }
 
 /* ---------- 标签页切换 ---------- */
@@ -472,7 +477,20 @@ async function refreshCurrent(): Promise<void> {
 }
 
 void refreshCurrent();
-// 本地每秒只是插值，session 可能在 popup 打开期间结束，定期回源校正
+/*
+ * 本地每秒只是插值，session 可能在 popup 打开期间结束，定期回源校正。
+ *
+ * 校正是整块重画，不能打断人：这一栏内容常常超过 460px 要滚着看，每三秒弹回顶上没法读；
+ * 键盘焦点在里面（正要按「保存」）时重画会把焦点所在的节点整个换掉。所以焦点在栏里就跳过这一轮，
+ * 重画之后把滚动位置放回去。
+ */
 setInterval(() => {
-  if (!panels.current.hasAttribute("hidden")) void refreshCurrent();
+  const root = panels.current;
+  if (root.hasAttribute("hidden") || root.contains(document.activeElement)) return;
+  void (async () => {
+    const st = await fetchPageState();
+    const top = root.scrollTop;
+    renderCurrent(st);
+    root.scrollTop = top;
+  })();
 }, 3000);
