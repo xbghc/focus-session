@@ -1,10 +1,13 @@
 import { applyRemote, hasSyncStorage, onLocalMutation, syncDriver, notifyProjection } from "./storage.ts";
 import type { SyncConfig } from "./storage.ts";
 import { PROTOCOL_VERSION, validateRecord } from "./protocol.ts";
+import type { SyncOperation } from "./protocol.ts";
 
 export interface SyncStatus {
   enabled:boolean; baseUrl:string; tokenSet:boolean; userId?:string; serverId?:string;
   deviceId:string; pending:number; lastSuccess:number|null; error:string|null; running:boolean;
+  /** 过不了校验、留在队列里没发出去的记录数，和其中第一条的「类型 标识：原因」。都已经算在 pending 里。 */
+  blocked:number; blockedReason:string|null;
 }
 // Capture WebView's real fetch before native.ts installs its text-only HTTP bridge.
 // This retains redirect:'error', CORS and binary request bodies for the sync service.
@@ -21,7 +24,8 @@ async function request(config:SyncConfig,path:string,init:RequestInit={}):Promis
   const headers=new Headers(init.headers);headers.set("Authorization",`Bearer ${config.token}`);
   const response=await browserFetch(`${config.baseUrl}${path}`,{...init,headers,credentials:"omit",redirect:"error",signal:init.signal??AbortSignal.timeout(25_000)});
   if(!response.ok) {
-    let detail="";try { const body=await response.json(); if(typeof body.error==="string")detail=body.error.slice(0,250); }catch{}
+    // error 只是大类（INVALID_REQUEST），message 才说得出是哪一条校验没过；两个都带上
+    let detail="";try { const body=await response.json(); detail=[body.error,body.message].filter((v):v is string=>typeof v==="string"&&v.length>0).join(" · ").slice(0,250); }catch{}
     const error=new Error(response.status===401?"同步 Token 无效或已被吊销":`同步请求失败（${response.status}）${detail?`：${detail}`:""}`) as Error&{status?:number};error.status=response.status;throw error;
   }
   return response;
@@ -34,7 +38,47 @@ export async function syncRequest(path:string,init:RequestInit={}):Promise<Respo
 }
 export async function syncStatus():Promise<SyncStatus> {
   const s=await syncDriver().read();return {enabled:s.config.enabled,baseUrl:s.config.baseUrl,tokenSet:Boolean(s.config.token),userId:s.config.userId,serverId:s.config.serverId,
-    deviceId:s.deviceId,pending:s.outbox.length+Object.keys(s.data.archivePending??{}).length,lastSuccess:s.lastSuccess,error:s.error,running:Boolean(running)};
+    deviceId:s.deviceId,pending:s.outbox.length+Object.keys(s.data.archivePending??{}).length,lastSuccess:s.lastSuccess,error:s.error,running:Boolean(running),
+    blocked:s.blocked?.count??0,blockedReason:s.blocked?.reason??null};
+}
+/**
+ * 把队列分成发得出去的和发不出去的。
+ *
+ * 服务器一批里有一条过不了 validateRecord 就整批 400，而重试发的还是同一批——一条坏记录
+ * 能把后面几千条永远堵住。校验函数两端是同一份，所以先在本机过一遍：过不了的**留在队列里**
+ * 但不发，别的照常走。不删，是因为坏的多半是老版本留下的形状，客户端修好之后下一轮自己就过了。
+ *
+ * 只有一种删：同一条记录后面还排着更新的操作。本机的值是累积的，后一条盖得住前一条，
+ * 前一条再也用不上；不删的话一篇读着的坏文章每次心跳都往「无法同步」里添一条。
+ *
+ * 文章发不出去时，挂在它名下的记录也先不发，免得另一台设备上出现没有文章的片段和段落。
+ * 看的是这篇文章排在**最后**的那条操作——前面坏过、后来好了，名下的记录就放行。
+ */
+const DEPENDENT="所属文章的记录无法同步";
+type Blocked={op:SyncOperation;reason:string};
+function triage(outbox:SyncOperation[],verdicts:Map<string,string|null>):{ready:SyncOperation[];blocked:Blocked[];superseded:string[]} {
+  const verdictOf=(op:SyncOperation):string|null=>{
+    let verdict=verdicts.get(op.opId);
+    if(verdict===undefined) {
+      try {validateRecord(op.record);verdict=null;}catch(error) {verdict=error instanceof Error?error.message:"Invalid sync record";}
+      verdicts.set(op.opId,verdict);
+    }
+    return verdict;
+  };
+  // 队列里的东西过不了校验，就不能指望它有 type 和 id
+  const keyOf=(op:SyncOperation):string=>JSON.stringify([op.record?.type,op.record?.id]);
+  const last=new Map<string,number>();outbox.forEach((op,i)=>last.set(keyOf(op),i));
+  const stuckArticles=new Set<string>();
+  outbox.forEach((op,i)=>{if(op.record?.type==="article"&&last.get(keyOf(op))===i&&verdictOf(op)!==null)stuckArticles.add(op.record.id);});
+  const ready:SyncOperation[]=[],blocked:Blocked[]=[],superseded:string[]=[];
+  outbox.forEach((op,i)=>{
+    const own=verdictOf(op);
+    if(own!==null&&last.get(keyOf(op))!==i) {superseded.push(op.opId);return;}
+    const parent=op.record?.articleId;
+    const reason=own??(parent!==undefined&&stuckArticles.has(parent)?DEPENDENT:null);
+    if(reason!==null)blocked.push({op,reason});else ready.push(op);
+  });
+  return {ready,blocked,superseded};
 }
 export async function testSync(baseUrl:string,token?:string):Promise<{serverId:string;userId:string;protocol:number}> {
   const {config}=await syncDriver().read();const url=normalizeServerUrl(baseUrl);
@@ -109,10 +153,17 @@ async function cycle():Promise<SyncStatus> {
     await pull();
     const {flushArchives}=await import("../archive/background.ts");
     await flushArchives();
+    const verdicts=new Map<string,string|null>();let stuck:Blocked[]=[];
     for(let batch=0;batch<100;batch++) {
-      await check();const state=await syncDriver().read();if(!state.outbox.length)break;
+      await check();const state=await syncDriver().read();
+      const plan=triage(state.outbox,verdicts);stuck=plan.blocked;
+      if(plan.superseded.length) {
+        const drop=new Set(plan.superseded);
+        await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!drop.has(op.opId));});
+      }
+      if(!plan.ready.length)break;
       const operations=[];let bytes=0;
-      for(const op of state.outbox.slice(0,100)) {
+      for(const op of plan.ready.slice(0,100)) {
         const size=new TextEncoder().encode(JSON.stringify(op)).byteLength;
         if(operations.length && bytes+size>1_000_000)break;
         operations.push(op);bytes+=size;
@@ -124,7 +175,10 @@ async function cycle():Promise<SyncStatus> {
       await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!accepted.has(op.opId));});
     }
     await pull();await check();
-    await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;});
+    // 报第一条自己有毛病的，不报被文章连累的那些：要修的是前者
+    const culprit=stuck.find(b=>b.reason!==DEPENDENT)??stuck[0];
+    const blocked=culprit?{count:stuck.length,reason:`${culprit.op.record?.type} ${String(culprit.op.record?.id).slice(0,160)}：${culprit.reason}`}:undefined;
+    await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
   } catch(error) {
     await syncDriver().update(s=>{
       if(JSON.stringify(s.config)!==JSON.stringify(config))return;

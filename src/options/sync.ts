@@ -11,6 +11,7 @@ export function setupSyncSettings(): void {
   const token = get<HTMLInputElement>("sync-token");
   const summary = get("sync-summary");
   const identity = get("sync-identity");
+  const blocked = get("sync-blocked");
   const feedback = get("sync-feedback");
   const save = get<HTMLButtonElement>("sync-save");
   const test = get<HTMLButtonElement>("sync-test");
@@ -28,8 +29,14 @@ export function setupSyncSettings(): void {
     token.placeholder = status.tokenSet ? "已设置，留空则保持不变" : "管理员签发的 Token";
     const state = status.running ? "正在同步…" : status.enabled ? "同步已启用" : status.tokenSet ? "同步已暂停" : "未连接";
     const time = status.lastSuccess ? new Date(status.lastSuccess).toLocaleString() : "尚未成功同步";
-    summary.textContent = `${state} · 待上传 ${status.pending} 项 · ${time}${status.error ? ` · ${status.error}` : ""}`;
+    const held = status.blocked > 0 ? `（其中 ${status.blocked} 项无法同步）` : "";
+    summary.textContent = `${state} · 待上传 ${status.pending} 项${held} · ${time}${status.error ? ` · ${status.error}` : ""}`;
     summary.style.color = status.error ? "var(--warn)" : "";
+    // 其余记录照常同步，所以这不算「同步失败」；但这几条一直上不去，得让人看见是哪条、为什么
+    blocked.hidden = status.blocked === 0;
+    blocked.textContent = status.blocked > 0
+      ? `有 ${status.blocked} 项记录没通过校验，留在本机没有上传，其余照常同步。第一条：${status.blockedReason ?? "原因未知"}`
+      : "";
     identity.hidden = !status.userId;
     identity.textContent = status.userId ? `账号：${status.userId} · 服务器：${status.serverId ?? "—"}` : "";
     save.textContent = status.enabled ? "保存连接设置" : "保存并启用同步";

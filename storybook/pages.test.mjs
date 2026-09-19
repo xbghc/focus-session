@@ -18,6 +18,7 @@ const scenarios = [
   ['dashboard', 'error', 'classification', '判别失败'],
   ['app', 'populated', 'classification', 'LLM：非文章'],
   ['options', 'populated', 'articles', '文章记录黑名单'],
+  ['options', 'error', 'articles', '项记录没通过校验，留在本机没有上传'],
   ['sidepanel', 'populated', 'articles', 'consolidate'],
   ['app', 'populated', 'articles', '共 3 篇'],
   ['app', 'populated', 'articles', '深度阅读的技艺'],

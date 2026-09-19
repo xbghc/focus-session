@@ -15,6 +15,8 @@ export interface SyncState {
   lastSuccess: number | null; error: string | null; failures: number; retryAt: number;
   initializedRemote?: boolean;
   snapshot?: {token:string;head:number;cursor:number};
+  /** 上一轮里过不了校验、留在 outbox 没发的记录（见 engine.ts 的 triage）。 */
+  blocked?: {count:number;reason:string};
 }
 export interface StateDriver {
   read(): Promise<SyncState>;

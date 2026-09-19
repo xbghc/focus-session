@@ -20,6 +20,7 @@ class SyncServer {
   losePushAck = false;
   failSnapshotContinuation = false;
   malformedPull = false;
+  rejectPush: string | undefined;
   afterSnapshotCreated: (() => void) | undefined;
   beforePullResponse: (() => void) | undefined;
   calls: RequestLog[] = [];
@@ -79,6 +80,11 @@ class SyncServer {
     }
     if (url.pathname === "/v1/sync/push" && method === "POST") {
       const request = JSON.parse(body) as { deviceId: string; operations: SyncOperation[] };
+      // Production validates the whole batch first and rejects all of it over a single bad record.
+      const refusal = this.rejectPush ?? request.operations.flatMap(operation => {
+        try { validateRecord(operation.record); return []; } catch (error) { return [(error as Error).message]; }
+      })[0];
+      if (refusal) return Response.json({ error: "INVALID_REQUEST", message: refusal }, { status: 400 });
       const accepted: string[] = [];
       for (const operation of request.operations) {
         const previous = account.operations.get(operation.opId);
@@ -297,4 +303,72 @@ test("clearing the local profile after the last identity check cannot reintroduc
   assert.equal(state.data.settings?.translateEnabled, undefined);
   assert.equal(Object.keys(state.records).length, 0);
   assert.equal(state.cursor, 0);
+});
+
+const article = (url: string, extra: Record<string, unknown> = {}) => ({
+  id: url, url, title: "An article", totalWords: 900, trackedWords: 800, paragraphCount: 12,
+  firstSeenTs: 1_000, lastSeenTs: 2_000, reachedBottom: false, finished: false, finishedTs: null, ...extra,
+});
+const session = (id: string, articleId: string) => ({ id, articleId, startTs: 1_000, endTs: 2_000, wordsRead: 40 });
+
+test("a record that fails validation stays queued with its article's dependents, and everything else still uploads", async () => {
+  await freshServer();
+  const driver = device();
+  const bad = "https://legacy.example/old-shape", good = "https://fine.example/post";
+  // A legacy article saved before `reachedBottom` existed: the shape older clients left on disk.
+  const { reachedBottom: _dropped, ...legacy } = article(bad);
+  await localStorage().set({
+    articles: { [bad]: legacy, [good]: article(good) },
+    sessions: [session("s-bad", bad), session("s-good", good)],
+    settings: { idleTimeoutMs: 45_000 },
+  });
+  const queued = (await driver.read()).outbox.length;
+
+  const status = await engine.runSync();
+  assert.equal(status.error, null);
+  assert.notEqual(status.lastSuccess, null);
+  assert.equal(status.blocked, 2);
+  assert.equal(status.pending, 2);
+  assert.match(status.blockedReason ?? "", /^article https:\/\/legacy\.example\/old-shape：Invalid article$/);
+  const uploaded = [...server.account().records.values()].map(record => `${record.type} ${record.id}`).sort();
+  assert.deepEqual(uploaded, [`article ${good}`, "session s-good", "setting idleTimeoutMs"]);
+  assert.ok(queued > 2);
+  // Never sent, so the server never had the chance to refuse the batch.
+  assert.equal(server.calls.some(call => call.body.includes("legacy.example")), false);
+  assert.deepEqual((await driver.read()).outbox.map(op => op.record.id).sort(), [bad, "s-bad"].sort());
+
+  // Kept rather than dropped: once the record is whole, the next round carries it and its dependents.
+  await localStorage().set({ articles: { [bad]: article(bad, { lastSeenTs: 3_000 }), [good]: article(good) } });
+  const healed = await engine.runSync();
+  assert.equal(healed.error, null);
+  assert.equal(healed.blocked, 0);
+  assert.equal(healed.blockedReason, null);
+  assert.equal(healed.pending, 0);
+  assert.ok(server.account().records.has(recordKey({ type: "article", id: bad })));
+  assert.ok(server.account().records.has(recordKey({ type: "session", id: "s-bad" })));
+});
+
+test("repeated edits to a record that cannot upload leave one queued operation, not one per edit", async () => {
+  await freshServer();
+  const driver = device();
+  const bad = "https://legacy.example/still-reading";
+  const { reachedBottom: _dropped, ...legacy } = article(bad);
+  for (const lastSeenTs of [2_000, 3_000, 4_000]) await localStorage().set({ articles: { [bad]: { ...legacy, lastSeenTs } } });
+  assert.equal((await driver.read()).outbox.length, 3);
+  const status = await engine.runSync();
+  assert.equal(status.blocked, 1);
+  const left = (await driver.read()).outbox;
+  assert.equal(left.length, 1);
+  assert.equal((left[0]!.record.value as { lastSeenTs: number }).lastSeenTs, 4_000);
+});
+
+test("a refusal the local check did not foresee reports the server's reason, not only its error class", async () => {
+  await freshServer();
+  const driver = device();
+  await localStorage().set({ settings: { idleTimeoutMs: 45_000 } });
+  server.rejectPush = "Invalid snippet";
+  const status = await engine.runSync();
+  assert.match(status.error ?? "", /400/);
+  assert.match(status.error ?? "", /INVALID_REQUEST · Invalid snippet/);
+  assert.equal((await driver.read()).outbox.length, 1);
 });
