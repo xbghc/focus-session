@@ -18,7 +18,8 @@ const scenarios = [
   ['dashboard', 'error', 'classification', '判别失败'],
   ['app', 'populated', 'classification', 'LLM：非文章'],
   ['options', 'populated', 'articles', '文章记录黑名单'],
-  ['options', 'error', 'articles', '项记录没通过校验，留在本机没有上传'],
+  ['options', 'error', 'articles', '项没通过校验，留在本机没有上传'],
+  ['appOptions', 'error', 'articles', '项没通过校验，留在本机没有上传'],
   ['sidepanel', 'populated', 'articles', 'consolidate'],
   ['app', 'populated', 'articles', '共 3 篇'],
   ['app', 'populated', 'articles', '深度阅读的技艺'],
@@ -185,4 +186,75 @@ test('options form tracks unsaved changes, keeps blacklists on reset, and only t
     assert.equal(bar.classList.contains('is-dirty'), false);
     assert.deepEqual(Array.from(dom.window.__previewErrors), []);
   } finally { close(); }
+});
+
+test('sync section keeps its explanation behind the title button and its diagnostics behind a one-line verdict', async () => {
+  const open = (page, state) => {
+    const html = pages[page].replace('<!--PREVIEW_CONFIG-->', `<script>window.__PREVIEW__=${JSON.stringify({ page, state, tab: 'articles' })}</script>`);
+    let closeWindow;
+    const dom = new JSDOM(html, {
+      url: 'https://preview.invalid/', runScripts: 'dangerously', pretendToBeVisual: true,
+      beforeParse(window) {
+        closeWindow = window.close.bind(window);
+        window.structuredClone = structuredClone;
+        window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
+        window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+      },
+    });
+    return { dom, close: () => closeWindow() };
+  };
+  const settle = () => new Promise(resolve => setTimeout(resolve, 30));
+
+  const healthy = open('options', 'populated');
+  try {
+    await settle();
+    const { document, KeyboardEvent } = healthy.dom.window;
+    const info = document.querySelector('#sync-settings legend button.info');
+    const about = document.getElementById('sync-about');
+    // The button's glyph is not part of the section's name.
+    assert.equal(document.querySelector('.section-nav a').textContent, '设备同步');
+    assert.equal(about.hidden, true);
+    info.click();
+    assert.equal(about.hidden, false);
+    assert.equal(info.getAttribute('aria-expanded'), 'true');
+    about.querySelector('p').click();
+    assert.equal(about.hidden, false);
+    document.querySelector('h1').click();
+    assert.equal(about.hidden, true);
+    info.click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    assert.equal(about.hidden, true);
+    assert.equal(info.getAttribute('aria-expanded'), 'false');
+
+    assert.equal(document.getElementById('sync-details').open, false);
+    assert.match(document.getElementById('sync-summary').textContent, /^同步已启用 · 上次同步 /);
+    assert.equal(document.getElementById('sync-dot').dataset.tone, 'ok');
+    assert.deepEqual([...document.querySelectorAll('#sync-facts dt')].map(dt => dt.textContent), ['上次成功', '待上传', '账号', '服务器', '本设备']);
+    // The answer to a button press stays beside the buttons, outside the collapsed panel.
+    document.getElementById('sync-test').click();
+    await settle();
+    const feedback = document.getElementById('sync-feedback');
+    assert.ok(feedback.textContent.includes('连接成功'));
+    assert.equal(feedback.closest('details'), null);
+    assert.deepEqual(Array.from(healthy.dom.window.__previewErrors), []);
+  } finally { healthy.close(); }
+
+  const failing = open('options', 'error');
+  try {
+    await settle();
+    const { document } = failing.dom.window;
+    assert.equal(document.getElementById('sync-summary').textContent, '同步已启用 · 服务器暂时不可达（模拟）');
+    assert.equal(document.getElementById('sync-dot').dataset.tone, 'error');
+    assert.deepEqual([...document.querySelectorAll('#sync-facts dt')].map(dt => dt.textContent).slice(0, 4), ['错误', '上次成功', '待上传', '无法上传']);
+    assert.equal(document.querySelectorAll('#sync-facts li').length, 2);
+  } finally { failing.close(); }
+
+  const app = open('appOptions', 'populated');
+  try {
+    await settle();
+    const { document } = app.dom.window;
+    assert.equal(document.querySelector('button.info'), null);
+    assert.equal(document.getElementById('sync-about').hidden, false);
+    assert.equal(document.getElementById('sync-settings').closest('details').querySelector('summary strong').textContent, '设备同步');
+  } finally { app.close(); }
 });

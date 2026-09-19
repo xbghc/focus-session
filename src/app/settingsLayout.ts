@@ -1,3 +1,5 @@
+import { sectionName } from "../options/nav.ts";
+
 /** Keep the shared settings controls and handlers, but give the app a compact section index. */
 export function setupSettingsLayout(): void {
   document.body.classList.add("mobile-settings");
@@ -29,7 +31,7 @@ export function setupSettingsLayout(): void {
   };
   for (const fieldset of document.querySelectorAll<HTMLFieldSetElement>("body > fieldset")) {
     const legend = fieldset.querySelector("legend");
-    const name = legend?.textContent?.trim() ?? "设置";
+    const name = sectionName(fieldset) || "设置";
     const section = document.createElement("details");
     section.className = "settings-section";
     const summary = document.createElement("summary");
@@ -47,6 +49,11 @@ export function setupSettingsLayout(): void {
     }
     if (name === "设备同步" && location.hash === "#sync") section.open = true;
     fieldset.setAttribute("aria-label", heading.textContent);
+    // 扩展里收在标题旁「i」后面的说明：按钮跟着 legend 一起没了，说明就平铺回分区开头
+    for (const about of fieldset.querySelectorAll<HTMLElement>(".info-pop")) {
+      about.hidden = false;
+      about.className = "muted small";
+    }
     legend?.remove();
   }
   const save = document.getElementById("save");

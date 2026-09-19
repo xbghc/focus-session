@@ -328,7 +328,7 @@ test("a record that fails validation stays queued with its article's dependents,
   assert.notEqual(status.lastSuccess, null);
   assert.equal(status.blocked, 2);
   assert.equal(status.pending, 2);
-  assert.equal(status.blockedReason, `article：Entity identity mismatch ×1（如 ${bad}）；1 项挂在这些文章名下`);
+  assert.deepEqual(status.blockedReasons, [`article：Entity identity mismatch ×1（如 ${bad}）`, "1 项挂在这些文章名下"]);
   const uploaded = [...server.account().records.values()].map(record => `${record.type} ${record.id}`).sort();
   assert.deepEqual(uploaded, [`article ${good}`, "session s-good", "setting idleTimeoutMs"]);
   assert.ok(queued > 2);
@@ -341,7 +341,7 @@ test("a record that fails validation stays queued with its article's dependents,
   const healed = await engine.runSync();
   assert.equal(healed.error, null);
   assert.equal(healed.blocked, 0);
-  assert.equal(healed.blockedReason, null);
+  assert.deepEqual(healed.blockedReasons, []);
   assert.equal(healed.pending, 0);
   assert.ok(server.account().records.has(recordKey({ type: "article", id: bad })));
   assert.ok(server.account().records.has(recordKey({ type: "session", id: "s-bad" })));

@@ -6,8 +6,8 @@ import type { SyncOperation } from "./protocol.ts";
 export interface SyncStatus {
   enabled:boolean; baseUrl:string; tokenSet:boolean; userId?:string; serverId?:string;
   deviceId:string; pending:number; lastSuccess:number|null; error:string|null; running:boolean;
-  /** 过不了校验、留在队列里没发出去的记录数，和其中第一条的「类型 标识：原因」。都已经算在 pending 里。 */
-  blocked:number; blockedReason:string|null;
+  /** 过不了校验、留在队列里没发出去的记录数，和按原因归堆的说明（一堆一条）。都已经算在 pending 里。 */
+  blocked:number; blockedReasons:string[];
 }
 // Capture WebView's real fetch before native.ts installs its text-only HTTP bridge.
 // This retains redirect:'error', CORS and binary request bodies for the sync service.
@@ -39,7 +39,8 @@ export async function syncRequest(path:string,init:RequestInit={}):Promise<Respo
 export async function syncStatus():Promise<SyncStatus> {
   const s=await syncDriver().read();return {enabled:s.config.enabled,baseUrl:s.config.baseUrl,tokenSet:Boolean(s.config.token),userId:s.config.userId,serverId:s.config.serverId,
     deviceId:s.deviceId,pending:s.outbox.length+Object.keys(s.data.archivePending??{}).length,lastSuccess:s.lastSuccess,error:s.error,running:Boolean(running),
-    blocked:s.blocked?.count??0,blockedReason:s.blocked?.reason??null};
+    // reason 是上一版存下的单条字符串，还没跑过新一轮同步的状态里只有它
+    blocked:s.blocked?.count??0,blockedReasons:s.blocked?.reasons??(s.blocked?.reason?[s.blocked.reason]:[])};
 }
 /**
  * 把队列分成发得出去的和发不出去的。
@@ -81,7 +82,7 @@ function triage(outbox:SyncOperation[],verdicts:Map<string,string|null>):{ready:
   return {ready,blocked,superseded};
 }
 /** 按「类型：原因」归堆，各举一例。要修的是自己有毛病的那些，被文章连累的只报个数。 */
-function describe(stuck:Blocked[]):string {
+function describe(stuck:Blocked[]):string[] {
   const groups=new Map<string,{count:number;sample:string}>();let dependents=0;
   for(const {op,reason} of stuck) {
     if(reason===DEPENDENT) {dependents++;continue;}
@@ -91,7 +92,7 @@ function describe(stuck:Blocked[]):string {
   const parts=[...groups].slice(0,3).map(([key,g])=>`${key} ×${g.count}（如 ${g.sample}）`);
   if(groups.size>3)parts.push(`另有 ${groups.size-3} 类原因`);
   if(dependents)parts.push(`${dependents} 项挂在这些文章名下`);
-  return parts.join("；");
+  return parts;
 }
 export async function testSync(baseUrl:string,token?:string):Promise<{serverId:string;userId:string;protocol:number}> {
   const {config}=await syncDriver().read();const url=normalizeServerUrl(baseUrl);
@@ -190,7 +191,7 @@ async function cycle():Promise<SyncStatus> {
       await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!accepted.has(op.opId));});
     }
     await pull();await check();
-    const blocked=stuck.length?{count:stuck.length,reason:describe(stuck)}:undefined;
+    const blocked=stuck.length?{count:stuck.length,reasons:describe(stuck)}:undefined;
     await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
   } catch(error) {
     await syncDriver().update(s=>{

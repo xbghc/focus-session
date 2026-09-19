@@ -12,7 +12,7 @@ let syncStatus: SyncStatus = {
   tokenSet: options.state !== 'empty', deviceId: 'storybook-device', pending: options.state === 'error' ? 3 : 0,
   lastSuccess: options.state === 'empty' ? null : Date.now() - 60_000,
   error: options.state === 'error' ? '服务器暂时不可达（模拟）' : null, running: options.state === 'loading',
-  blocked: options.state === 'error' ? 2 : 0, blockedReason: options.state === 'error' ? 'article：Entity identity mismatch ×1（如 https://example.com/legacy）；1 项挂在这些文章名下' : null,
+  blocked: options.state === 'error' ? 2 : 0, blockedReasons: options.state === 'error' ? ['article：Entity identity mismatch ×1（如 https://example.com/legacy）', '1 项挂在这些文章名下'] : [],
   ...(options.state === 'empty' ? {} : { userId: 'preview-user', serverId: 'preview-server' }),
 };
 const storage = memoryBackend();
