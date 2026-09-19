@@ -1,6 +1,6 @@
 import "./boot.ts";
 import { setupSettingsLayout } from "./settingsLayout.ts";
-import { fetchLog } from "../options/index.ts";
+import { fetchLog } from "../options/form.ts";
 import { native } from "./native.ts";
 import type { Update } from "../lib/update.ts";
 import {

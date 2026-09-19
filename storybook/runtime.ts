@@ -32,7 +32,11 @@ window.open = () => null;
 window.close = () => undefined;
 document.addEventListener('click', event => {
   const target = event.target as Element;
-  if (target?.closest?.('a[href]')) event.preventDefault();
+  const link = target?.closest?.('a[href]');
+  if (link) event.preventDefault();
+  // 页内锚点（设置页的分区目录）不能放行——预览页带着 <base>，#id 会解析成站外地址；就地滚过去
+  const anchor = link?.getAttribute('href');
+  if (anchor?.startsWith('#')) document.getElementById(anchor.slice(1))?.scrollIntoView();
   if (target?.closest?.('#refetch')) { event.preventDefault(); event.stopImmediatePropagation(); }
 }, true);
 document.addEventListener('submit', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);

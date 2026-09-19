@@ -6,29 +6,78 @@
     <link rel="stylesheet" href="popup.css" />
     <style>
       /* 表单页不是读物：正文交给无衬线，只有标题保留衬线的调子 */
-      body { width: auto; max-width: 620px; margin: 0 auto; padding: 24px 20px 60px; font-family: var(--sans); }
-      h1 { font-family: var(--serif); font-size: 20px; margin: 0 0 4px; }
-      legend { font-family: var(--serif); font-size: 14px; }
-      fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin: 18px 0; background: var(--card); }
+      /* 扩展页没有 App 那行 color-scheme 的 meta：不声明的话，暗色下勾选框、数字框的箭头和滚动条还是亮的 */
+      :root { color-scheme: light dark; }
+      html { scroll-behavior: smooth; }
+      @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+      body { width: auto; max-width: 680px; margin: 0 auto; padding: 28px 20px 60px; font-family: var(--sans); }
+      h1 { font-family: var(--serif); font-size: 22px; margin: 0 0 6px; }
+      /* popup.css 的 .small 是 11px，给 380px 的弹窗用的；这一页大段的说明全靠它，整屏读下来太小 */
+      .small { font-size: 12px; line-height: 1.65; }
+      legend { font-family: var(--serif); font-size: 15px; }
+      fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px; margin: 18px 0; background: var(--card); scroll-margin-top: 16px; }
+      fieldset > p:first-of-type { margin-top: 4px; }
+      fieldset > p:last-child { margin-bottom: 2px; }
       legend { padding: 0 6px; font-weight: 600; }
       .field { display: grid; grid-template-columns: 190px 100px 1fr; gap: 10px; align-items: center; margin: 10px 0; }
       .field label { color: var(--fg); }
-      .field .hint { color: var(--muted); font-size: 11px; }
+      .field .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
       .field .wide { grid-column: 2 / 4; }
       input[type="number"], input[type="text"], input[type="password"], textarea {
         font: inherit; color: var(--fg); background: var(--bg);
         border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; width: 100%;
       }
       textarea { min-height: 88px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+      /* 勾选框和上下的数字框左边对齐，不悬在那一列中间 */
+      input[type="checkbox"] { accent-color: var(--accent); justify-self: start; margin-left: 0; }
+      p a { color: var(--accent); }
+      input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      /* 越界的数保存时会被夹回区间里，先在框上亮出来。不用 :invalid——它连不踩 step 的数也算，而那些数是收的 */
+      input:out-of-range, input[aria-invalid="true"] { border-color: var(--danger); }
       button {
         font-family: var(--sans); font-size: 13px; padding: 7px 15px; border-radius: 3px; cursor: pointer;
         border: 1px solid var(--line); background: var(--bg); color: var(--fg);
       }
       button.primary { background: var(--accent); border-color: var(--accent); color: var(--card); }
       button.danger { color: var(--warn); border-color: var(--warn); }
+      button:hover:not(:disabled) { border-color: var(--muted); }
+      button.primary:hover:not(:disabled) { border-color: var(--accent); filter: brightness(1.08); }
+      /* 颜色都是自己写死的，浏览器给禁用按钮的那层灰盖不上来，不补这条就看不出哪个按不动 */
+      button:disabled { opacity: 0.5; cursor: default; }
       .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       #status { color: var(--accent); font-size: 12px; min-height: 1.2em; }
+      #status.error { color: var(--danger); }
       .field label { font-size: 13px; }
+
+      /*
+       * 保存条。平时待在它管的那批分区后面；有没保存的修改时吸在视口边上——往上滚吸底，
+       * 滚过了它（去看数据、日志）吸顶，总之改了东西就一直看得见。留白和边框平时就占着位置，
+       * 吸上去的那一下版面才不会跳。
+       */
+      .savebar { margin: 6px 0; padding: 12px 0; border-block: 1px solid transparent; }
+      .savebar.is-dirty { position: sticky; top: 0; bottom: 0; z-index: 5; background: var(--bg); border-block-color: var(--line); }
+
+      /*
+       * 分区目录（options/nav.ts 生成，App 里没有）。固定在左边而不是给正文套一层容器做双栏：
+       * App 的 settingsLayout 按 body > fieldset 找分区，保存条的 sticky 也要 body 当它的容器。
+       * 目录 172 + 间隔 48 + 正文 640 = 860，整块居中。
+       */
+      .section-nav { display: none; }
+      @media (min-width: 960px) {
+        body.has-nav { --nav-left: max(24px, calc(50% - 430px)); margin-left: calc(var(--nav-left) + 200px); }
+        .section-nav {
+          display: block; position: fixed; top: 32px; left: var(--nav-left); width: 172px;
+          max-height: calc(100vh - 64px); overflow-y: auto;
+        }
+        .section-nav p { margin: 20px 0 6px; padding-left: 14px; font-size: 11px; letter-spacing: 0.1em; color: var(--muted); }
+        .section-nav p:first-child { margin-top: 0; }
+        .section-nav a {
+          display: block; padding: 5px 12px; border-left: 2px solid var(--line);
+          font-size: 13px; line-height: 1.5; color: var(--fg-soft); text-decoration: none;
+        }
+        .section-nav a:hover { color: var(--fg); border-left-color: var(--muted); }
+        .section-nav a[aria-current] { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+      }
 
       /*
        * 手机。三列表单在 360px 宽的屏幕上光第一列就占掉一半，剩下两列挤成竖条，
@@ -59,6 +108,8 @@
         .row { gap: 8px; }
         .row button { flex: 1 1 40%; }
         .row > span { flex: 1 1 100%; }
+        /* 保存条吸在视口边上时占的是正文的地方：三个按钮挤一行，别叠成两行 */
+        .savebar button { flex: 1 1 0; }
       }
     </style>
   </head>
@@ -69,7 +120,7 @@
       MiniMax</strong>——不需要翻译的页面请加进下面的翻译黑名单，或直接关掉划词翻译。
     </p>
 
-    <fieldset id="sync-settings">
+    <fieldset id="sync-settings" data-nav-group="连接">
       <legend>设备同步</legend>
       <p class="muted small">
         连接自己的服务器，在手机和电脑之间合并阅读记录、划词和复习数据。
@@ -102,7 +153,7 @@
       </p>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-llm" data-nav="模型">
       <legend>MiniMax（翻译与复习都用它）</legend>
       <div class="field">
         <label for="apiKey">API Key</label>
@@ -137,7 +188,7 @@
       <p id="usage" class="muted small"></p>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-translate" data-nav-group="偏好">
       <legend>划词翻译</legend>
       <div class="field check">
         <label for="translateEnabled">启用划词翻译</label>
@@ -170,7 +221,7 @@
       </p>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-finish">
       <legend>读完判定</legend>
       <p class="muted small">
         一篇文章要<strong>同时</strong>满足两个条件才算读完：已读比例达到下面的阈值，
@@ -184,7 +235,7 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-position">
       <legend>续读位置</legend>
       <p class="muted small">
         记住每篇文章上次读到的段落，重新打开时跳回去。
@@ -199,7 +250,7 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-review">
       <legend>文章回顾</legend>
       <p class="muted small">
         读到上面的比例时，会把正文存下来并让 LLM 先生成一份大纲和三个回想问题，
@@ -212,7 +263,7 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-attention">
       <legend>走神阈值</legend>
       <p class="muted small">
         阅读本身不产生任何输入：一屏 400 词按 238 字/分要读 100 秒，期间可以一下都不动。
@@ -242,7 +293,7 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-paragraph">
       <legend>段落已读判定</legend>
       <p class="muted small">
         一段文字要在视野里停留到<strong>读完它所需时间的一定比例</strong>才记为已读，
@@ -261,7 +312,7 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-stats">
       <legend>统计口径</legend>
       <p class="muted small">
         session 的边界是「输入信号中断」，切去查个东西再回来、安静读一屏后被判走神，
@@ -275,24 +326,25 @@
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-article-blacklist">
       <legend>文章记录黑名单</legend>
       <p class="muted small">每行一个域名或完整网址。域名包含子域，网址包含该路径及子路径。不影响翻译。</p>
       <textarea id="excluded" spellcheck="false" placeholder="example.com&#10;https://example.org/search"></textarea>
     </fieldset>
-    <fieldset>
+    <fieldset id="sec-translation-blacklist">
       <legend>翻译黑名单</legend>
       <p class="muted small">规则格式同上。禁用划词和截图翻译，不影响文章记录。非文章页面可以从弹出面板启用划词翻译。</p>
       <textarea id="translationExcluded" spellcheck="false" placeholder="mail.google.com"></textarea>
     </fieldset>
 
-    <div class="row">
-      <button id="save" class="primary">保存</button>
-      <button id="reset">恢复默认</button>
-      <span id="status"></span>
+    <div id="savebar" class="row savebar">
+      <button id="save" type="button" class="primary">保存</button>
+      <button id="revert" type="button" hidden>撤销修改</button>
+      <button id="reset" type="button">恢复默认</button>
+      <span id="status" role="status"></span>
     </div>
 
-    <fieldset>
+    <fieldset id="sec-data" data-nav-group="维护">
       <legend>数据</legend>
       <p class="muted small">
         导出为 JSON：一是给另一台设备（手机 App、另一台电脑上的扩展）导入合并，二是日后接入
@@ -313,7 +365,7 @@
       </p>
     </fieldset>
 
-    <fieldset>
+    <fieldset id="sec-log">
       <legend>诊断日志</legend>
       <p class="muted small">
         每次 LLM 调用失败（解析失败、超时、接口报错）都把现场记在本机：错误信息、模型的原始输出、
