@@ -48,6 +48,9 @@ export async function go(url: string): Promise<void> {
     console.warn("[focus-session] 换页前的收尾出错，照常换页", err);
   }
   location.href = url;
+  // 真换了页这条定时器跟着旧页一起没；没换成（同一个地址、只差一个锚点）就得把锁放开，
+  // 不然往后每一次 App 内的跳转都悄悄不动
+  setTimeout(() => { leaving = false; }, 1500);
 }
 
 export const shim: ChromeShim = installChromeShim({

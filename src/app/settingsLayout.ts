@@ -49,10 +49,17 @@ export function setupSettingsLayout(): void {
     }
     if (name === "设备同步" && location.hash === "#sync") section.open = true;
     fieldset.setAttribute("aria-label", heading.textContent);
-    // 扩展里收在标题旁「i」后面的说明：按钮跟着 legend 一起没了，说明就平铺回分区开头
+    // 扩展里收在标题旁「i」后面的说明：按钮跟着 legend 一起没了。这里换成分区开头的一行「这是什么」，
+    // 点开才铺出来——手机上三段说明先占掉半屏，要填的那两个框就被挤到下面去了
     for (const about of fieldset.querySelectorAll<HTMLElement>(".info-pop")) {
+      const fold = document.createElement("details");
+      fold.className = "settings-about";
+      const what = document.createElement("summary");
+      what.textContent = "这是什么";
+      about.before(fold);
       about.hidden = false;
       about.className = "muted small";
+      fold.append(what, about);
     }
     legend?.remove();
   }

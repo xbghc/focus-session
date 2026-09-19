@@ -61,12 +61,16 @@ button {
   padding: 5px 11px;
   transition: color 120ms, border-color 120ms;
 }
-button:hover { color: #9c4d14; border-color: #9c4d14; }
+/* 触屏上点过之后 :hover 会一直挂着，所以只给真有悬停的设备；手指用 :active */
+@media (hover: hover) { button:hover { color: #9c4d14; border-color: #9c4d14; } }
+button:active { color: #9c4d14; border-color: #9c4d14; }
+@media (pointer: coarse) { button { padding: 11px 14px; } }
 @media (prefers-color-scheme: dark) {
   .card { background: #342f2c; color: #d6cec3; border-color: #423e38; border-left-color: #e18d5a; }
   .sub { color: #a39889; }
   button { background: #2b2724; color: #b7aea0; border-color: #4c4741; }
-  button:hover { background: #423e38; color: #e18d5a; border-color: #e18d5a; }
+  button:active { background: #423e38; color: #e18d5a; border-color: #e18d5a; }
+  @media (hover: hover) { button:hover { background: #423e38; color: #e18d5a; border-color: #e18d5a; } }
 }
 `;
 

@@ -1,6 +1,7 @@
 import "./boot.ts";
 import "../dashboard/index.ts";
 import { go, readerUrl } from "./boot.ts";
+import { reasonOf } from "../lib/reason.ts";
 import { autoCheck, skipVersion } from "./update.ts";
 import { localStorage } from "../sync/storage.ts";
 import { ARCHIVES_KEY, type ArchiveManifest } from "../archive/types.ts";
@@ -71,9 +72,18 @@ async function renderSavedArticles(): Promise<void> {
       void chrome.runtime.sendMessage({ type: "articles:delete", articleIds: [archive.articleId] }).then(async (result: { ok?: boolean; error?: string }) => {
         if (!result?.ok) throw new Error(result?.error || "删除失败");
         await renderSavedArticles();
-      }).catch((err: unknown) => { remove.disabled = false; meta.textContent = err instanceof Error ? err.message : String(err); });
+      }).catch((err: unknown) => {
+        // 另起一行说：以前写进了 meta，那行「域名 · 正文已下载」就此被错误盖掉，再也回不来
+        remove.disabled = false;
+        problem.textContent = `没删掉：${reasonOf(err)}`;
+        problem.hidden = false;
+      });
     });
-    item.append(remove);
+    const problem = document.createElement("p");
+    problem.className = "card-error small";
+    problem.setAttribute("role", "status");
+    problem.hidden = true;
+    item.append(remove, problem);
     fragment.append(item);
   }
   if (turn !== archiveRender) return;
@@ -140,13 +150,18 @@ function chapterRow(book: Book, index: number, title: string, words: number, don
   return item;
 }
 
+/**
+ * 书架可能同时被画两遍（开页那一次，加上一次同步完成的通知）。封面是 blob: 地址，谁画的谁负责作废：
+ * 以前两轮共用一个数组，后一轮一上来就把前一轮刚建的地址作废了，前一轮要是后画完，封面全是破图。
+ */
+let bookRender = 0;
 async function renderBooks(): Promise<void> {
+  const turn = ++bookRender;
+  const urls: string[] = [];
   const books = await listBooks();
   const res = (await chrome.runtime.sendMessage({ type: "articles:list" })) as { articles?: Article[] };
   const finished = new Set((res.articles ?? []).filter(a => a.finished).map(a => a.id));
   const records = new Map((res.articles ?? []).map(a => [a.id, a]));
-  for (const url of coverUrls) URL.revokeObjectURL(url);
-  coverUrls = [];
 
   const fragment = document.createDocumentFragment();
   for (const book of books) {
@@ -158,7 +173,7 @@ async function renderBooks(): Promise<void> {
     row.className = "row1";
     const cover = await coverUrl(book);
     if (cover) {
-      coverUrls.push(cover);
+      urls.push(cover);
       const img = document.createElement("img");
       img.className = "book-cover";
       img.src = cover;
@@ -215,13 +230,25 @@ async function renderBooks(): Promise<void> {
       remove.disabled = true;
       void deleteBook(book.id)
         .then(() => renderBooks())
-        .catch((err: unknown) => { remove.disabled = false; say(err instanceof Error ? err.message : String(err)); });
+        .catch((err: unknown) => {
+          // 写在这张卡片上：#book-status 在导入那一行里，宿主不支持导入时整行是藏着的，写进去等于没说
+          remove.disabled = false;
+          problem.textContent = `没删掉：${reasonOf(err)}`;
+          problem.hidden = false;
+        });
     });
+    const problem = document.createElement("p");
+    problem.className = "card-error small";
+    problem.setAttribute("role", "status");
+    problem.hidden = true;
 
-    card.append(row, sub, toc, remove);
+    card.append(row, sub, toc, remove, problem);
     fragment.append(card);
   }
+  if (turn !== bookRender) { for (const url of urls) URL.revokeObjectURL(url); return; }
   bookList.replaceChildren(fragment);
+  for (const url of coverUrls) URL.revokeObjectURL(url);
+  coverUrls = urls;
   bookSection.hidden = books.length === 0;
   if (books.length > 0) {
     // 只在第一次画的时候展开：用户收起来之后，一次同步或一次导入不该把它又掀开

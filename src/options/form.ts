@@ -105,6 +105,9 @@ function changedCount(): number {
   return (Object.keys(now) as (keyof Settings)[]).filter((k) => JSON.stringify(now[k]) !== JSON.stringify(base[k])).length;
 }
 
+/** App 的设置页要在离开前问一声（见 app/options.ts）：WebView 不弹 beforeunload 的框。 */
+export const hasUnsavedChanges = (): boolean => changedCount() > 0;
+
 /** 状态栏一处两用：刚发生的事（存好了、填错了）优先，没有就报还有几项没保存。 */
 function renderStatus(): void {
   const changed = changedCount();
