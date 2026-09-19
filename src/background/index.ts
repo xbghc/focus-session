@@ -52,7 +52,8 @@ chrome.alarms.onAlarm.addListener(alarm => {if(alarm.name === "sync")scheduleSyn
 
 chrome.runtime.onMessage.addListener((msg: AnyMessage & { target?: string }, sender, sendResponse) => {
   if (msg?.target === "offscreen") return false;
-  if (msg.type?.startsWith("sync:") && sender.tab) { sendResponse({ok:false,error:"同步设置只能从扩展设置页访问"}); return false; }
+  // options_page 总是开成标签页，它的 sender.tab 同样有值；要挡的是网页里的 content script，得看来源 URL。
+  if (msg.type?.startsWith("sync:") && !sender.url?.startsWith(chrome.runtime.getURL(""))) { sendResponse({ok:false,error:"同步设置只能从扩展设置页访问"}); return false; }
   // 必须显式 return true 保持通道打开；Chrome 不认返回 Promise 的写法。
   handle(msg, sender).then(sendResponse, (err: unknown) => {
     // 写入失败（多数是超出存储配额）不能无声无息
