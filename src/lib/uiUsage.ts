@@ -11,6 +11,10 @@
  *
  * 纯函数，不碰 storage；落盘在 background/uiUsage.ts，按天分桶是为了改完界面之后
  * 能比「改之前的三十天」和「改之后的七天」，只留一个总数的话这件事做不了。
+ *
+ * 启用了设备同步的话，计数还会传到同步服务器上（见 background/uiUsage.ts 的 uploadUiUsage），
+ * 在那边跨设备、跨用户汇总；服务器的报表（server/src/usage.ts）用的也是下面这张表，
+ * 所以这个文件不能引用任何浏览器才有的东西。
  */
 
 /** 表里的顺序就是报表里同次数时的顺序：按页面从上到下、从左到右排。 */
@@ -74,9 +78,13 @@ export interface UiUsageLog {
   since: string | null;
   /** 日期（本地，`2026-09-19`）→ 事件 → 次数。 */
   days: Record<string, Record<string, number>>;
+  /** 服务器上还没有、或者传过之后又涨了的那几天。没启用同步就一直攒着，启用那天一起传。 */
+  pending: string[];
+  /** 这个时刻之前不上传：刚传过，或者上次没传成在等下一回。 */
+  nextUploadAt: number;
 }
 
-export const emptyUiUsage = (): UiUsageLog => ({ since: null, days: {} });
+export const emptyUiUsage = (): UiUsageLog => ({ since: null, days: {}, pending: [], nextUploadAt: 0 });
 
 /** 留这么多天。一天一桶、一桶至多几十个数，整份也就几十 KB。 */
 export const UI_USAGE_DAYS = 90;
@@ -105,6 +113,9 @@ export function normalizeUiUsage(value: unknown): UiUsageLog {
       if (Object.keys(kept).length > 0) log.days[day] = kept;
     }
   }
+  // 没有 pending 的是上传出现之前存下的：那时候的每一天服务器上都没有
+  log.pending = Array.isArray(raw.pending) ? raw.pending.filter((day) => Object.hasOwn(log.days, day)) : Object.keys(log.days);
+  if (typeof raw.nextUploadAt === "number" && Number.isFinite(raw.nextUploadAt)) log.nextUploadAt = raw.nextUploadAt;
   return log;
 }
 
@@ -116,11 +127,19 @@ export function bumpUiUsage(log: UiUsageLog, names: readonly unknown[], now: num
   // 日期是补零的 ISO 形式，字符串比较就是日期比较
   for (const [day, counts] of Object.entries(log.days)) if (day >= oldest) days[day] = { ...counts };
   const valid = names.filter(isUiEvent);
+  let pending = log.pending.filter((day) => Object.hasOwn(days, day));
   if (valid.length > 0) {
     const bucket = (days[today] ??= {});
     for (const name of valid) bucket[name] = (bucket[name] ?? 0) + 1;
+    if (!pending.includes(today)) pending = [...pending, today];
   }
-  return { since: log.since ?? (valid.length > 0 ? today : null), days };
+  return { since: log.since ?? (valid.length > 0 ? today : null), days, pending, nextUploadAt: log.nextUploadAt };
+}
+
+/** 刚传上去的那几天，如果传的过程中没再涨，就不用再传了；涨了的留着等下一回。不改传进来的。 */
+export function settleUiUpload(log: UiUsageLog, sent: UiUsageLog["days"], nextUploadAt: number): UiUsageLog {
+  const same = (day: string): boolean => JSON.stringify(log.days[day]) === JSON.stringify(sent[day]);
+  return { ...log, pending: log.pending.filter((day) => !(Object.hasOwn(sent, day) && same(day))), nextUploadAt };
 }
 
 export interface UiUsageRow {
@@ -168,7 +187,7 @@ export function summarizeUiUsage(log: UiUsageLog, now: number): UiUsageSummary {
 /* ==================== 页面这一头：攒一攒再发 ==================== */
 
 /**
- * 点一下发一条的话，每一下都是一次整库读改写（见 sync/storage.ts 的 set），还会顺带排一轮同步。
+ * 点一下发一条的话，每一下都是一次整库读改写（状态库是整个读出来、整个写回去的）。
  * 复习时两三秒翻一张卡，没必要这么勤。攒几秒一起发；页面要走的时候把手里的先交掉。
  */
 export const UI_FLUSH_MS = 5_000;

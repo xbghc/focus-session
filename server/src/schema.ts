@@ -92,6 +92,18 @@ const migrations = [
      FOREIGN KEY (user_id, token) REFERENCES sync_snapshots(user_id, token) ON DELETE CASCADE
    );`,
   `ALTER TABLE operations ADD COLUMN record jsonb;`,
+  // Button-click counters, one row per device, local day and event. Kept out of the sync log: see usage.ts.
+  `CREATE TABLE ui_usage (
+     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     device_id text NOT NULL,
+     day date NOT NULL,
+     event text NOT NULL,
+     count bigint NOT NULL CHECK (count > 0),
+     platform text NOT NULL,
+     updated_at timestamptz NOT NULL DEFAULT now(),
+     PRIMARY KEY (user_id, device_id, day, event)
+   );
+   CREATE INDEX ui_usage_day ON ui_usage (day);`,
 ];
 
 export async function migrate(pool: Pool): Promise<void> {

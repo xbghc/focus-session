@@ -10,6 +10,7 @@ import type { SyncRecord } from '../../src/sync/protocol.ts';
 import { Database } from '../src/database.ts';
 import { checkIntegrity, collectStats, showRecord } from '../src/diagnostics.ts';
 import { FileStore } from '../src/files.ts';
+import { usageReport, validateUsage } from '../src/usage.ts';
 
 function record(name: string, counter = 1, deviceId = 'device-a'): SyncRecord {
   const id = `https://example.org/${name}`;
@@ -197,6 +198,41 @@ test('PostgreSQL atomic sync, user isolation, concurrency, restart and archive r
         assert.equal(broken.problems.find(problem => problem.kind === 'log-mismatch')!.id, kept);
         assert.equal(broken.problems.find(problem => problem.kind === 'blob-file-missing')!.id, hash);
       } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+    await t.test('button counts keep the larger daily total per device and report every known control, used or not', async () => {
+      const day = (ago: number) => new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10);
+      const send = (user: string, deviceId: string, platform: string, days: unknown) => database.recordUsage(user, validateUsage({ deviceId, platform, days }));
+      const counter = await database.createUser('counter');
+      const other = await database.createUser('other counter');
+      assert.equal(await send(counter.user.id, 'laptop', 'extension', { [day(0)]: { 'articles.detail': 3, 'articles.search.open': 1 }, [day(10)]: { 'articles.detail': 4 } }), 3);
+      // A resend, a stale total that arrives late, and a day that kept growing.
+      await send(counter.user.id, 'laptop', 'extension', { [day(0)]: { 'articles.detail': 3 } });
+      await send(counter.user.id, 'laptop', 'extension', { [day(0)]: { 'articles.detail': 2 } });
+      await send(counter.user.id, 'laptop', 'extension', { [day(0)]: { 'articles.detail': 5 } });
+      await send(counter.user.id, 'phone', 'app', { [day(0)]: { 'articles.detail': 1, 'from-a-newer-client': 2 } });
+      await send(other.user.id, 'laptop', 'extension', { [day(40)]: { 'articles.detail': 7 } });
+      assert.equal(await send(other.user.id, 'idle', 'extension', {}), 0);
+
+      const report = await usageReport(database.pool);
+      assert.deepEqual([report.users, report.devices, report.first, report.last], [2, 3, day(40), day(0)]);
+      assert.deepEqual(report.platforms.map(platform => [platform.platform, platform.users, platform.devices, platform.deviceDays]), [['app', 1, 1, 1], ['extension', 2, 2, 3]]);
+      const extension = report.platforms.find(platform => platform.platform === 'extension')!;
+      // The same device name under another account is another device.
+      assert.deepEqual(extension.events[0], { name: 'articles.detail', label: '文章 · 展开详情', last7: 5, last30: 9, total: 16, users: 2, devices: 2 });
+      assert.deepEqual(extension.events[1]!.name, 'articles.search.open');
+      assert.ok(extension.events.length > 40 && extension.events.slice(2).every(line => line.total === 0), 'controls nobody used are listed, in page order');
+      assert.ok(extension.unused.includes('articles.blacklist.suggest') && !extension.unused.includes('articles.detail'));
+      const app = report.platforms.find(platform => platform.platform === 'app')!;
+      assert.deepEqual(app.unknown, ['from-a-newer-client']);
+      assert.deepEqual(app.events.find(line => line.name === 'from-a-newer-client'), { name: 'from-a-newer-client', label: null, last7: 2, last30: 2, total: 2, users: 1, devices: 1 });
+
+      const mine = await usageReport(database.pool, other.user.id);
+      assert.deepEqual([mine.users, mine.devices, mine.platforms.length, mine.platforms[0]!.events[0]!.total], [1, 1, 1, 7]);
+      await assert.rejects(usageReport(database.pool, randomUUID()), /User does not exist/);
+      // Uploading counts registers the device like a push does, and counts leave with their account.
+      assert.ok((await collectStats(database.pool)).users.find(user => user.id === other.user.id)!.devices.some(device => device.id === 'idle'));
+      await database.pool.query('DELETE FROM users WHERE id=$1', [other.user.id]);
+      assert.equal((await usageReport(database.pool)).users, 1);
     });
   } finally {
     await database.close();

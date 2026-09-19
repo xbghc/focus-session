@@ -21,6 +21,9 @@ class SyncServer {
   failSnapshotContinuation = false;
   malformedPull = false;
   rejectPush: string | undefined;
+  /** A server older than the client has no usage endpoint at all. */
+  supportsUsage = true;
+  usage: Array<{ userId: string; body: { deviceId: string; platform: string; days: Record<string, Record<string, number>> } }> = [];
   afterSnapshotCreated: (() => void) | undefined;
   beforePullResponse: (() => void) | undefined;
   calls: RequestLog[] = [];
@@ -95,6 +98,10 @@ class SyncServer {
       }
       if (this.losePushAck) { this.losePushAck = false; throw new TypeError("Connection lost after server commit"); }
       return Response.json({ accepted, head: account.head });
+    }
+    if (url.pathname === "/v1/usage" && method === "POST" && this.supportsUsage) {
+      this.usage.push({ userId, body: JSON.parse(body) });
+      return Response.json({ accepted: 1, ignored: 0 });
     }
     return Response.json({ error: "Unexpected endpoint" }, { status: 404 });
   }
@@ -440,4 +447,53 @@ test("a reading material reports what of its own is still waiting, counting the 
 
   await engine.disconnectSync();
   assert.equal((await engine.materialSync(url)).state, "local");
+});
+
+test("button counts ride along a successful cycle without entering the sync log, and an old server costs nothing but the counts staying queued", async () => {
+  await freshServer();
+  const driver = device();
+  const usage = await import("../src/background/uiUsage.ts");
+  let scheduled = 0;
+  const { onLocalMutation } = await import("../src/sync/storage.ts");
+  onLocalMutation(() => { scheduled++; });
+  await usage.recordUiUsage(["articles.detail", "articles.detail", "not-an-event"]);
+  const stored = await driver.read();
+  assert.deepEqual(Object.values(stored.data[usage.KEY_UI_USAGE].days), [{ "articles.detail": 2 }]);
+  assert.equal(stored.outbox.length, 0, "counters are not sync records");
+  assert.equal(scheduled, 0, "a click must not schedule a sync cycle of its own");
+
+  const status = await engine.runSync();
+  assert.equal(status.error, null);
+  assert.equal(server.usage.length, 1);
+  assert.equal(server.usage[0]!.userId, "user-a");
+  assert.deepEqual(server.usage[0]!.body, { deviceId: stored.deviceId, platform: "extension", days: stored.data[usage.KEY_UI_USAGE].days });
+  const sent = server.calls.find(call => call.url.endsWith("/v1/usage"))!;
+  assert.equal(sent.headers.get("authorization"), `Bearer ${TOKEN_A}`);
+  assert.deepEqual((await usage.getUiUsage()).pending, []);
+  assert.equal(scheduled, 0, "neither does the upload's own bookkeeping");
+  await engine.runSync();
+  assert.equal(server.usage.length, 1, "nothing new, nothing sent");
+
+  // A server without the endpoint: the cycle still succeeds and the day stays queued for a later attempt.
+  await freshServer();
+  server.supportsUsage = false;
+  const old = device();
+  await usage.recordUiUsage(["speak"]);
+  const outcome = await engine.runSync();
+  assert.equal(outcome.error, null, "a missing usage endpoint is not a sync failure");
+  assert.ok(outcome.lastSuccess);
+  const kept = (await old.read()).data[usage.KEY_UI_USAGE];
+  assert.equal(kept.pending.length, 1);
+  assert.ok(kept.nextUploadAt > Date.now() + usage.UPLOAD_RETRY_MS, "asks a server that lacks it once a day, not once an hour");
+  await engine.runSync();
+  assert.equal(server.calls.filter(call => call.url.endsWith("/v1/usage")).length, 1);
+
+  // A cycle that fails never gets as far as uploading counts.
+  await freshServer();
+  server.offline = true;
+  device();
+  await usage.recordUiUsage(["speak"]);
+  assert.ok((await engine.runSync()).error);
+  assert.equal(server.calls.some(call => call.url.endsWith("/v1/usage")), false);
+  onLocalMutation(() => undefined);
 });

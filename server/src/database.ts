@@ -9,6 +9,7 @@ import type { StoredBlob } from './files.ts';
 import { validateManifest } from './manifest.ts';
 import type { ArchiveManifest } from './manifest.ts';
 import { migrate } from './schema.ts';
+import type { UsageUpload } from './usage.ts';
 
 export interface User { id: string; name: string }
 export interface Operation { opId: string; record: SyncRecord }
@@ -164,6 +165,24 @@ export class Database {
       await client.query('INSERT INTO devices(user_id,id) VALUES ($1,$2) ON CONFLICT(user_id,id) DO UPDATE SET last_seen_at=now()', [userId, deviceId]);
       return this.apply(client, userId, head, operations);
     });
+  }
+
+  /**
+   * Clients send a day's running totals, not increments, so a retry or a resend of the same day is
+   * harmless: the larger number wins. A device that clears its data comes back under a new device id
+   * and cannot drag an earlier total down.
+   */
+  async recordUsage(userId: string, upload: UsageUpload): Promise<number> {
+    await this.pool.query('INSERT INTO devices(user_id,id) VALUES ($1,$2) ON CONFLICT(user_id,id) DO UPDATE SET last_seen_at=now()', [userId, upload.deviceId]);
+    if (!upload.rows.length) return 0;
+    await this.pool.query(
+      `INSERT INTO ui_usage(user_id,device_id,platform,day,event,count)
+       SELECT $1,$2,$3,row.day,row.event,row.count FROM unnest($4::date[],$5::text[],$6::bigint[]) AS row(day,event,count)
+       ON CONFLICT (user_id,device_id,day,event) DO UPDATE SET count=EXCLUDED.count, platform=EXCLUDED.platform, updated_at=now()
+       WHERE ui_usage.count<EXCLUDED.count`,
+      [userId, upload.deviceId, upload.platform, upload.rows.map(row => row.day), upload.rows.map(row => row.event), upload.rows.map(row => row.count)],
+    );
+    return upload.rows.length;
   }
 
   async pull(userId: string, cursor: number, limit: number): Promise<PullResult> {
