@@ -268,11 +268,26 @@ async function cycle():Promise<SyncStatus> {
       if((error as {status?:number}).status===401)s.config.enabled=false;
     });
   }
-  // 界面埋点的计数搭这一轮的车传上去（background/uiUsage.ts）。排在整轮的成败之外：
-  // 它不是同步记录，传不上去不算同步失败，服务器比客户端旧、没有这个接口也一样。
-  if(succeeded)await import("../background/uiUsage.ts").then(({uploadUiUsage})=>uploadUiUsage(
-    body=>request(config,"/v1/usage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),initial.deviceId)).catch(()=>undefined);
+  if(succeeded)void uploadCounts(config,initial.deviceId);
   return syncStatus();
+}
+/**
+ * 界面埋点的计数搭一轮成功的同步传上去（background/uiUsage.ts）。它不是同步记录，传不上去不算同步失败，
+ * 服务器比客户端旧、没有这个接口也一样。
+ *
+ * **不在周期里面，也没有人等它。**放在里面的话 `running` 要等它结束才清：网络差的时候这一个 POST 能挂满
+ * 25 秒的超时，这期间任何 runSync() 拿到的都是这个卡着的周期——包括打开文章前等的那一轮（syncBefore），
+ * 它会白等到上限，然后拿着旧位置去跳。计数晚几分钟到服务器无所谓，读位置晚不得。
+ */
+let counting=false;
+async function uploadCounts(config:SyncConfig,deviceId:string):Promise<void> {
+  if(counting)return;
+  counting=true;
+  try {
+    const {uploadUiUsage}=await import("../background/uiUsage.ts");
+    await uploadUiUsage(body=>request(config,"/v1/usage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),deviceId);
+  } catch { /* 见上：和同步的成败无关 */ }
+  finally { counting=false; }
 }
 export function runSync():Promise<SyncStatus> {
   if(running)return running;

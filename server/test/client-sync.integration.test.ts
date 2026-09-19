@@ -38,6 +38,12 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const articleId = "https://article.test/saved";
     const now = Date.UTC(2026, 8, 12, 9);
+    /*
+     * Switching the globally installed device while a cycle is still in flight hands that cycle the other
+     * device's state, and the next runSync() returns its promise instead of synchronizing the new device.
+     * configureSync leaves a 100 ms timer behind, so such a cycle can start on its own: let it finish first.
+     */
+    const use = async (driver: ReturnType<typeof memoryDriver>): Promise<void> => { await runSync().catch(() => undefined); installStorage(driver); };
     const desktop = memoryDriver();
     installStorage(desktop);
     await localStorage().set({
@@ -70,7 +76,7 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
     await syncRequest("/v1/archives", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(manifest) });
 
     const phone = memoryDriver();
-    installStorage(phone);
+    await use(phone);
     await configureSync(baseUrl, first.token, true);
     assert.equal((await runSync()).error, null);
     const downloaded = await phone.read();
@@ -93,14 +99,14 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
         { hash: "paragraph-two", index: 1, words: 100, firstSeenTs: now + 11_000, dwellMs: 400 },
       ],
     });
-    installStorage(desktop);
+    await use(desktop);
     await gradeStoredCard("saved-card", 2, now + 20_000);
     const desktopRead = await desktop.read();
     await localStorage().set({ [`p:${articleId}`]: [{ ...desktopRead.data[`p:${articleId}`][0], dwellMs: 800 }] });
     assert.equal((await runSync()).error, null);
-    installStorage(phone);
+    await use(phone);
     assert.equal((await runSync()).error, null);
-    installStorage(desktop);
+    await use(desktop);
     assert.equal((await runSync()).error, null);
     const left = await desktop.read(), right = await phone.read();
     assert.equal(left.data.reviewEvents.length, 2);
@@ -113,7 +119,7 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
     assert.equal(left.outbox.length + right.outbox.length, 0);
 
     const other = memoryDriver();
-    installStorage(other);
+    await use(other);
     await configureSync(baseUrl, isolated.token, true);
     assert.equal((await runSync()).error, null);
     assert.equal(Object.keys((await other.read()).data.archives).length, 0);
