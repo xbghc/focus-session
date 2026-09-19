@@ -1,5 +1,6 @@
 import type { PageState } from "../types.ts";
 import { normalizeUrl } from "../lib/url.ts";
+import { reasonOf } from "../lib/reason.ts";
 import type { TrackController } from "./track.ts";
 
 /*
@@ -85,7 +86,7 @@ export function createPageHost(begin: Begin): PageHost {
       (err: unknown) => {
         if (gen !== round) return;
         pending = null;
-        reason = `初始化失败：${String(err)}`;
+        reason = `初始化失败：${reasonOf(err)}`;
       },
     );
   };

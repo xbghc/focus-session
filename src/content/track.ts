@@ -19,6 +19,7 @@ import type {
 import { DEFAULT_SETTINGS, PORT_TRANSLATE } from "../types.ts";
 import { normalizeUrl, hostnameOf, isUrlExcluded } from "../lib/url.ts";
 import { isFinished } from "../lib/finish.ts";
+import { reasonOf } from "../lib/reason.ts";
 import { planRestore, type RestorePlan } from "../lib/position.ts";
 import { estimateReading, formatEstimate } from "../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, extractFromContainer, ParagraphTracker } from "./paragraphs.ts";
@@ -741,7 +742,7 @@ function onPort<R>(
       port = chrome.runtime.connect({ name: PORT_TRANSLATE });
     } catch (err) {
       // 扩展刚被重载时连不上，不该把页面搞崩
-      resolve(failed(`后台未就绪：${String(err)}`));
+      resolve(failed(`后台未就绪：${reasonOf(err)}`));
       return;
     }
 
@@ -856,7 +857,7 @@ function screenshotAction(getTranslator: () => SelectionTranslator, allowed: () 
           if (mine !== seq || !allowed() || !result) return;
           await translator.translateImage(result.png, result.rect);
         } catch (err) {
-          if (mine === seq && allowed()) translator.showCaptureError(String(err));
+          if (mine === seq && allowed()) translator.showCaptureError(reasonOf(err));
         }
       })();
     },

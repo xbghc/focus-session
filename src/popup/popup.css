@@ -32,6 +32,8 @@
  * 只能各自抄一份同样的数字（src/content/ 下）；App 的窗口底色在安卓的 colors.xml。改这里要一并改。
  */
 :root {
+  /* 不声明的话，暗色下勾选框、下拉列表、数字框的箭头和滚动条还是亮的——所有页面都引这份样式表，写一处就够 */
+  color-scheme: light dark;
   --bg: #efe9de;          /* 纸 */
   --card: #f6f0e7;        /* 卡片，比纸亮一点 */
   --fg: #3a342e;          /* 墨 */
@@ -90,6 +92,11 @@ body {
 .tab.is-active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
 .panel { padding: 12px; max-height: 460px; overflow-y: auto; }
+/* 概览的结论：正文字号、正文颜色，放在数字前面 */
+.insight { margin: 0 0 10px; font-size: 13px; line-height: 1.65; color: var(--fg-soft); }
+details.more { margin-top: 10px; font-family: var(--sans); }
+details.more > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+details.more[open] > summary { margin-bottom: 6px; }
 
 h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
 .muted { color: var(--muted); }
