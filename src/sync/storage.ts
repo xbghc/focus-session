@@ -126,6 +126,42 @@ export function repairOutbox(state: SyncState): number {
   if (repaired) projectRecords(state);
   return repaired;
 }
+/**
+ * 同一条记录排着的几次改动折成一条再发。
+ *
+ * 阅读位置几秒存一次、段落停留边读边涨；每次改动都单独排队的话，离线几天的设备连上后会把
+ * 同一条记录传上几百遍，服务器的变更日志和操作回执也永久多出这么多；从没开过同步的设备，
+ * 队列更是只涨不消。折叠用的就是 mergeRecord——本机的 records 和服务器都是拿它一条条并的，
+ * 所以「先并好再发」和「一条条发」落到服务器上是同一个结果。只留最后一条则不是：读完标记、
+ * 片段结束时间这类只增不减的字段会被后一条盖回去，本机和服务器就此分叉。
+ *
+ * 过不了校验的操作不参与折叠：后面还排着同一条记录的操作，它就作废（和 engine.ts 的 triage
+ * 同一条规则）；它排在最后，就原样留着等 triage 报给用户。折出来的内容变了，换新的 opId——
+ * 原来那条要是正在上传也不要紧，合并是幂等的，服务器再收一次折好的不会多出什么。
+ * keys 给了就只动这几条记录，不给就把整个队列过一遍。返回少了几条。
+ */
+export function foldOutbox(state: SyncState, keys?: Set<string>): number {
+  // 队列里的东西过不了校验，就不能指望它有 type 和 id
+  const keyOf = (op: SyncOperation): string => JSON.stringify([op.record?.type, op.record?.id]);
+  const valid = (record: unknown): boolean => { try { validateRecord(record); return true; } catch { return false; } };
+  const last = new Map<string, number>();
+  state.outbox.forEach((op, i) => { const key = keyOf(op); if (!keys || keys.has(key)) last.set(key, i); });
+  const slot = new Map<string, number>(), next: SyncOperation[] = [];
+  state.outbox.forEach((op, i) => {
+    const key = keyOf(op), final = last.get(key) === i;
+    // 不归这次管的，和独一条的，原样过：后者占绝大多数，省掉一次校验
+    if (!last.has(key) || (final && !slot.has(key))) { next.push(op); return; }
+    if (!valid(op.record)) { if (final) next.push(op); return; }
+    const at = slot.get(key);
+    if (at === undefined) { slot.set(key, next.length); next.push(op); return; }
+    const merged = mergeRecord(next[at]!.record, op.record);
+    if (valid(merged)) next[at] = { opId: crypto.randomUUID(), record: merged };
+    else next.push(op);
+  });
+  const removed = state.outbox.length - next.length;
+  state.outbox = next;
+  return removed;
+}
 function entries(data: Record<string, any>): Map<string, Entry> {
   const result = new Map<string, Entry>();
   const add = (type: RecordType,id: string,value: any,articleId?: string) => { const e = {type,id,value,articleId}; result.set(recordKey(e),e); };
@@ -168,6 +204,7 @@ export function trackChanges(state: SyncState, before: Record<string, any>, afte
     const key=recordKey({type:"article",id});
     if(!object(before.deletedArticles)[id]&&!prev.has(key)&&!next.has(key))prev.set(key,{type:"article",id,value:{id}});
   }
+  const queued = new Set<string>();
   const keys = [...new Set([...prev.keys(),...next.keys()])];
   keys.sort((a,b) => (next.get(a)?.type === "article" || prev.get(a)?.type === "article" ? -1:0) - (next.get(b)?.type === "article" || prev.get(b)?.type === "article" ? -1:0));
   for (const key of keys) {
@@ -199,8 +236,11 @@ export function trackChanges(state: SyncState, before: Record<string, any>, afte
       after.archivePendingRecords = {...object(after.archivePendingRecords),[e.id]:record};
     }
     // Archive metadata only publishes after its files have been uploaded.
-    if (e.type !== "archive" || record.deleted) state.outbox.push({opId:crypto.randomUUID(),record});
+    if (e.type !== "archive" || record.deleted) { state.outbox.push({opId:crypto.randomUUID(),record}); queued.add(key); }
   }
+  if (queued.size) foldOutbox(state,queued);
+  // 操作比记录还多，说明队列里压着折叠上线之前攒下的重复；没开同步的设备只有这儿能清
+  if (state.outbox.length > Object.keys(state.records).length) foldOutbox(state);
 }
 
 export function projectRecords(state: SyncState): void {
