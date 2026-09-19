@@ -3,6 +3,7 @@ import type { ExportBundle, ImportOutcome, LlmConfig, LlmLogBundle, LlmUsage, Se
 import { DEFAULT_LLM, DEFAULT_SETTINGS, MAX_AUTO_WORDS } from "../types.ts";
 import { saveTextFile } from "../lib/download.ts";
 import { SOURCE_LABEL, appLogLine, timingLine } from "../lib/llmStats.ts";
+import { summarizeUiUsage } from "../lib/uiUsage.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -288,9 +289,9 @@ const logSummary = $("log-summary");
 const logTiming = $("log-timing");
 const logApp = $("log-app");
 
-/** 提示里报的条数。五份都要数：只报失败的话，用户不知道翻译轨迹（带选中的文本）和抓取记录也一起带出去了。 */
+/** 提示里报的条数。六份都要数：只报失败的话，用户不知道翻译轨迹（带选中的文本）和抓取记录也一起带出去了。 */
 const counts = (b: LlmLogBundle): string =>
-  `${b.failures.length} 条失败 + ${b.timings.length} 条耗时 + ${b.translations.length} 条翻译轨迹 + ${b.fetches.length} 条抓取 + ${b.errors.length} 条错误`;
+  `${b.failures.length} 条失败 + ${b.timings.length} 条耗时 + ${b.translations.length} 条翻译轨迹 + ${b.fetches.length} 条抓取 + ${b.errors.length} 条错误 + ${Object.keys(b.usage.days).length} 天的按钮计数`;
 /** App 的设置页也要用它（分享日志），所以导出。 */
 export async function fetchLog(): Promise<LlmLogBundle> {
   return (await chrome.runtime.sendMessage({ type: "llm:log" })) as LlmLogBundle;
@@ -304,6 +305,31 @@ async function loadLog(): Promise<void> {
     : "还没有失败记录。";
   logTiming.textContent = timingLine(bundle.timings);
   logApp.textContent = appLogLine(bundle.fetches, bundle.errors);
+  renderUsage(bundle);
+}
+
+/**
+ * 按钮计数。表里的每个按钮都有一行，一次没点过的也列——要找的正是那些零。
+ * 结论行先说统计了多久：装上才三天的话满屏的零什么都说明不了。
+ */
+function renderUsage(bundle: LlmLogBundle): void {
+  const usage = summarizeUiUsage(bundle.usage, Date.now());
+  const unused = usage.rows.filter((row) => row.total === 0).length;
+  $("usage-summary").textContent = usage.since
+    ? `首页按钮使用统计：自 ${usage.since} 起，${usage.activeDays} 天有记录，${usage.rows.length} 项里 ${unused} 项一次没用过`
+    : "首页按钮使用统计：还没有记录，打开首页点几下就有了";
+  const body = $("usage-rows");
+  body.textContent = "";
+  for (const row of usage.rows) {
+    const tr = document.createElement("tr");
+    if (row.total === 0) tr.className = "never";
+    for (const text of [row.label, row.last7, row.last30, row.total]) {
+      const td = document.createElement("td");
+      td.textContent = String(text);
+      tr.append(td);
+    }
+    body.append(tr);
+  }
 }
 
 $("log-copy").addEventListener("click", async () => {

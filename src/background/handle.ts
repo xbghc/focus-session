@@ -22,6 +22,7 @@ import { dueCards, reviewStats } from "../lib/review.ts";
 import { handleAssist, streamAsk, streamTranslate, testConnection } from "./translate.ts";
 import { clearLlmLog, llmLogBundle } from "./llmLog.ts";
 import { recordTranslationTrace } from "./translationLog.ts";
+import { recordUiUsage } from "./uiUsage.ts";
 import {
   articleReviewState,
   articleReviewStats,
@@ -437,6 +438,9 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       return await llmLogBundle(chrome.runtime.getManifest().version);
     case "llm:log-clear":
       await clearLlmLog();
+      return { ok: true };
+    case "ui:track":
+      await recordUiUsage(Array.isArray(msg.events) ? msg.events : []);
       return { ok: true };
 
     default:

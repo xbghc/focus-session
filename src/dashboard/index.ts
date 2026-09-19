@@ -22,9 +22,38 @@ import { coarsePointer } from "../lib/pointer.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { BOOKS_KEY, parseChapterId, type Book } from "../books/types.ts";
 import { localStorage } from "../sync/storage.ts";
+import { createUiTracker, isUiEvent, type UiEvent } from "../lib/uiUsage.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const send = <T,>(msg: unknown): Promise<T> => chrome.runtime.sendMessage(msg) as Promise<T>;
+
+/* ==================== 埋点 ==================== */
+
+/*
+ * 记的是「哪个按钮被点了几次」，别的一概不记，见 lib/uiUsage.ts。
+ * 能点的东西挂一个 data-track，由下面这一个监听统一记：渲染出来的按钮每次重画都是新的，
+ * 逐个在回调里写 track() 的话，三十个回调里各多一行和它正事无关的代码。
+ * 不是「点一下」的（键盘评分、输入搜索词）和要看状态的（只记进入批量管理、只记确认后的删除）才直接调 track。
+ */
+const tracker = createUiTracker((events) => void send({ type: "ui:track", events }).catch(() => undefined));
+const track = (name: UiEvent): void => tracker.track(name);
+const tracked = <T extends HTMLElement>(node: T, name: UiEvent): T => { node.dataset["track"] = name; return node; };
+
+function trackClick(e: MouseEvent): void {
+  // 事件目标不一定是元素：派在 document 上的没有 closest
+  const target = e.target as Partial<Element> | null;
+  // 音标是 lib/speak.ts 画的，散在生词本和复习卡各处，按类名认
+  if (target?.closest?.(".ph")) track("speak");
+  const name = target?.closest?.<HTMLElement>("[data-track]")?.dataset["track"];
+  if (isUiEvent(name)) track(name);
+}
+// 捕获阶段记：回调里一重画，被点的那个节点就不在文档里了
+document.addEventListener("click", trackClick, true);
+// 中键在新标签页打开不触发 click。不记的话「点标题打开原文」在桌面上会被系统性地少算
+document.addEventListener("auxclick", (e) => { if (e.button === 1) trackClick(e); }, true);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") tracker.flush(); });
+window.addEventListener("pagehide", () => tracker.flush());
+track("page.open");
 
 /** 文本一律走 textContent 写入：标题和译文都来自网页/模型，绝不能拼进 innerHTML。 */
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -83,8 +112,10 @@ window.addEventListener("hashchange", () => {
 });
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>(".tab")) {
+  tracked(btn, `nav.${btn.dataset["tab"] as Pane}`);
   btn.addEventListener("click", () => show(btn.dataset["tab"] as Pane));
 }
+tracked($("to-options"), "nav.options");
 $("to-options").addEventListener("click", (e) => {
   e.preventDefault();
   void chrome.runtime.openOptionsPage();
@@ -106,8 +137,19 @@ type Classification = HistoryArticleDecision | { status: "pending" | "running" |
 const classifications = new Map<string, Classification>();
 let classificationRunning = false;
 let stopClassification = false;
+/**
+ * 按读完状态筛。三个并排的键而不是下拉框：下拉要点两下，而「只看没读完的」是这一页最常用的筛法。
+ * 状态放在变量里，不去读哪个键按着——列表重画得很勤，不该每画一次查一遍 DOM。
+ */
+type FinishFilter = "" | "reading" | "done";
+let finishFilter: FinishFilter = "";
+const searchBox = $("search-box");
+const searchToggle = $<HTMLButtonElement>("search-toggle");
+const searchInput = $<HTMLInputElement>("q-article");
 $("manage-articles").addEventListener("click", () => {
   managingArticles = !managingArticles;
+  // 进去才算一次：退出（「完成」）是同一个键，两下都记的话次数平白翻倍
+  if (managingArticles) track("articles.manage");
   if (!managingArticles) selectedArticles.clear();
   // 批量管理时卡片是用来勾的不是用来读的：详情在状态里收掉，而不是拿 CSS 藏——藏着的时候按钮还写着「收起」
   if (managingArticles && expandedArticles.size) { expandedArticles.clear(); renderArticles(); }
@@ -181,7 +223,7 @@ function renderMaterialDetail(a: Article): HTMLElement {
     for (const item of all ? items : items.slice(0, DETAIL_PREVIEW)) list.append(row(item));
     part.append(list);
     if (!all && items.length > DETAIL_PREVIEW) {
-      const more = el("button", "mini", `显示全部 ${items.length} 条`);
+      const more = tracked(el("button", "mini", `显示全部 ${items.length} 条`), "articles.detail.more");
       more.addEventListener("click", () => { showAll.add(`${a.id}:${key}`); renderArticles(); });
       part.append(more);
     }
@@ -244,8 +286,11 @@ async function fetchArticles(): Promise<void> {
 }
 
 function renderArticles(): void {
-  const q = $<HTMLInputElement>("q-article").value.trim().toLowerCase();
-  const filter = $<HTMLSelectElement>("finish-filter").value;
+  const q = searchInput.value.trim().toLowerCase();
+  // 有搜索词，框就得开着：框收着而筛选还在生效的话，列表少了一半都不知道为什么。
+  // 浏览器后退时会把输入框里的字填回来，那时候没人点过搜索键
+  if (q && !searchBox.classList.contains("open")) setSearchOpen(true);
+  const filter = finishFilter;
   /*
    * 书里的章不在这份列表里露面——它们在书架那一栏按书折成一行，
    * 否则一本四十节的书能把整页刷满。记录本身还是一章一条，只是不在这儿逐条摆出来。
@@ -265,6 +310,8 @@ function renderArticles(): void {
   const done = loose.filter((a) => a.finished).length;
   const chapters = articles.length - loose.length;
   $("article-summary").textContent = `共 ${loose.length} 篇，读完 ${done} 篇`
+    // 筛过之后说一声剩几篇：三个键和搜索框叠着用的时候，光看列表分不清是筛没了还是本来就没有
+    + (list.length !== loose.length ? ` · 显示 ${list.length} 篇` : "")
     + (chapters > 0 ? ` · 另有 ${chapters} 节在书架上` : "");
 
   const box = $("articles");
@@ -279,7 +326,7 @@ function renderArticles(): void {
     const row = el("div", "row1");
 
     const title = el("div", "title");
-    const link = el("a", undefined, a.title || a.url);
+    const link = tracked(el("a", undefined, a.title || a.url), "articles.open");
     link.href = a.url;
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -288,7 +335,7 @@ function renderArticles(): void {
     const ratio = a.trackedWords > 0 ? Math.min(1, a.wordsRead / a.trackedWords) : 0;
     const pill = el("span", `pill${a.finished ? " done" : ""}`, a.finished ? "读完" : `${Math.round(ratio * 100)}%`);
 
-    const toggle = el("button", "mini", a.finished ? "标记未读完" : "标记读完");
+    const toggle = tracked(el("button", "mini", a.finished ? "标记未读完" : "标记读完"), a.finished ? "articles.unfinish" : "articles.finish");
     toggle.addEventListener("click", async () => {
       toggle.disabled = true;
       try {
@@ -325,6 +372,8 @@ function renderArticles(): void {
     const open = expandedArticles.has(a.id) && !classifications.has(a.id);
     const more = el("button", "mini detail-toggle", open ? "收起" : "详情");
     more.hidden = classifications.has(a.id);
+    // 只记展开：收起是同一个键
+    if (!open) tracked(more, "articles.detail");
     more.setAttribute("aria-expanded", String(open));
     more.addEventListener("click", () => {
       if (expandedArticles.delete(a.id)) { renderArticles(); return; }
@@ -335,7 +384,7 @@ function renderArticles(): void {
     row.append(more);
     // 读完了才有回顾卡；没读完的文章连正文都未必存下来了
     if (a.finished) {
-      const rev = el("button", "mini", "回顾");
+      const rev = tracked(el("button", "mini", "回顾"), "articles.review");
       rev.addEventListener("click", () => void openArticleReview(a.id));
       row.append(rev);
     }
@@ -386,8 +435,63 @@ function renderArticles(): void {
   }
 }
 
-$("q-article").addEventListener("input", renderArticles);
-$("finish-filter").addEventListener("change", renderArticles);
+/* ---- 筛选与搜索 ---- */
+
+for (const btn of document.querySelectorAll<HTMLButtonElement>("#finish-filter button")) {
+  const value = (btn.dataset["filter"] ?? "") as FinishFilter;
+  tracked(btn, `articles.filter.${value || "all"}`);
+  btn.addEventListener("click", () => {
+    finishFilter = value;
+    for (const b of document.querySelectorAll<HTMLButtonElement>("#finish-filter button")) {
+      b.setAttribute("aria-pressed", String(b === btn));
+    }
+    renderArticles();
+  });
+}
+
+/** 每展开一次只记一回「输入了搜索词」：按键数没有意义，要知道的是展开之后到底搜没搜。 */
+let searchCounted = false;
+
+function setSearchOpen(open: boolean): void {
+  searchBox.classList.toggle("open", open);
+  searchInput.toggleAttribute("inert", !open);
+  searchToggle.setAttribute("aria-expanded", String(open));
+  const label = open ? "收起搜索" : "搜索文章";
+  searchToggle.setAttribute("aria-label", label);
+  searchToggle.title = label;
+}
+
+/** 收起来就把词清掉，理由见 renderArticles 开头。 */
+function closeSearch(): void {
+  const had = searchInput.value !== "";
+  searchInput.value = "";
+  searchCounted = false;
+  setSearchOpen(false);
+  if (had) renderArticles();
+}
+
+searchToggle.addEventListener("click", () => {
+  if (searchBox.classList.contains("open")) { closeSearch(); return; }
+  setSearchOpen(true);
+  track("articles.search.open");
+  searchInput.focus();
+});
+searchInput.addEventListener("input", () => {
+  if (!searchCounted && searchInput.value.trim()) { searchCounted = true; track("articles.search.query"); }
+  renderArticles();
+});
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  e.preventDefault();
+  closeSearch();
+  searchToggle.focus();
+});
+// 空着走开就自己收起来。焦点是落到搜索键上的不算——那一下交给键自己的 click 去收，
+// 这儿先收了的话 click 看到的是「收着」，会反手再打开
+searchBox.addEventListener("focusout", (e) => {
+  if (searchBox.contains(e.relatedTarget as Node | null)) return;
+  if (!searchInput.value.trim()) closeSearch();
+});
 
 function updateArticleSelection(): void {
   $("article-search").hidden = managingArticles;
@@ -451,6 +555,17 @@ async function classifySelected(ids: string[]): Promise<void> {
     }
   });
 }
+
+const TRACKED_IDS: Record<string, UiEvent> = {
+  "select-articles": "articles.select-all",
+  "delete-articles": "articles.delete",
+  "classify-articles": "articles.classify",
+  "select-nonarticles": "articles.classify.pick",
+  "retry-classification": "articles.classify.retry",
+  "stop-classification": "articles.classify.stop",
+  "suggest-blacklist": "articles.blacklist.suggest",
+};
+for (const [id, name] of Object.entries(TRACKED_IDS)) tracked($(id), name);
 
 $("classify-articles").addEventListener("click", () => void classifySelected([...selectedArticles]));
 $("stop-classification").addEventListener("click", () => { stopClassification = true; renderClassificationProgress(); });
@@ -521,6 +636,8 @@ $("suggest-blacklist").addEventListener("click", () => {
     apply.addEventListener("click", () => {
       const rules = choices.filter(c => c.input.checked).map(c => c.pattern);
       if (!rules.length) return;
+      // 一条没勾的那一下什么都没发生，不算采用
+      track("articles.blacklist.apply");
       apply.disabled = true;
       void articleAction(async () => {
         const settings = await send<Settings>({ type: "settings:get" });
@@ -581,7 +698,7 @@ function renderWords(): void {
       row.append(el("span", "pill done", "在复习"));
     } else {
       // 整句默认不排期，但用户可以手动捞进来
-      const add = el("button", "mini", "加入复习");
+      const add = tracked(el("button", "mini", "加入复习"), "words.enqueue");
       add.addEventListener("click", async () => {
         add.disabled = true;
         try {
@@ -612,6 +729,8 @@ function renderWords(): void {
       clearTimeout(armed);
       armed = null;
       del.disabled = true;
+      // 确认的那一下才算：头一下只是把键扳上，两下都记的话删一条算两次
+      track("words.delete");
       try {
         await send({ type: "snippet:delete", id: s.id });
         await loadWords();
@@ -629,7 +748,7 @@ function renderWords(): void {
     const sub = el("div", "sub");
     const meta = el("span");
     if (fillMeta(meta, { phonetic: s.phonetic, pos: s.pos, word: s.text })) sub.append(meta);
-    const from = el("a", undefined, s.articleTitle || hostnameOf(s.url));
+    const from = tracked(el("a", undefined, s.articleTitle || hostnameOf(s.url)), "words.source");
     from.href = s.url;
     from.target = "_blank";
     from.rel = "noreferrer";
@@ -662,8 +781,15 @@ function renderWords(): void {
   }
 }
 
-$("q-word").addEventListener("input", renderWords);
-$("kind-filter").addEventListener("change", renderWords);
+/** 从空到有字算一次搜索，清空之后再输才算下一次——和文章那边「每展开一次记一回」是同一个意思。 */
+let wordSearchCounted = false;
+$("q-word").addEventListener("input", () => {
+  const typed = $<HTMLInputElement>("q-word").value.trim() !== "";
+  if (typed && !wordSearchCounted) track("words.search");
+  wordSearchCounted = typed;
+  renderWords();
+});
+$("kind-filter").addEventListener("change", () => { track("words.kind"); renderWords(); });
 
 /* ==================== 复习 ==================== */
 
@@ -696,6 +822,7 @@ function setQueue(k: Queue, load = true): void {
 }
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>(".seg")) {
+  tracked(btn, `review.queue.${btn.dataset["queue"] as Queue}`);
   btn.addEventListener("click", () => setQueue(btn.dataset["queue"] as Queue));
 }
 
@@ -768,7 +895,7 @@ function renderReview(): void {
     wrap.append(face);
     const showBtn = el("button", "mini reveal", coarsePointer() ? "显示答案" : "显示答案（空格）");
     showBtn.style.marginTop = "14px";
-    showBtn.addEventListener("click", reveal);
+    showBtn.addEventListener("click", () => reveal());
     wrap.append(showBtn);
   } else {
     face.append(el("div", "answer", s?.translation ?? "（这条记录已被删除）"));
@@ -824,9 +951,12 @@ function gradeBar(item: ReviewCardView): HTMLElement {
  * 下一张卡一眼没看就被跳过去，而它的排期根本没动。
  */
 let grading = false;
-async function graded(work: () => Promise<void>): Promise<void> {
+async function graded(event: UiEvent, byKey: boolean, work: () => Promise<void>): Promise<void> {
   if (grading) return;
   grading = true;
+  // 记在这道闸后面：被挡掉的第二下不是一次评分
+  track(event);
+  if (byKey) track("review.by-key");
   const buttons = [...document.querySelectorAll<HTMLButtonElement>(".grades button")];
   for (const b of buttons) b.disabled = true;
   try { await work(); }
@@ -837,8 +967,8 @@ async function graded(work: () => Promise<void>): Promise<void> {
   } finally { grading = false; }
 }
 
-async function grade(item: ReviewCardView, g: 1 | 2 | 3 | 4): Promise<void> {
-  await graded(() => gradeWord(item, g));
+async function grade(item: ReviewCardView, g: 1 | 2 | 3 | 4, byKey = false): Promise<void> {
+  await graded("review.words.grade", byKey, () => gradeWord(item, g));
 }
 async function gradeWord(item: ReviewCardView, g: 1 | 2 | 3 | 4): Promise<void> {
   await send({ type: "review:grade", cardId: item.card.id, grade: g });
@@ -863,7 +993,7 @@ function assistBar(item: ReviewCardView): HTMLElement {
     { mode: "quiz", label: "考我一下" },
   ];
   for (const { mode, label } of modes) {
-    const btn = el("button", "mini", label);
+    const btn = tracked(el("button", "mini", label), `review.assist.${mode}`);
     btn.addEventListener("click", async () => {
       out.hidden = false;
       out.textContent = "正在问 MiniMax…";
@@ -892,7 +1022,10 @@ function assistBar(item: ReviewCardView): HTMLElement {
   return box;
 }
 
-function reveal(): void {
+/** byKey：这一下是空格按出来的。键盘和鼠标走的是同一条路，只在这儿分得开。 */
+function reveal(byKey = false): void {
+  track("review.words.reveal");
+  if (byKey) track("review.by-key");
   revealed = true;
   renderReview();
 }
@@ -908,7 +1041,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.code === "Space") {
     e.preventDefault();
-    if (!open) (onArticles ? revealArticle : reveal)();
+    if (!open) (onArticles ? revealArticle : reveal)(true);
     return;
   }
   if (!open) return;
@@ -917,8 +1050,8 @@ document.addEventListener("keydown", (e) => {
   const hit = GRADES.find((x) => x.key === e.key);
   if (!hit) return;
   e.preventDefault();
-  if (onArticles) void gradeArticle(item as ArticleReviewView, hit.g);
-  else void grade(item as ReviewCardView, hit.g);
+  if (onArticles) void gradeArticle(item as ArticleReviewView, hit.g, true);
+  else void grade(item as ReviewCardView, hit.g, true);
 });
 
 /* ==================== 文章回顾 ==================== */
@@ -1017,7 +1150,7 @@ function renderArticleReview(): void {
     wrap.append(face);
     const btn = el("button", "mini reveal", coarsePointer() ? "翻开看大纲" : "翻开看大纲（空格）");
     btn.style.marginTop = "14px";
-    btn.addEventListener("click", revealArticle);
+    btn.addEventListener("click", () => revealArticle());
     wrap.append(btn);
   } else {
     face.append(el("div", "lead", "这篇讲了什么"));
@@ -1030,7 +1163,9 @@ function renderArticleReview(): void {
   area.append(wrap);
 }
 
-function revealArticle(): void {
+function revealArticle(byKey = false): void {
+  track("review.articles.reveal");
+  if (byKey) track("review.by-key");
   aRevealed = true;
   renderArticleReview();
 }
@@ -1047,8 +1182,8 @@ function articleGradeBar(item: ArticleReviewView): HTMLElement {
   return bar;
 }
 
-async function gradeArticle(item: ArticleReviewView, g: 1 | 2 | 3 | 4): Promise<void> {
-  await graded(() => gradeArticleCard(item, g));
+async function gradeArticle(item: ArticleReviewView, g: 1 | 2 | 3 | 4, byKey = false): Promise<void> {
+  await graded("review.articles.grade", byKey, () => gradeArticleCard(item, g));
 }
 async function gradeArticleCard(item: ArticleReviewView, g: 1 | 2 | 3 | 4): Promise<void> {
   await send({ type: "article:review-grade", articleId: item.article.id, grade: g });
@@ -1067,10 +1202,10 @@ function articleTools(item: ArticleReviewView, has: boolean): HTMLElement {
   const out = el("div", "out");
   out.hidden = true;
 
-  const open = el("button", "mini", "打开原文");
+  const open = tracked(el("button", "mini", "打开原文"), "review.articles.source");
   open.addEventListener("click", () => window.open(item.article.url, "_blank", "noreferrer"));
 
-  const gen = el("button", "mini", has ? "重新生成" : "生成回顾材料");
+  const gen = tracked(el("button", "mini", has ? "重新生成" : "生成回顾材料"), "review.articles.generate");
   gen.addEventListener("click", async () => {
     out.hidden = false;
     out.textContent = "正在通读原文并整理…这一步要十几秒。";
