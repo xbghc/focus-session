@@ -468,16 +468,21 @@ test("button counts ride along a successful cycle without entering the sync log,
   assert.equal(stored.outbox.length, 0, "counters are not sync records");
   assert.equal(scheduled, 0, "a click must not schedule a sync cycle of its own");
 
+  // The upload is detached from the cycle (nothing waits for it), so the test has to.
+  const settled = async (done: () => boolean | Promise<boolean>): Promise<void> => { for (let i = 0; i < 200 && !await done(); i++) await new Promise(resolve => setTimeout(resolve, 5)); };
   const status = await engine.runSync();
   assert.equal(status.error, null);
+  await settled(() => server.usage.length === 1);
   assert.equal(server.usage.length, 1);
   assert.equal(server.usage[0]!.userId, "user-a");
   assert.deepEqual(server.usage[0]!.body, { deviceId: stored.deviceId, platform: "extension", days: stored.data[usage.KEY_UI_USAGE].days });
   const sent = server.calls.find(call => call.url.endsWith("/v1/usage"))!;
   assert.equal(sent.headers.get("authorization"), `Bearer ${TOKEN_A}`);
+  await settled(async () => (await usage.getUiUsage()).pending.length === 0);
   assert.deepEqual((await usage.getUiUsage()).pending, []);
   assert.equal(scheduled, 0, "neither does the upload's own bookkeeping");
   await engine.runSync();
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(server.usage.length, 1, "nothing new, nothing sent");
 
   // A server without the endpoint: the cycle still succeeds and the day stays queued for a later attempt.
@@ -488,10 +493,12 @@ test("button counts ride along a successful cycle without entering the sync log,
   const outcome = await engine.runSync();
   assert.equal(outcome.error, null, "a missing usage endpoint is not a sync failure");
   assert.ok(outcome.lastSuccess);
+  await settled(async () => (await old.read()).data[usage.KEY_UI_USAGE].nextUploadAt > 0);
   const kept = (await old.read()).data[usage.KEY_UI_USAGE];
   assert.equal(kept.pending.length, 1);
   assert.ok(kept.nextUploadAt > Date.now() + usage.UPLOAD_RETRY_MS, "asks a server that lacks it once a day, not once an hour");
   await engine.runSync();
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(server.calls.filter(call => call.url.endsWith("/v1/usage")).length, 1);
 
   // A cycle that fails never gets as far as uploading counts.
@@ -500,8 +507,34 @@ test("button counts ride along a successful cycle without entering the sync log,
   device();
   await usage.recordUiUsage(["speak"]);
   assert.ok((await engine.runSync()).error);
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(server.calls.some(call => call.url.endsWith("/v1/usage")), false);
   onLocalMutation(() => undefined);
+});
+
+test("a count upload that hangs does not hold the cycle open: the next synchronization is a fresh one", async () => {
+  await freshServer();
+  const stuck = device();
+  const usage = await import("../src/background/uiUsage.ts");
+  await usage.recordUiUsage(["speak"]);
+  let release: (() => void) | undefined;
+  const real = server.fetch.bind(server);
+  server.fetch = async (input, init) => {
+    if (String(input).endsWith("/v1/usage")) await new Promise<void>(resolve => { release = resolve; });
+    return real(input, init);
+  };
+  // The cycle reports success while the count upload is still waiting on the network...
+  assert.equal((await engine.runSync()).error, null);
+  for (let i = 0; i < 200 && !release; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(release, "the upload started");
+  // ...and opening an article now gets a synchronization of its own instead of that stuck promise.
+  await stuck.update(state => { state.lastSuccess = Date.now() - 60_000; });
+  const before = server.calls.filter(call => call.url.endsWith("/v1/info")).length;
+  const started = Date.now();
+  await engine.syncBefore(2_000);
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(server.calls.filter(call => call.url.endsWith("/v1/info")).length, before + 1);
+  release();
 });
 
 // ---- folding queued operations ----
