@@ -26,7 +26,7 @@ export function setupSettingsLayout(): void {
     "文章记录黑名单": "不记录这些页面，仍可翻译",
     "翻译黑名单": "不翻译这些页面，仍可记录",
     "数据": "导入、导出与清理记录",
-    "诊断日志": "查看调用耗时与错误记录",
+    "诊断日志": "调用耗时、错误记录与按钮使用统计",
     "更新": "版本信息与应用更新",
   };
   for (const fieldset of document.querySelectorAll<HTMLFieldSetElement>("body > fieldset")) {

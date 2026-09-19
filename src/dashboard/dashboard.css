@@ -220,8 +220,48 @@ button.mini {
 .article-controls { display: grid; grid-template-columns: minmax(0, 1fr) 104px; align-items: center; gap: 12px; margin-bottom: 18px; }
 .article-controls .article-search, .article-controls .article-actions { grid-area: 1 / 1; margin: 0; min-width: 0; opacity: 1; visibility: visible; transition: opacity 160ms ease, visibility 0s; }
 .article-controls .article-actions { border: 0; }
-.article-controls .article-search input[type="search"] { min-width: 100px; width: 100px; }
 .article-controls .article-search { gap: 8px; }
+/*
+ * 读完状态的筛选：三个并排的键，边框共用一条。按下的那个用「批量管理」按下时的同一种淡底——
+ * 同一行里两处「这个开着」不该是两种说法。不加粗：加粗会变宽，整排跟着晃。
+ */
+.filterbar { display: inline-flex; flex: none; }
+/* 字号和内边距照 button.mini 给：和右边的搜索键、「批量管理」站在同一行，三种高度各差两像素的话一眼就歪 */
+.filterbar button {
+  font-size: 11.5px; cursor: pointer; padding: 3px 10px; white-space: nowrap;
+  border: 1px solid var(--line); border-radius: 0; background: var(--bg); color: var(--muted);
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.filterbar button + button { margin-left: -1px; }
+.filterbar button:first-child { border-radius: 3px 0 0 3px; }
+.filterbar button:last-child { border-radius: 0 3px 3px 0; }
+/* 共用的那条边归按下的键：不抬一层的话右边那个键的灰边会盖在它上面 */
+.filterbar button[aria-pressed="true"] {
+  position: relative; z-index: 1; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+@media (hover: hover) { .filterbar button:hover { color: var(--accent); } }
+/*
+ * 搜索平时只是一个键，点了才在它左边展开——键自己不挪位置，再点一下就收。
+ * 收着的时候框还在文档里（要过渡就不能 display: none），靠 visibility 把它从 Tab 顺序里拿掉；
+ * 选择器特意写重一级：.toolbar input[type="search"] 在 app.css 的手机断点里还有一条给内边距的，
+ * 同级的话那条排在后面会赢，收着的框就剩一截二十像素的空白。
+ */
+/* 框和键之间的空隙挂在框上而不是用 gap：收着的时候框宽是零，gap 却还占六像素——360px 的屏上正好差这六像素折行 */
+.search-box { display: flex; align-items: center; margin-left: auto; min-width: 0; }
+.search-box input[type="search"] {
+  flex: none; min-width: 0; width: 200px; margin-right: 6px;
+  transition: width 160ms ease, opacity 160ms ease, padding 160ms ease, margin 160ms ease, visibility 0s;
+}
+.search-box:not(.open) input[type="search"] {
+  width: 0; margin-right: 0; padding-left: 0; padding-right: 0; border-left-width: 0; border-right-width: 0; opacity: 0; visibility: hidden;
+  transition: width 160ms ease, opacity 160ms ease, padding 160ms ease, margin 160ms ease, visibility 0s 160ms;
+}
+.search-box input[type="search"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#search-toggle { flex: none; display: inline-flex; align-items: center; padding: 4px 8px; }
+#search-toggle svg { display: block; }
+#search-toggle[aria-expanded="true"] { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); color: var(--accent); }
 .article-controls .article-search[hidden], .article-controls .article-actions[hidden] { display: flex; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 160ms ease, visibility 0s 160ms; }
 .article-controls #manage-articles { grid-area: 1 / 2; width: 104px; }
 .article-controls #manage-articles { transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
@@ -232,7 +272,8 @@ button.mini {
   .article-controls .article-search, .article-controls .article-actions,
   .article-controls .article-search[hidden], .article-controls .article-actions[hidden],
   .article-controls #manage-articles, .article-card .row1 > input[type="checkbox"],
-  .article-card .row1 > input[type="checkbox"][hidden] { transition: none; }
+  .article-card .row1 > input[type="checkbox"][hidden],
+  .filterbar button, .search-box input[type="search"], .search-box:not(.open) input[type="search"] { transition: none; }
 }
 .selection-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 #selection-count { margin-right: auto; white-space: nowrap; }
@@ -298,6 +339,17 @@ button:disabled { opacity: .4; cursor: default; }
 #articles { margin-top: 14px; }
 @media (max-width: 640px) {
   .article-controls { gap: 8px; }
+  /*
+   * 窄屏上一行放不下「三个键 + 展开的框」：框折到下一行占满，摘要再下一行。
+   * 展开时把 .search-box 这层壳拆掉（display: contents），框和键各自当工具栏的子项排——
+   * 这样只有框下去，搜索键留在第一行原地不动，不会点一下它就从手指底下跑掉。
+   */
+  .article-controls { align-items: start; }
+  #article-summary { order: 2; flex: 1 1 100%; }
+  .search-box, #search-toggle { align-self: stretch; }
+  #search-toggle { margin-left: auto; }
+  .search-box.open { display: contents; }
+  .search-box.open input[type="search"] { order: 1; flex: 1 1 100%; width: auto; margin-right: 0; }
   body.dash { padding-left: 14px; padding-right: 14px; }
   .article-actions { gap: 6px; }
   .article-card { padding: 12px; }

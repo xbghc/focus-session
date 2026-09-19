@@ -55,6 +55,11 @@ test("历史页选择筛选结果、建议经勾选采用、批量删除仅发�
   assert.deepEqual(requests.find(r => r.type === "articles:delete")!.articleIds, ["search"]);
   assert.equal(articles[0]!.id, "essay");
   assert.equal(doc.getElementById("selection-count")!.textContent, "已选 0 篇");
+  // 批量操作的每个键都有埋点；页面离开时一次交掉，也免得攒批的计时器拖着进程不退
+  dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+  const clicked = requests.filter(r => r.type === "ui:track").flatMap(r => (r as { events?: string[] }).events ?? []);
+  for (const name of ["articles.manage", "articles.select-all", "articles.classify", "articles.classify.pick", "articles.classify.retry",
+    "articles.blacklist.suggest", "articles.blacklist.apply", "articles.delete"]) assert.ok(clicked.includes(name), name);
   dom.window.close();
 });
 

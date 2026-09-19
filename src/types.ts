@@ -340,7 +340,9 @@ export type PopupToBg =
   | { type: "llm:usage" }
   /* ---- 诊断日志（设置页）---- */
   | { type: "llm:log" }
-  | { type: "llm:log-clear" };
+  | { type: "llm:log-clear" }
+  /** 界面埋点：首页攒几秒发一批。名字是 lib/uiUsage.ts 那张表里的，表外的后台不收。 */
+  | { type: "ui:track"; events: string[] };
 
 export type PopupToContent =
   | { type: "page:screenshot" }
@@ -776,8 +778,8 @@ export interface AppError {
  * "当时这台机器上都发生了什么"，分成三个文件只会让人少发过来两个。
  */
 export interface LlmLogBundle {
-  /** 3 起多了从用户操作到浮层渲染完成的 `translations`。 */
-  schema: 3;
+  /** 3 起多了从用户操作到浮层渲染完成的 `translations`；4 起多了界面埋点 `usage`。 */
+  schema: 4;
   exportedAt: number;
   /** 扩展版本，来自 manifest */
   version: string;
@@ -789,6 +791,8 @@ export interface LlmLogBundle {
   fetches: ReaderFetch[];
   /** 没被接住的运行时错误。同上，只有 App */
   errors: AppError[];
+  /** 首页各按钮按天的点击次数，只有次数。见 lib/uiUsage.ts */
+  usage: import("./lib/uiUsage.ts").UiUsageLog;
 }
 
 /* ==================== 流式翻译 ==================== */

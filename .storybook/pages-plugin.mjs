@@ -40,10 +40,12 @@ export async function compilePages() {
         const data = await readFile(resolve(root, 'node_modules/@fontsource/source-serif-4/files', font[1]));
         css = css.replace(font[0], `url(data:font/woff2;base64,${data.toString('base64')})`);
       }
-      html = html.replace(new RegExp(`<link[^>]*href="${file.replace('.', '\\.')}"[^>]*>`, 'g'), `<style>${css}</style>`);
+      // Replacer functions, not strings: a string replacement expands `$&` and friends, and inlined CSS or
+      // minified JS is free to contain them (esbuild names a class `$`, and `x instanceof $&&…` follows).
+      html = html.replace(new RegExp(`<link[^>]*href="${file.replace('.', '\\.')}"[^>]*>`, 'g'), () => `<style>${css}</style>`);
     }
     html = html.replace('<head>', '<head><base href="https://preview.invalid/" /><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; font-src data:; img-src data: blob:; connect-src \'none\'; form-action \'none\'" />');
-    result[name] = html.replace('</body>', `<!--PREVIEW_CONFIG-->${script(bundled.outputFiles[0].text)}</body>`);
+    result[name] = html.replace('</body>', () => `<!--PREVIEW_CONFIG-->${script(bundled.outputFiles[0].text)}</body>`);
   }
   return result;
 }

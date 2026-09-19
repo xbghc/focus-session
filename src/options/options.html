@@ -98,6 +98,12 @@
       .status-panel dd ul { margin: 0; padding-left: 1.2em; }
       .status-panel dd .note { display: block; margin-top: 2px; color: var(--muted); }
       .status-panel > p { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line-soft); }
+      /* 按钮计数：数字右对齐、等宽，一列扫下来才比得出大小；一次没点过的行压淡，它们是要找的「极少用到」，但不该抢在前面 */
+      .usage-table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 1.6; }
+      .usage-table th, .usage-table td { padding: 4px 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .usage-table th { color: var(--muted); font-weight: 400; border-bottom: 1px solid var(--line-soft); }
+      .usage-table th:first-child, .usage-table td:first-child { text-align: left; white-space: normal; width: 100%; }
+      .usage-table tr.never td { color: var(--muted); }
       #sync-feedback.error { color: var(--warn); }
 
       /*
@@ -431,6 +437,11 @@
         （编码是谁定的、有没有掉字节）和没被接住的运行时错误，各留最近 30 条。
         都不含 API Key，也不进上面的数据导出。
       </p>
+      <p class="muted small">
+        同一份里还有首页各按钮每天被点了几次，留 90 天——<strong>只有次数</strong>，没有点的是哪篇文章、
+        搜了什么词。用来决定界面上哪些东西该留在明面、哪些该收起来。和别的记录一样只存本机、不进同步，
+        想让开发者看到得自己把这份日志发过去。「清空日志」不清它：那几样查完一次问题就可以清，这一样要攒几个星期才看得出东西。
+      </p>
       <div class="row">
         <button id="log-copy">复制诊断日志</button>
         <button id="log-download">下载 JSON</button>
@@ -441,6 +452,13 @@
       <p id="log-summary" class="muted small"></p>
       <p id="log-timing" class="muted small"></p>
       <p id="log-app" class="muted small"></p>
+      <details id="usage-panel" class="status-panel">
+        <summary><span id="usage-summary">首页按钮使用统计</span></summary>
+        <table class="usage-table">
+          <thead><tr><th scope="col">按钮</th><th scope="col">近 7 天</th><th scope="col">近 30 天</th><th scope="col">90 天内</th></tr></thead>
+          <tbody id="usage-rows"></tbody>
+        </table>
+      </details>
     </fieldset>
 
     <script src="options.js"></script>

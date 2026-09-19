@@ -21,13 +21,19 @@
     <section id="pane-articles" class="pane">
       <div class="article-controls">
       <div id="article-search" class="toolbar article-search">
-        <input id="q-article" type="search" placeholder="搜索标题或域名" />
-        <select id="finish-filter">
-          <option value="">全部文章</option>
-          <option value="done">已读完</option>
-          <option value="reading">未读完</option>
-        </select>
+        <div id="finish-filter" class="filterbar" role="group" aria-label="按阅读状态筛选">
+          <button type="button" data-filter="" aria-pressed="true">全部</button>
+          <button type="button" data-filter="reading" aria-pressed="false">未读完</button>
+          <button type="button" data-filter="done" aria-pressed="false">已读完</button>
+        </div>
         <span id="article-summary" class="muted small"></span>
+        <!-- 搜索平时收成一个键：用得少，不该常年占着一整行。框在键的左边展开，键不挪位置，再点一下就收 -->
+        <div id="search-box" class="search-box">
+          <input id="q-article" type="search" placeholder="搜索标题或域名" aria-label="搜索标题或域名" autocomplete="off" inert />
+          <button id="search-toggle" type="button" class="mini" aria-label="搜索文章" title="搜索文章" aria-expanded="false" aria-controls="q-article">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+          </button>
+        </div>
       </div>
       <div id="article-actions" class="article-actions" hidden>
         <label class="selection-toggle" title="全选当前搜索和筛选结果"><input id="select-articles" type="checkbox" aria-label="全选当前结果" /> 全选</label>

@@ -5,6 +5,7 @@ import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./ap
 import { getLlmConfig } from "./vocab.ts";
 import { serialize } from "./store.ts";
 import { getTranslationTraces, KEY_TRANSLATION_TRACE } from "./translationLog.ts";
+import { getUiUsage } from "./uiUsage.ts";
 
 /**
  * LLM 调用失败的现场记录，给设置页的「诊断日志」用。
@@ -58,7 +59,7 @@ export async function recordLlmFailure(entry: LlmFailure): Promise<void> {
   });
 }
 
-/** 清空按钮清的是整份诊断日志，不只 LLM 那两份。 */
+/** 清空按钮清的是整份诊断日志，不只 LLM 那两份。界面埋点除外，理由见 uiUsage.ts。 */
 export async function clearLlmLog(): Promise<void> {
   // 一次删完：serialize 是同一条链，套着调用各日志的清理会死等。
   await serialize(() => local().remove([KEY_LLM_LOG, KEY_LLM_TIMING, KEY_READER_FETCH, KEY_APP_ERROR, KEY_TRANSLATION_TRACE]));
@@ -163,7 +164,7 @@ export async function recordFailure(err: unknown, config: LlmConfig, ctx: Failur
 export async function llmLogBundle(version: string): Promise<LlmLogBundle> {
   const llm = await getLlmConfig();
   return {
-    schema: 3,
+    schema: 4,
     exportedAt: Date.now(),
     version,
     llm: {
@@ -178,5 +179,6 @@ export async function llmLogBundle(version: string): Promise<LlmLogBundle> {
     translations: await getTranslationTraces(),
     fetches: await getFetchLog(),
     errors: await getAppErrors(),
+    usage: await getUiUsage(),
   };
 }

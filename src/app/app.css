@@ -28,7 +28,7 @@ html { -webkit-text-size-adjust: 100%; }
 /* app.css 只在 App 里加载，所以这条 body 不会波及扩展的页面（设置页的 body 没有 class） */
 body { -webkit-tap-highlight-color: transparent; }
 body.app .tab:active, body.app .seg:active, body.app .grades button:active,
-button.mini:active {
+body.app .filterbar button:active, button.mini:active {
   background: color-mix(in srgb, var(--line) 55%, transparent);
 }
 .addrow button:active { background: color-mix(in srgb, var(--accent) 82%, #000); }
@@ -107,6 +107,10 @@ button.mini:disabled, .iconbtn:disabled { opacity: 0.4; cursor: default; }
   .grades button small { font-size: 11px; }
   /* 输入框 16px 起，WebView 才不会在聚焦时把整页放大 */
   .toolbar input[type="search"], .toolbar select { font-size: 16px; padding: 9px 10px; }
+  /* 筛选键和搜索键同样按拇指给。左右收一点：360px 的屏上三个键、搜索键和「批量管理」要站得进一行 */
+  .filterbar button { font-size: 13px; padding: 9px 9px; }
+  #search-toggle { padding: 9px 13px; }
+  #search-toggle svg { width: 16px; height: 16px; }
   .addrow input { font-size: 16px; }
   .addrow button { font-size: 16px; padding: 10px 18px; }
 

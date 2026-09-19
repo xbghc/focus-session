@@ -243,7 +243,7 @@ test("导出包带版本与配置，不含 apiKey", async () => {
   await recordAppError(APP_ERROR);
   await recordTranslationTrace(TRACE);
   const b = await llmLogBundle("0.3.0");
-  assert.equal(b.schema, 3); // 2 起多了 timings、fetches、errors；3 起多了 translations
+  assert.equal(b.schema, 4); // 2 起多了 timings、fetches、errors；3 起多了 translations；4 起多了 usage
   assert.equal(b.version, "0.3.0");
   assert.equal(b.llm.model, "M-x");
   assert.equal(b.llm.apiKeySet, true);
@@ -253,6 +253,7 @@ test("导出包带版本与配置，不含 apiKey", async () => {
   assert.equal(b.fetches.length, 1);
   assert.equal(b.errors.length, 1);
   assert.equal(b.translations.length, 1); // 翻译链路轨迹也在同一份里
+  assert.deepEqual(b.usage, { since: null, days: {} }); // 没点过东西也有这一栏，形状不变
   assert.ok(!JSON.stringify(b).includes("secret-key"));
 });
 
