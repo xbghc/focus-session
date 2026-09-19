@@ -11,6 +11,7 @@ import { startTracking, type TrackController } from "../content/track.ts";
 import { formatEstimate } from "../lib/readingTime.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { hostnameOf, normalizeUrl } from "../lib/url.ts";
+import { reasonOf } from "../lib/reason.ts";
 import { decodeWith, hasBom, pickCharset } from "../lib/charset.ts";
 import { recordFetch } from "../background/appLog.ts";
 import { READER_PREFIX } from "../background/store.ts";
@@ -183,7 +184,12 @@ function renderMeta(url: string): void {
   const st = ctl?.state();
   const excluded = st?.translationExcluded === true;
   const here = $<HTMLButtonElement>("translate-here");
+  // 正常追踪着的文章翻译本来就开着，没有「本页启用」这回事：那时这个键永远按不动，摆着只会让人以为坏了
+  here.hidden = !st?.translateHere;
   here.disabled = st?.translateHere !== "available";
+  // 截和词要等追踪器起来才有东西可做；在那之前点了没反应，和坏了分不出来
+  $<HTMLButtonElement>("shot").disabled = !ctl || st?.screenshot !== "available";
+  $<HTMLButtonElement>("words").disabled = !ctl;
   here.title = st?.translateHere === "on"
     ? (excluded ? "本页已暂时开启划词翻译，下次打开回到黑名单" : "本页划词翻译已开启")
     : excluded ? "本站在翻译黑名单里：暂时开启本页划词翻译" : "启用本页划词翻译";
@@ -313,6 +319,7 @@ async function main(): Promise<void> {
   }
   let archiveError: unknown;
   let archived = false;
+  let refetchFailure = "";
   try {
     const saved = chapter ? null : await loadArchivedArticle(url);
     if (saved) {
@@ -337,13 +344,19 @@ async function main(): Promise<void> {
       cached = await fetchAndExtract(url);
       await localStorage().set({ [key]: cached });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      $("rtitle").textContent = hostnameOf(url);
-      showStatus(
-        inApp() ? `抓不到这一页：${msg}` : `抓不到这一页：${msg}（在普通浏览器里调试时跨域请求会被拦，得装进 App 里试）`,
-        () => location.reload(),
-      );
-      return;
+      const msg = reasonOf(err);
+      if (refresh && cached) {
+        // 「重新抓取」没抓到不该连原来那份也看不了：上次下载的还在库里，接着显示它，把失败写在文章顶上
+        refetchFailure = msg;
+      } else {
+        $("rtitle").textContent = hostnameOf(url);
+        showStatus(
+          inApp() ? `抓不到这一页：${msg}` : `抓不到这一页：${msg}（在普通浏览器里调试时跨域请求会被拦，得装进 App 里试）`,
+          // 不带 refresh=1 重来：带着它的话，有缓存也不会用
+          () => location.replace(readerUrl(url)),
+        );
+        return;
+      }
     }
   }
   if (!cached) return;
@@ -367,6 +380,15 @@ async function main(): Promise<void> {
   byline.append(el("span", undefined, new Date(cached.savedTs).toLocaleDateString("zh-CN")));
   // 洗过的 HTML，见 sanitize.ts；正文来自任意网站，这一步不能省
   box.innerHTML = "";
+  if (refetchFailure) {
+    const note = el("p", "notice", `重新抓取失败：${refetchFailure}。下面是上次下载的版本。`);
+    const again = el("button", "mini", "再试一次");
+    again.addEventListener("click", () => location.replace(readerUrl(url) + "&refresh=1"));
+    const dismiss = el("button", "mini", "知道了");
+    dismiss.addEventListener("click", () => note.remove());
+    note.append(el("br"), again, dismiss);
+    box.append(note);
+  }
   box.append(heading, byline);
   const body = el("div", "body");
   body.innerHTML = sanitizeArticle(cached.html, pageUrl, document, !!cached.archiveManifest || !!cached.book);
@@ -430,7 +452,12 @@ async function main(): Promise<void> {
     if (area === "local" && changes["snippets"]) void refreshCount();
   });
   $("words").addEventListener("click", async () => {
-    renderWords(await refreshCount());
+    try { renderWords(await refreshCount()); }
+    catch (err) {
+      const box = $("sheet-list");
+      box.textContent = "";
+      box.append(el("div", "empty", `读不出本文生词：${reasonOf(err)}。收起再点一次「词」重试。`));
+    }
     setSheet(true);
   });
   $("sheet-close").addEventListener("click", () => setSheet(false));

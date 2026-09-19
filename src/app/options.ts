@@ -1,7 +1,8 @@
 import "./boot.ts";
 import { setupSettingsLayout } from "./settingsLayout.ts";
-import { fetchLog } from "../options/form.ts";
-import { native } from "./native.ts";
+import { fetchLog, hasUnsavedChanges } from "../options/form.ts";
+import { hostHooks, native } from "./native.ts";
+import { reasonOf } from "../lib/reason.ts";
 import type { Update } from "../lib/update.ts";
 import {
   RELEASES_PAGE,
@@ -36,6 +37,14 @@ back.textContent = "‹ 返回";
 bar.append(back);
 document.body.prepend(bar);
 
+/*
+ * 带着没保存的修改离开要问一声。扩展里靠 beforeunload，WebView 不弹那个框，两条退路都得自己拦：
+ * 页面上的「‹ 返回」，和系统的返回键（宿主先来问 beforeBack，回 true 表示这一下我接了、别退）。
+ */
+const leaveAnyway = (): boolean => !hasUnsavedChanges() || confirm("有修改还没保存，离开就丢了。确定离开？");
+back.addEventListener("click", (e) => { if (!leaveAnyway()) e.preventDefault(); });
+hostHooks.beforeBack = () => !leaveAnyway();
+
 const bridge = native();
 const stamp = (): string => new Date().toISOString().slice(0, 10);
 
@@ -52,8 +61,17 @@ function addShare(afterId: string, label: string, filename: () => string, load: 
   btn.textContent = label;
   btn.addEventListener("click", () => {
     void (async () => {
-      const data = await load();
-      shareFile(filename(), "application/json", JSON.stringify(data, null, 2));
+      // 数据多的时候读出来要一会儿：按钮灰着，连点两下不会分享两份；读不出来就在按钮上说
+      btn.disabled = true;
+      try {
+        const data = await load();
+        shareFile(filename(), "application/json", JSON.stringify(data, null, 2));
+        btn.textContent = label;
+      } catch (err) {
+        btn.textContent = `没读出来：${reasonOf(err)}`;
+      } finally {
+        btn.disabled = false;
+      }
     })();
   });
   anchor.after(btn);

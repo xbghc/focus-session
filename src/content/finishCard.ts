@@ -14,7 +14,8 @@ const CSS = `
 :host { all: initial; }
 .card {
   position: fixed;
-  right: 20px;
+  /* 横屏时刘海在右边：和底边一样让开安全区 */
+  right: calc(20px + max(env(safe-area-inset-right), var(--inset-right, 0px)));
   /* Android 15+ 把窗口铺满整块屏，离底 20px 正落在手势条底下。扩展里两个来源都是 0 */
   bottom: calc(20px + max(env(safe-area-inset-bottom), var(--inset-bottom, 0px)));
   z-index: 2147483646; /* 让翻译浮层压在上面：那个是当下的操作，这个只是常驻入口 */
@@ -52,23 +53,30 @@ button {
   padding: 5px 11px;
   transition: color 120ms, border-color 120ms;
 }
-button:hover { color: #9c4d14; border-color: #9c4d14; }
+/* 触屏上点过之后 :hover 会一直挂着，所以只给真有悬停的设备；手指用 :active */
+@media (hover: hover) { button:hover { color: #9c4d14; border-color: #9c4d14; } }
+button:active { color: #9c4d14; border-color: #9c4d14; }
+@media (pointer: coarse) { button { padding: 11px 14px; } }
 .close {
   padding: 5px 8px;
   border-color: transparent;
   background: transparent;
-  color: #8f8475;
+  color: #6c6254;
   font-size: 15px;
   line-height: 1;
 }
-.close:hover { color: #574e44; border-color: transparent; background: transparent; }
+@media (hover: hover) { .close:hover { color: #574e44; border-color: transparent; background: transparent; } }
+.close:active { color: #574e44; border-color: transparent; background: transparent; }
+@media (pointer: coarse) { .close { padding: 11px 13px; } }
 @media (prefers-color-scheme: dark) {
   .card { background: #342f2c; color: #d6cec3; border-color: #423e38; border-left-color: #e18d5a; }
   .sub { color: #a39889; }
   button { background: #2b2724; color: #b7aea0; border-color: #4c4741; }
-  button:hover { background: #423e38; color: #e18d5a; border-color: #e18d5a; }
+  button:active { background: #423e38; color: #e18d5a; border-color: #e18d5a; }
+  @media (hover: hover) { button:hover { background: #423e38; color: #e18d5a; border-color: #e18d5a; } }
   .close { background: transparent; border-color: transparent; }
-  .close:hover { background: transparent; border-color: transparent; color: #d6cec3; }
+  .close:active { background: transparent; border-color: transparent; color: #d6cec3; }
+  @media (hover: hover) { .close:hover { background: transparent; border-color: transparent; color: #d6cec3; } }
 }
 `;
 

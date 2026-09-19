@@ -18,6 +18,7 @@ import { formatDuration } from "../lib/stats.ts";
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
 import { reasonOf as reason } from "../lib/reason.ts";
+import { coarsePointer } from "../lib/pointer.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { BOOKS_KEY, parseChapterId, type Book } from "../books/types.ts";
 import { localStorage } from "../sync/storage.ts";
@@ -765,7 +766,7 @@ function renderReview(): void {
   if (!revealed) {
     face.append(el("div", "note", `出现在 ${item.articleCount} 篇文章 · 复习 ${item.card.reps} 次`));
     wrap.append(face);
-    const showBtn = el("button", "mini", "显示答案（空格）");
+    const showBtn = el("button", "mini reveal", coarsePointer() ? "显示答案" : "显示答案（空格）");
     showBtn.style.marginTop = "14px";
     showBtn.addEventListener("click", reveal);
     wrap.append(showBtn);
@@ -810,7 +811,8 @@ function gradeBar(item: ReviewCardView): HTMLElement {
   const bar = el("div", "grades");
   for (const { g, label, key } of GRADES) {
     const btn = el("button");
-    btn.append(document.createTextNode(label), el("small", undefined, key));
+    // 键位提示只给有键盘的：手机上那个小数字按不了，徒增一行字
+    btn.append(document.createTextNode(label), ...(coarsePointer() ? [] : [el("small", undefined, key)]));
     btn.addEventListener("click", () => void grade(item, g));
     bar.append(btn);
   }
@@ -1013,7 +1015,7 @@ function renderArticleReview(): void {
       face.append(el("div", "note", "这篇没生成回想问题，直接看大纲吧。"));
     }
     wrap.append(face);
-    const btn = el("button", "mini", "翻开看大纲（空格）");
+    const btn = el("button", "mini reveal", coarsePointer() ? "翻开看大纲" : "翻开看大纲（空格）");
     btn.style.marginTop = "14px";
     btn.addEventListener("click", revealArticle);
     wrap.append(btn);
@@ -1037,7 +1039,8 @@ function articleGradeBar(item: ArticleReviewView): HTMLElement {
   const bar = el("div", "grades");
   for (const { g, label, key } of GRADES) {
     const btn = el("button");
-    btn.append(document.createTextNode(label), el("small", undefined, key));
+    // 键位提示只给有键盘的：手机上那个小数字按不了，徒增一行字
+    btn.append(document.createTextNode(label), ...(coarsePointer() ? [] : [el("small", undefined, key)]));
     btn.addEventListener("click", () => void gradeArticle(item, g));
     bar.append(btn);
   }

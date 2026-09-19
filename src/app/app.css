@@ -55,6 +55,20 @@ body.app header { padding-top: calc(12px + var(--sa-top)); }
 body.app header h1 { font-size: 16px; }
 
 /* 手机：标签放到底部当导航栏，拇指够得着 */
+/*
+ * 阅读器不引 dashboard.css，.mini 的底子在这儿再给一份。
+ * 必须排在下面那段手机断点**之前**：媒体查询不加优先级，两条 button.mini 一样重，谁在后面谁赢——
+ * 它以前在文件末尾，手机上那条「按拇指的尺寸给」的放大规则一直是死的，全 App 的小按钮只有 29px 高。
+ */
+button.mini {
+  font-family: var(--sans); font-size: 12px; cursor: pointer;
+  padding: 5px 10px; border-radius: 3px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+}
+/* 颜色是写死的，浏览器给禁用按钮的那层灰盖不上来 */
+button.mini:disabled, .iconbtn:disabled { opacity: 0.4; cursor: default; }
+.iconbtn:disabled:active { background: none; }
+
 @media (max-width: 720px) {
   body.app header nav {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
@@ -75,6 +89,18 @@ body.app header h1 { font-size: 16px; }
    * 11.5px 的无衬线在手机上是注脚的注脚。
    */
   button.mini { font-size: 13px; padding: 9px 14px; }
+  /* 复习页最常按的那个键：整行宽、用主色，不再是一个 12px 的小灰键 */
+  button.mini.reveal { display: block; width: 100%; padding: 13px 14px; font-size: 15px; color: var(--card); background: var(--accent); border-color: var(--accent); }
+  /*
+   * 文章卡片第一行原来挤着勾选框、标题、进度、详情、回顾、标记读完：360px 的屏上标题只剩四五个字一行，
+   * 两篇文章分不出谁是谁。标题独占一行，按钮折到下一行靠右；没在批量管理时勾选框不占位。
+   */
+  .article-card .row1 { flex-wrap: wrap; row-gap: 8px; }
+  .article-card .row1 > .title { flex: 1 1 100%; order: -1; }
+  .article-card .row1 > .pill { margin-right: auto; }
+  .article-card .row1 > input[type="checkbox"][hidden] { display: none; }
+  .managing-articles .article-card .row1 > .title { flex: 1 1 0; order: 0; }
+  .article-card .sub, .material-detail { margin-left: 0; }
   .segbar .seg { padding: 12px 2px; margin-right: 24px; font-size: 15px; }
   .grades { gap: 6px; }
   .grades button { padding: 13px 2px; }
@@ -213,6 +239,14 @@ body.reader.immersive .article { padding-top: calc(14px + var(--rbar-h, 66px)); 
 .article .body ul, .article .body ol { padding-left: 1.4em; }
 .article .status { color: var(--muted); text-align: center; padding: 60px 10px; font-family: var(--sans); font-size: 14px; line-height: 2; }
 .article .status .mini { margin-top: 8px; }
+/* 卡片自己的报错行：写在出事的那张卡片上，不去盖它原有的信息 */
+.card-error { margin: 6px 0 0; color: var(--danger); font-family: var(--sans); }
+/* 文章顶上的一条提示（重新抓取失败之类）：不挡正文，看过可以关掉 */
+.article .notice {
+  margin: 0 0 18px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--card);
+  font: 13px/1.7 var(--sans); color: var(--warn);
+}
+.article .notice .mini { margin: 8px 8px 0 0; }
 
 /* 本文生词：从底部拉起的一张单子 */
 .sheet {
@@ -263,6 +297,8 @@ body.mobile-settings { padding-bottom: calc(130px + var(--sa-bottom)); }
 .mobile-settings .topnav a { display: inline-flex; align-items: center; min-height: 44px; }
 .mobile-settings .settings-privacy { margin: 10px 0 24px; color: var(--muted); font-size: 12px; }
 .mobile-settings .settings-privacy summary { padding: 8px 0; cursor: pointer; }
+.mobile-settings .settings-about { margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+.mobile-settings .settings-about > summary { padding: 8px 0; cursor: pointer; }
 .mobile-settings .settings-section { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card); min-width: 0; }
 .mobile-settings .settings-section > summary { position: relative; list-style: none; padding: 16px 38px 16px 16px; cursor: pointer; }
 .mobile-settings .settings-section > summary::-webkit-details-marker { display: none; }
@@ -288,11 +324,6 @@ body.mobile-settings .settings-savebar { position: fixed; z-index: 10; top: auto
 /* 保存条在手机上是两格，塞不下第三个按钮；改错了重进一次设置页就回去了 */
 .mobile-settings #revert { display: none; }
 
-button.mini {
-  font-family: var(--sans); font-size: 12px; cursor: pointer;
-  padding: 5px 10px; border-radius: 3px;
-  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
-}
 
 /* ==================== 书 ==================== */
 
