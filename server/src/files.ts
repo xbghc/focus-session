@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Readable } from 'node:stream';
 import { HttpError } from './errors.ts';
 import { contentHash } from './manifest.ts';
@@ -75,4 +75,23 @@ export class FileStore {
   }
 
   read(blob: StoredBlob): Readable { return createReadStream(this.path(blob.storageKey)); }
+
+  // Every regular file under the root as a root-relative key, including upload leftovers no storage key names.
+  async list(): Promise<{ key: string; size: number }[]> {
+    const result: { key: string; size: number }[] = [];
+    let entries;
+    try { entries = await readdir(this.root, { recursive: true, withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return result;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const absolute = join(entry.parentPath, entry.name);
+      // A temporary upload may be renamed or removed between the directory read and this stat.
+      try { result.push({ key: relative(this.root, absolute).split(sep).join('/'), size: (await stat(absolute)).size }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    return result;
+  }
 }

@@ -30,7 +30,7 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
     const first = await database.createUser("client integration");
     const isolated = await database.createUser("isolated integration");
     const config = readConfig({ DATABASE_URL: url.toString(), DATA_DIR: directory, HOST: "127.0.0.1" });
-    const service = createHttpServer(config, database, new FileStore(directory, config.maxBlobBytes));
+    const service = createHttpServer(config, database, new FileStore(directory, config.maxBlobBytes), () => {});
     http = service;
     await new Promise<void>((resolve, reject) => { service.once("error", reject); service.listen(0, "127.0.0.1", resolve); });
     const address = service.address();

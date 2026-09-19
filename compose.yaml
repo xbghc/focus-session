@@ -26,6 +26,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # The server writes one line per request; bound what Docker keeps.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       postgres:
         condition: service_healthy

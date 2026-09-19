@@ -11,8 +11,9 @@ import type { Database } from '../src/database.ts';
 import { FileStore } from '../src/files.ts';
 import type { StoredBlob } from '../src/files.ts';
 import { createHttpServer } from '../src/http.ts';
+import type { RequestLog } from '../src/http.ts';
 
-test('HTTP requires token, checks CORS and body limits, scopes blobs and serves inert content', async () => {
+test('HTTP requires token, checks CORS and body limits, scopes blobs, serves inert content and logs requests without secrets', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'focus-server-http-'));
   const userId = randomUUID();
   const otherId = randomUUID();
@@ -36,7 +37,8 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs and serves 
     publishArchive: async () => { throw new Error('unexpected'); },
   };
   const config = readConfig({ DATABASE_URL: 'postgres://unused', DATA_DIR: directory, CORS_ORIGINS: 'https://allowed.example', MAX_JSON_BYTES: '100', MAX_BLOB_BYTES: '100' });
-  const server = createHttpServer(config, fake, new FileStore(directory, config.maxBlobBytes));
+  const log: RequestLog[] = [];
+  const server = createHttpServer(config, fake, new FileStore(directory, config.maxBlobBytes), entry => { log.push(entry); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const authorization = `Bearer ${token}`;
@@ -55,6 +57,9 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs and serves 
     assert.equal((await fetch(`${base}/v1/sync/push`, { method: 'POST', headers: { authorization }, body: '{}' })).status, 415);
     assert.equal((await fetch(`${base}/v1/sync/push`, { method: 'POST', headers: { authorization, 'Content-Type': 'application/json' }, body: '{' })).status, 400);
     assert.equal((await fetch(`${base}/v1/sync/push`, { method: 'POST', headers: { authorization, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'x'.repeat(101) }) })).status, 413);
+    assert.equal((await fetch(`${base}/v1/sync/push`, { method: 'POST', headers: { authorization, 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: 'phone', operations: [] }) })).status, 200);
+    assert.equal((await fetch(`${base}/v1/sync/pull?cursor=7`, { headers: { authorization } })).status, 200);
+    assert.equal((await fetch(`${base}/.env?token=${token}`, { headers: { authorization } })).status, 404);
     const content = '<script>alert(1)</script><p>Hello</p>';
     const hash = createHash('sha256').update(content).digest('hex');
     const endpoint = `${base}/v1/blobs/${hash}`;
@@ -74,4 +79,21 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs and serves 
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
+  // Entries are written when a response closes, which may trail the client seeing it.
+  const entries = (route: string, status: number) => log.filter(entry => entry.route === route && entry.status === status);
+  assert.deepEqual(log.filter(entry => entry.route === '/health').map(entry => entry.status), [503]);
+  assert.equal(entries('/v1/info', 401)[0]!.error, 'UNAUTHORIZED');
+  assert.equal(entries('/v1/info', 401)[0]!.user, undefined);
+  assert.equal(entries('/v1/info', 200)[0]!.user, userId);
+  assert.equal(entries('/v1/info', 403)[0]!.error, 'ORIGIN_DENIED');
+  const pushed = entries('/v1/sync/push', 200)[0]!;
+  assert.deepEqual([pushed.device, pushed.ops, pushed.head, pushed.in], ['phone', 0, 1, 36]);
+  const pulled = entries('/v1/sync/pull', 200)[0]!;
+  assert.deepEqual([pulled.records, pulled.cursor, pulled.hasMore], [0, 7, false]);
+  assert.equal(entries('/v1/blobs/:hash', 201).length, 1);
+  assert.equal(entries('/v1/blobs/:hash', 404)[0]!.user, otherId);
+  assert.equal(entries('unknown', 404)[0]!.error, 'NOT_FOUND');
+  assert.ok(log.every(entry => Number.isInteger(entry.ms) && entry.ms >= 0 && !Number.isNaN(Date.parse(entry.ts))));
+  const written = JSON.stringify(log);
+  assert.ok(!written.includes(token) && !written.includes(otherToken) && !written.includes('.env'));
 });
