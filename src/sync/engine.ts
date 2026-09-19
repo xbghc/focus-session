@@ -1,4 +1,4 @@
-import { applyRemote, hasSyncStorage, onLocalMutation, syncDriver, notifyProjection } from "./storage.ts";
+import { applyRemote, hasSyncStorage, onLocalMutation, repairOutbox, syncDriver, notifyProjection } from "./storage.ts";
 import type { SyncConfig } from "./storage.ts";
 import { PROTOCOL_VERSION, validateRecord } from "./protocol.ts";
 import type { SyncOperation } from "./protocol.ts";
@@ -80,6 +80,19 @@ function triage(outbox:SyncOperation[],verdicts:Map<string,string|null>):{ready:
   });
   return {ready,blocked,superseded};
 }
+/** 按「类型：原因」归堆，各举一例。要修的是自己有毛病的那些，被文章连累的只报个数。 */
+function describe(stuck:Blocked[]):string {
+  const groups=new Map<string,{count:number;sample:string}>();let dependents=0;
+  for(const {op,reason} of stuck) {
+    if(reason===DEPENDENT) {dependents++;continue;}
+    const key=`${op.record?.type}：${reason}`,group=groups.get(key);
+    if(group)group.count++;else groups.set(key,{count:1,sample:String(op.record?.id).slice(0,160)});
+  }
+  const parts=[...groups].slice(0,3).map(([key,g])=>`${key} ×${g.count}（如 ${g.sample}）`);
+  if(groups.size>3)parts.push(`另有 ${groups.size-3} 类原因`);
+  if(dependents)parts.push(`${dependents} 项挂在这些文章名下`);
+  return parts.join("；");
+}
 export async function testSync(baseUrl:string,token?:string):Promise<{serverId:string;userId:string;protocol:number}> {
   const {config}=await syncDriver().read();const url=normalizeServerUrl(baseUrl);
   const secret=token?.trim() || (url===config.baseUrl?config.token:"");
@@ -153,6 +166,8 @@ async function cycle():Promise<SyncStatus> {
     await pull();
     const {flushArchives}=await import("../archive/background.ts");
     await flushArchives();
+    // 老版本留下的残缺文章先补齐再分拣；补不了的才轮到 triage 把它留下
+    if(await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");return repairOutbox(s);}))await notifyProjection();
     const verdicts=new Map<string,string|null>();let stuck:Blocked[]=[];
     for(let batch=0;batch<100;batch++) {
       await check();const state=await syncDriver().read();
@@ -175,9 +190,7 @@ async function cycle():Promise<SyncStatus> {
       await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!accepted.has(op.opId));});
     }
     await pull();await check();
-    // 报第一条自己有毛病的，不报被文章连累的那些：要修的是前者
-    const culprit=stuck.find(b=>b.reason!==DEPENDENT)??stuck[0];
-    const blocked=culprit?{count:stuck.length,reason:`${culprit.op.record?.type} ${String(culprit.op.record?.id).slice(0,160)}：${culprit.reason}`}:undefined;
+    const blocked=stuck.length?{count:stuck.length,reason:describe(stuck)}:undefined;
     await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
   } catch(error) {
     await syncDriver().update(s=>{

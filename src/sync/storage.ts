@@ -87,12 +87,51 @@ type Entry = { type: RecordType; id: string; value: any; articleId?: string };
  * 书的阅读记录因此是**本机的**：换一台设备要重新导入，进度不跟着走。
  */
 const syncable = (id: unknown): boolean => typeof id === "string" && /^https?:\/\//i.test(id);
+/**
+ * 把一篇文章补成同步协议认的形状。
+ *
+ * 本机的文章不都是 upsertArticleMeta 写出来的：导入合并只看 `id` 和 `lastSeenTs`
+ * （见 lib/merge.ts 的 isArticle），老导出文件里没有的字段就原样缺着进了库；界面上到处
+ * `?? 0` 看不出来，推上去服务器却不收。缺的按「没读过」补——和 upsertArticleMeta 给新文章的
+ * 默认值是同一套，不编造进度。已经齐全的记录原样返回，不多出一次改动。
+ */
+export function normalizeArticle(id: string, raw: unknown): Record<string, any> {
+  const v = { ...object(raw) };
+  const count = (n: unknown): number => typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
+  for (const key of ["totalWords","trackedWords","paragraphCount","firstSeenTs","lastSeenTs"]) v[key] = count(v[key]);
+  if (typeof v.title !== "string") v.title = "";
+  try { if (!/^https?:$/.test(new URL(String(v.url)).protocol)) v.url = id; } catch { v.url = id; }
+  v.finished = v.finished === true;
+  v.reachedBottom = v.reachedBottom === true;
+  return v;
+}
+/**
+ * 修队列里已经排着的坏文章。entries() 补的是以后的改动；已经入队的操作里是当时的原样，
+ * 而一篇很久没再打开的文章不会再产生新操作，不修就永远卡着。换一个 opId：内容变了，
+ * 不能让服务器当成同一个操作的重发。返回修了几条。
+ */
+export function repairOutbox(state: SyncState): number {
+  let repaired = 0;
+  state.outbox = state.outbox.map(op => {
+    const record = op.record;
+    if (record?.type !== "article" || record.deleted) return op;
+    try { validateRecord(record); return op; } catch { /* 下面试着补 */ }
+    const fixed = { ...record, value: normalizeArticle(record.id, record.value) };
+    try { validateRecord(fixed); } catch { return op; }
+    const key = recordKey(fixed), held = state.records[key];
+    if (held && !held.deleted && compareStamp(held.stamp, record.stamp) === 0) state.records[key] = { ...held, value: normalizeArticle(held.id, held.value) };
+    repaired++;
+    return { opId: crypto.randomUUID(), record: fixed };
+  });
+  if (repaired) projectRecords(state);
+  return repaired;
+}
 function entries(data: Record<string, any>): Map<string, Entry> {
   const result = new Map<string, Entry>();
   const add = (type: RecordType,id: string,value: any,articleId?: string) => { const e = {type,id,value,articleId}; result.set(recordKey(e),e); };
   for (const [id,a] of Object.entries(object(data.articles))) {
     if (!syncable(id)) continue;
-    const v = { ...object(a) };
+    const v = normalizeArticle(id, a);
     for (const key of ["wordsRead","readParagraphCount","sessionCount","totalMs","maxSessionMs","episodeCount","maxEpisodeMs","readingMs"]) delete v[key];
     add("article",id,v);
   }

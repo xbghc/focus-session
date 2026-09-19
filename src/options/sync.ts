@@ -35,7 +35,7 @@ export function setupSyncSettings(): void {
     // 其余记录照常同步，所以这不算「同步失败」；但这几条一直上不去，得让人看见是哪条、为什么
     blocked.hidden = status.blocked === 0;
     blocked.textContent = status.blocked > 0
-      ? `有 ${status.blocked} 项记录没通过校验，留在本机没有上传，其余照常同步。第一条：${status.blockedReason ?? "原因未知"}`
+      ? `有 ${status.blocked} 项记录没通过校验，留在本机没有上传，其余照常同步。${status.blockedReason ?? "原因未知"}`
       : "";
     identity.hidden = !status.userId;
     identity.textContent = status.userId ? `账号：${status.userId} · 服务器：${status.serverId ?? "—"}` : "";

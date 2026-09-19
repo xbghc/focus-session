@@ -314,11 +314,10 @@ const session = (id: string, articleId: string) => ({ id, articleId, startTs: 1_
 test("a record that fails validation stays queued with its article's dependents, and everything else still uploads", async () => {
   await freshServer();
   const driver = device();
-  const bad = "https://legacy.example/old-shape", good = "https://fine.example/post";
-  // A legacy article saved before `reachedBottom` existed: the shape older clients left on disk.
-  const { reachedBottom: _dropped, ...legacy } = article(bad);
+  const bad = "https://corrupt.example/wrong-identity", good = "https://fine.example/post";
+  // Stored under one address while claiming another: nothing can be filled in to make this whole.
   await localStorage().set({
-    articles: { [bad]: legacy, [good]: article(good) },
+    articles: { [bad]: article(bad, { id: "https://elsewhere.example/" }), [good]: article(good) },
     sessions: [session("s-bad", bad), session("s-good", good)],
     settings: { idleTimeoutMs: 45_000 },
   });
@@ -329,12 +328,12 @@ test("a record that fails validation stays queued with its article's dependents,
   assert.notEqual(status.lastSuccess, null);
   assert.equal(status.blocked, 2);
   assert.equal(status.pending, 2);
-  assert.match(status.blockedReason ?? "", /^article https:\/\/legacy\.example\/old-shape：Invalid article$/);
+  assert.equal(status.blockedReason, `article：Entity identity mismatch ×1（如 ${bad}）；1 项挂在这些文章名下`);
   const uploaded = [...server.account().records.values()].map(record => `${record.type} ${record.id}`).sort();
   assert.deepEqual(uploaded, [`article ${good}`, "session s-good", "setting idleTimeoutMs"]);
   assert.ok(queued > 2);
   // Never sent, so the server never had the chance to refuse the batch.
-  assert.equal(server.calls.some(call => call.body.includes("legacy.example")), false);
+  assert.equal(server.calls.some(call => call.body.includes("corrupt.example")), false);
   assert.deepEqual((await driver.read()).outbox.map(op => op.record.id).sort(), [bad, "s-bad"].sort());
 
   // Kept rather than dropped: once the record is whole, the next round carries it and its dependents.
@@ -351,9 +350,8 @@ test("a record that fails validation stays queued with its article's dependents,
 test("repeated edits to a record that cannot upload leave one queued operation, not one per edit", async () => {
   await freshServer();
   const driver = device();
-  const bad = "https://legacy.example/still-reading";
-  const { reachedBottom: _dropped, ...legacy } = article(bad);
-  for (const lastSeenTs of [2_000, 3_000, 4_000]) await localStorage().set({ articles: { [bad]: { ...legacy, lastSeenTs } } });
+  const bad = "https://corrupt.example/still-reading";
+  for (const lastSeenTs of [2_000, 3_000, 4_000]) await localStorage().set({ articles: { [bad]: article(bad, { id: "https://elsewhere.example/", lastSeenTs }) } });
   assert.equal((await driver.read()).outbox.length, 3);
   const status = await engine.runSync();
   assert.equal(status.blocked, 1);
@@ -371,4 +369,47 @@ test("a refusal the local check did not foresee reports the server's reason, not
   assert.match(status.error ?? "", /400/);
   assert.match(status.error ?? "", /INVALID_REQUEST · Invalid snippet/);
   assert.equal((await driver.read()).outbox.length, 1);
+});
+
+test("an article imported from an old export without its later fields is completed before it is queued", async () => {
+  await freshServer();
+  const driver = device();
+  const url = "https://legacy.example/imported";
+  // lib/merge.ts admits any article with an id and lastSeenTs, so this is what an old export leaves behind.
+  await localStorage().set({ articles: { [url]: { id: url, url, title: "Imported", totalWords: 900, firstSeenTs: 1_000, lastSeenTs: 2_000 } } });
+  const status = await engine.runSync();
+  assert.equal(status.error, null);
+  assert.equal(status.blocked, 0);
+  assert.equal((await driver.read()).outbox.length, 0);
+  const value = server.account().records.get(recordKey({ type: "article", id: url }))!.value as Record<string, unknown>;
+  assert.deepEqual([value.trackedWords, value.paragraphCount, value.finished, value.reachedBottom], [0, 0, false, false]);
+  assert.equal(value.totalWords, 900);
+});
+
+test("an incomplete article queued by an earlier client is repaired in place and released with its dependents", async () => {
+  await freshServer();
+  const driver = device();
+  const url = "https://legacy.example/already-queued";
+  const raw = { id: url, url, title: "Queued long ago", totalWords: 900, firstSeenTs: 1_000, lastSeenTs: 2_000 };
+  const stamp = { counter: 0, deviceId: "this-device" };
+  const stale: SyncRecord = { type: "article", id: url, value: raw, stamp, deleted: false, generation: "initial" };
+  const child: SyncRecord = { type: "session", id: "s-queued", value: session("s-queued", url), stamp, deleted: false, generation: "initial", articleId: url };
+  await driver.update(state => {
+    state.data.articles = { [url]: raw };
+    state.data.sessions = [session("s-queued", url)];
+    for (const record of [stale, child]) state.records[recordKey(record)] = record;
+    state.outbox = [{ opId: "stale-article-op", record: stale }, { opId: "child-op", record: child }];
+  });
+  assert.throws(() => validateRecord(stale), /Invalid article: trackedWords, paragraphCount, finished, reachedBottom/);
+
+  const status = await engine.runSync();
+  assert.equal(status.error, null);
+  assert.equal(status.blocked, 0);
+  assert.equal(status.pending, 0);
+  assert.ok(server.account().records.has(recordKey({ type: "session", id: "s-queued" })));
+  // The payload changed, so it must not travel under the operation id the old payload was queued with.
+  assert.equal(server.account().operations.has("stale-article-op"), false);
+  const local = (await driver.read()).data.articles[url];
+  assert.deepEqual([local.trackedWords, local.paragraphCount, local.finished, local.reachedBottom], [0, 0, false, false]);
+  assert.equal(local.title, "Queued long ago");
 });
