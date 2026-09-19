@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { freshState, memoryDriver, installStorage, localStorage, withDataLock, type StateDriver } from "../src/sync/storage.ts";
+import { foldOutbox, freshState, memoryDriver, installStorage, localStorage, withDataLock, type StateDriver } from "../src/sync/storage.ts";
 import { mergeRecord, recordKey, validateRecord, type SyncRecord, type SyncOperation } from "../src/sync/protocol.ts";
 
 const BASE = "https://sync.example.test";
@@ -26,6 +26,8 @@ class SyncServer {
   usage: Array<{ userId: string; body: { deviceId: string; platform: string; days: Record<string, Record<string, number>> } }> = [];
   afterSnapshotCreated: (() => void) | undefined;
   beforePullResponse: (() => void) | undefined;
+  /** Runs after the server has committed a push and before the client hears about it. */
+  beforePushResponse: (() => Promise<void>) | undefined;
   calls: RequestLog[] = [];
   accounts = new Map<string, Account>();
   snapshots = new Map<string, { userId: string; head: number; records: SyncRecord[] }>();
@@ -96,6 +98,9 @@ class SyncServer {
         if (!previous) { this.add(operation.record, userId); account.operations.set(operation.opId, serialized); }
         accepted.push(operation.opId);
       }
+      const hook = this.beforePushResponse;
+      this.beforePushResponse = undefined;
+      await hook?.();
       if (this.losePushAck) { this.losePushAck = false; throw new TypeError("Connection lost after server commit"); }
       return Response.json({ accepted, head: account.head });
     }
@@ -364,7 +369,8 @@ test("repeated edits to a record that cannot upload leave one queued operation, 
   const driver = device();
   const bad = "https://corrupt.example/still-reading";
   for (const lastSeenTs of [2_000, 3_000, 4_000]) await localStorage().set({ articles: { [bad]: article(bad, { id: "https://elsewhere.example/", lastSeenTs }) } });
-  assert.equal((await driver.read()).outbox.length, 3);
+  // Superseded attempts are dropped as they are queued, so a device that never syncs does not pile them up either.
+  assert.equal((await driver.read()).outbox.length, 1);
   const status = await engine.runSync();
   assert.equal(status.blocked, 1);
   const left = (await driver.read()).outbox;
@@ -497,3 +503,196 @@ test("button counts ride along a successful cycle without entering the sync log,
   assert.equal(server.calls.some(call => call.url.endsWith("/v1/usage")), false);
   onLocalMutation(() => undefined);
 });
+
+// ---- folding queued operations ----
+
+const foreign = (record: Omit<SyncRecord, "stamp" | "deleted" | "generation">, counter: number): SyncRecord =>
+  validateRecord({ ...record, stamp: { counter, deviceId: "other-device" }, deleted: false, generation: "initial" });
+const canonicalRecords = (records: Iterable<SyncRecord>): string[] => [...records].map(record => JSON.stringify(record, (_key, value) =>
+  value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : 1)) : value)).sort();
+/** Same seed, same edits: both runs below must start from identical devices, down to the device id inside every stamp. */
+function namedDevice(deviceId: string) {
+  const state = freshState();
+  state.deviceId = deviceId;
+  state.config = { enabled: true, baseUrl: BASE, token: TOKEN_A, userId: "user-a", serverId: "server-one" };
+  const driver = memoryDriver(state);
+  installStorage(driver);
+  return driver;
+}
+function random(seed: number): () => number {
+  return () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const URLS = ["https://fold.example/one", "https://fold.example/two"];
+/** One local edit through the same storage calls the app makes. Values go down as well as up: finished flags are cleared, sessions shrink, clocks run backwards. */
+async function randomEdit(next: () => number): Promise<void> {
+  const pick = <T>(items: T[]): T => items[Math.floor(next() * items.length)]!;
+  const data = await localStorage().get(null) as Record<string, any>;
+  const url = pick(URLS), articles = { ...data.articles } as Record<string, unknown>, step = Math.floor(next() * 9);
+  if (step === 0 && articles[url]) { delete articles[url]; await localStorage().set({ articles, deletedArticles: { ...data.deletedArticles, [url]: 1 } }); return; }
+  if (step <= 2 || !articles[url]) {
+    const deletedArticles = { ...data.deletedArticles }; delete deletedArticles[url];
+    articles[url] = article(url, { title: pick(["Draft", "Final", "Retitled"]), lastSeenTs: 1_000 + Math.floor(next() * 9_000), reachedBottom: next() < 0.5, finished: next() < 0.5 });
+    await localStorage().set({ articles, deletedArticles }); return;
+  }
+  if (step === 3) { await localStorage().set({ [`pos:${url}`]: { articleId: url, hash: pick(["h1", "h2", "h3"]), index: Math.floor(next() * 12), offset: next(), paragraphCount: 12, savedTs: Math.floor(next() * 9_000) } }); return; }
+  if (step === 4) {
+    const list = [...(data[`p:${url}`] ?? [])] as Array<Record<string, any>>, hash = pick(["h1", "h2", "h3"]), at = list.findIndex(item => item.hash === hash);
+    if (at < 0) list.push({ hash, index: list.length, words: 40, firstSeenTs: 1_000 + Math.floor(next() * 500), dwellMs: Math.floor(next() * 400) });
+    else list[at] = { ...list[at], dwellMs: list[at]!.dwellMs + Math.floor(next() * 400) };
+    await localStorage().set({ [`p:${url}`]: list }); return;
+  }
+  if (step === 5) {
+    const id = pick(["s1", "s2"]), sessions = (data.sessions ?? []).filter((item: { id: string }) => item.id !== id);
+    await localStorage().set({ sessions: [...sessions, { id, articleId: url, startTs: 1_000, endTs: 1_500 + Math.floor(next() * 4_000), wordsRead: Math.floor(next() * 90) }] }); return;
+  }
+  if (step === 6) { await localStorage().set({ settings: { ...data.settings, idleTimeoutMs: 30_000 + Math.floor(next() * 5) * 1_000, translateEnabled: next() < 0.5 } }); return; }
+  const id = pick(["n1", "n2"]), snippets = (data.snippets ?? []).filter((item: { id: string }) => item.id !== id);
+  if (step === 7 && snippets.length !== (data.snippets ?? []).length) { await localStorage().set({ snippets }); return; }
+  await localStorage().set({ snippets: [...snippets, { id, articleId: url, url, articleTitle: "An article", text: pick(["leak", "seep"]), kind: "word", context: "Every abstraction leaks.", translation: "泄漏", contextNote: pick(["", "暴露细节"]), createdTs: Math.floor(next() * 9_000), vocab: [] }] });
+}
+/** What another device left on the server before this one connected, overlapping the records edited below. */
+function seedServer(): void {
+  server.add(foreign({ type: "article", id: URLS[0]!, value: article(URLS[0]!, { finished: true, finishedTs: 8_000, lastSeenTs: 9_500 }) }, 5));
+  server.add(foreign({ type: "paragraph", id: JSON.stringify([URLS[0], "h1"]), articleId: URLS[0], value: { articleId: URLS[0], hash: "h1", index: 0, words: 40, firstSeenTs: 900, dwell: { "other-device": 700 } } }, 6));
+  server.add(foreign({ type: "position", id: URLS[1]!, articleId: URLS[1], value: { articleId: URLS[1], hash: "h2", index: 3, offset: 0.5, paragraphCount: 12, savedTs: 7_000 } }, 7));
+  server.add(foreign({ type: "setting", id: "idleTimeoutMs", value: 99_000 }, 8));
+}
+
+test("edits folded while offline leave the server and the device exactly where syncing after every edit would", async () => {
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const run = async (everyEdit: boolean) => {
+      await freshServer();
+      seedServer();
+      const driver = namedDevice("device-under-test");
+      assert.equal((await engine.runSync()).error, null);
+      const next = random(seed);
+      for (let edit = 0; edit < 70; edit++) {
+        await randomEdit(next);
+        if (everyEdit) assert.equal((await engine.runSync()).error, null);
+      }
+      const queued = (await driver.read()).outbox;
+      assert.equal(new Set(queued.map(op => recordKey(op.record))).size, queued.length, "at most one queued operation per record");
+      const final = await engine.runSync();
+      assert.deepEqual([final.error, final.pending, final.blocked], [null, 0, 0]);
+      const account = server.account(), state = await driver.read();
+      const pushed = server.calls.filter(call => call.url.endsWith("/v1/sync/push")).reduce((n, call) => n + JSON.parse(call.body).operations.length, 0);
+      return { server: canonicalRecords(account.records.values()), device: canonicalRecords(Object.values(state.records)), changes: account.changes.length, pushed };
+    };
+    const stepwise = await run(true), folded = await run(false);
+    assert.deepEqual(folded.server, stepwise.server, `seed ${seed}: server records`);
+    assert.deepEqual(folded.device, stepwise.device, `seed ${seed}: device records`);
+    assert.deepEqual(folded.device, folded.server, `seed ${seed}: the device converges on what the server holds`);
+    assert.ok(folded.pushed <= folded.server.length, `seed ${seed}: one upload per record at most, got ${folded.pushed}`);
+    assert.ok(folded.pushed < stepwise.pushed / 2 && folded.changes < stepwise.changes, `seed ${seed}: ${folded.pushed} uploads against ${stepwise.pushed}`);
+  }
+});
+
+test("an edit that lands while its record is uploading, or after a lost acknowledgement, is sent again under a new operation id", async () => {
+  await freshServer();
+  const driver = namedDevice("device-in-flight");
+  const url = URLS[0]!, key = recordKey({ type: "article", id: url });
+  await localStorage().set({ articles: { [url]: article(url, { finished: true, finishedTs: 2_000 }) } });
+  const first = (await driver.read()).outbox[0]!.opId;
+  // The server has committed the first version; the second is written before the client learns that.
+  server.beforePushResponse = () => localStorage().set({ articles: { [url]: article(url, { title: "Edited mid-flight", finished: false, lastSeenTs: 1_500 }) } });
+  const status = await engine.runSync();
+  assert.deepEqual([status.error, status.pending], [null, 0], "the same cycle goes round again for what arrived meanwhile");
+  const sent = server.calls.filter(call => call.url.endsWith("/v1/sync/push")).map(call => JSON.parse(call.body).operations as SyncOperation[]);
+  assert.deepEqual(sent.map(operations => operations.length), [1, 1]);
+  assert.equal(sent[0]![0]!.opId, first);
+  assert.notEqual(sent[1]![0]!.opId, first, "the folded operation never reuses an id the server may already hold");
+  const merged = server.account().records.get(key)!.value as Record<string, unknown>;
+  assert.deepEqual([merged.title, merged.finished, merged.lastSeenTs], ["Edited mid-flight", true, 2_000]);
+  assert.deepEqual(canonicalRecords([server.account().records.get(key)!]), canonicalRecords([(await driver.read()).records[key]!]));
+
+  server.losePushAck = true;
+  await localStorage().set({ articles: { [url]: article(url, { title: "Committed, never acknowledged", lastSeenTs: 3_000 }) } });
+  assert.match((await engine.runSync()).error ?? "", /Connection lost/);
+  await localStorage().set({ articles: { [url]: article(url, { title: "Edited after the lost acknowledgement", lastSeenTs: 2_500 }) } });
+  assert.equal((await driver.read()).outbox.length, 1);
+  await driver.update(state => { state.retryAt = 0; });
+  const recovered = await engine.runSync();
+  assert.deepEqual([recovered.error, recovered.pending], [null, 0]);
+  const settled = server.account().records.get(key)!.value as Record<string, unknown>;
+  assert.deepEqual([settled.title, settled.finished, settled.lastSeenTs], ["Edited after the lost acknowledgement", true, 3_000]);
+  assert.deepEqual(canonicalRecords(server.account().records.values()), canonicalRecords(Object.values((await driver.read()).records)));
+});
+
+test("folding keeps queue order and untouched ids, drops superseded invalid operations and leaves a trailing one for triage", async () => {
+  const url = URLS[0]!, other = URLS[1]!;
+  const local = (record: Record<string, unknown>, counter: number) => ({ generation: "initial", deleted: false, ...record, stamp: { counter, deviceId: "device-fold" } }) as unknown as SyncRecord;
+  const position = (savedTs: number, counter: number) => local({ type: "position", id: url, articleId: url, value: { articleId: url, hash: "h1", index: 1, offset: 0, paragraphCount: 12, savedTs } }, counter);
+  const state = freshState();
+  state.outbox = [
+    { opId: "article-1", record: local({ type: "article", id: url, value: article(url, { finished: true, finishedTs: 2_000 }) }, 1) },
+    { opId: "position-1", record: position(10, 2) },
+    { opId: "lone-setting", record: local({ type: "setting", id: "idleTimeoutMs", value: 45_000 }, 3) },
+    { opId: "broken-then-fixed", record: local({ type: "article", id: other, value: { id: "https://elsewhere.example/" } }, 4) },
+    { opId: "position-2", record: position(30, 5) },
+    { opId: "article-2", record: local({ type: "article", id: url, value: article(url, { title: "Later", lastSeenTs: 1_200 }) }, 6) },
+    { opId: "fixed", record: local({ type: "article", id: other, value: article(other) }, 7) },
+    { opId: "position-3", record: position(20, 8) },
+    { opId: "still-broken", record: local({ type: "session", id: "s-broken", articleId: url, value: { id: "s-broken", articleId: url, startTs: 9, endTs: 1, wordsRead: 0 } }, 9) },
+  ];
+  assert.equal(foldOutbox(state), 4);
+  assert.deepEqual(state.outbox.map(op => `${op.record.type}:${op.record.stamp.counter}`), ["article:6", "position:8", "setting:3", "article:7", "session:9"]);
+  const ids = state.outbox.map(op => op.opId);
+  assert.deepEqual([ids[2], ids[3], ids[4]], ["lone-setting", "fixed", "still-broken"], "an operation that was not combined keeps the id the server may already know");
+  assert.ok(!ids.slice(0, 2).some(id => /^(article|position)-/.test(id)));
+  const folded = state.outbox[0]!.record.value as Record<string, unknown>;
+  assert.deepEqual([folded.title, folded.finished, folded.finishedTs, folded.lastSeenTs], ["Later", true, 2_000, 2_000], "combined with mergeRecord, not replaced by the last edit");
+  assert.equal((state.outbox[1]!.record.value as { savedTs: number }).savedTs, 20);
+  assert.equal(foldOutbox(state), 0);
+  assert.deepEqual(state.outbox.map(op => op.opId), ids, "folding a folded queue changes nothing");
+
+  // Only the named records are touched when keys are given.
+  const partial = freshState();
+  partial.outbox = [{ opId: "a", record: position(1, 1) }, { opId: "b", record: position(2, 2) }, { opId: "c", record: local({ type: "setting", id: "idleTimeoutMs", value: 1 }, 3) }, { opId: "d", record: local({ type: "setting", id: "idleTimeoutMs", value: 2 }, 4) }];
+  assert.equal(foldOutbox(partial, new Set([recordKey({ type: "setting", id: "idleTimeoutMs" })])), 1);
+  assert.deepEqual(partial.outbox.map(op => op.opId).slice(0, 2), ["a", "b"]);
+});
+
+test("a queue bloated by an earlier client is folded on the next local edit even if this device never syncs", async () => {
+  await freshServer();
+  const url = URLS[0]!;
+  const state = freshState();
+  state.deviceId = "device-never-synced";
+  const driver = memoryDriver(state);
+  installStorage(driver);
+  await localStorage().set({ articles: { [url]: article(url) } });
+  // What the previous client left behind: one operation per save of the same reading position.
+  await driver.update(current => {
+    for (let save = 1; save <= 300; save++) {
+      const record = validateRecord({ type: "position", id: url, articleId: url, generation: "initial", deleted: false, stamp: { counter: ++current.counter, deviceId: current.deviceId },
+        value: { articleId: url, hash: "h1", index: save % 12, offset: 0, paragraphCount: 12, savedTs: save } });
+      current.records[recordKey(record)] = mergeRecord(current.records[recordKey(record)], record);
+      current.outbox.push({ opId: `legacy-${save}`, record });
+    }
+  });
+  assert.equal((await driver.read()).outbox.length, 301);
+  await localStorage().set({ settings: { idleTimeoutMs: 45_000 } });
+  const after = await driver.read();
+  assert.deepEqual(after.outbox.map(op => op.record.type), ["article", "position", "setting"]);
+  assert.deepEqual(after.outbox[1]!.record, after.records[recordKey({ type: "position", id: url })]);
+  for (let save = 0; save < 50; save++) await localStorage().set({ [`pos:${url}`]: { articleId: url, hash: "h2", index: 2, offset: 0, paragraphCount: 12, savedTs: 1_000 + save } });
+  assert.equal((await driver.read()).outbox.length, 3, "and it stays one operation per record from then on");
+  assert.equal(server.calls.length, 0);
+});
+
+test("a cycle with nothing to upload checks identity and downloads once; the closing download only follows an upload", async () => {
+  await freshServer();
+  device();
+  assert.equal((await engine.runSync()).error, null);
+  const paths = () => server.calls.map(call => `${call.method} ${new URL(call.url).pathname}`);
+  assert.deepEqual(paths(), ["GET /v1/info", "GET /v1/sync/snapshot", "GET /v1/sync/pull"]);
+  server.calls = [];
+  assert.equal((await engine.runSync()).error, null);
+  assert.deepEqual(paths(), ["GET /v1/info", "GET /v1/sync/pull"]);
+  server.calls = [];
+  await localStorage().set({ settings: { idleTimeoutMs: 45_000 } });
+  const status = await engine.runSync();
+  assert.deepEqual([status.error, status.pending], [null, 0]);
+  assert.deepEqual(paths(), ["GET /v1/info", "GET /v1/sync/pull", "POST /v1/sync/push", "GET /v1/sync/pull"]);
+  assert.equal((await syncDriverCursor()), server.account().head, "the closing download moves the cursor past this device's own upload");
+});
+async function syncDriverCursor(): Promise<number> { return (await (await import("../src/sync/storage.ts")).syncDriver().read()).cursor; }

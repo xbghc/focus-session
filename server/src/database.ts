@@ -56,7 +56,9 @@ export class Database {
   readonly pool: pg.Pool;
   serverId = '';
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 10_000, statement_timeout: 30_000 });
+    // Devices sync about once a minute. The default 10 second idle timeout made every cycle open a new
+    // connection and repeat the SCRAM handshake, which cost more than the queries it carried.
+    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 300_000, statement_timeout: 30_000 });
     this.pool.on('error', error => { console.error('Idle database connection failed:', error.message); });
   }
 

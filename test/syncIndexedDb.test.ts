@@ -112,8 +112,11 @@ test("IndexedDB serializes interleaved writes from two driver instances without 
     assert.deepEqual(await second.read(), result);
     assert.equal(result.cursor, 40);
     assert.equal(result.counter, initialCounter + 40);
-    assert.equal(result.outbox.length, initialOperations + 40);
-    assert.equal(new Set(result.outbox.map(operation => operation.opId)).size, initialOperations + 40);
+    // Forty edits to one record fold into the operation already queued for it; none of them is lost on the way.
+    assert.equal(result.outbox.length, initialOperations);
+    assert.notEqual(result.outbox[0]!.opId, firstInitial.outbox[0]!.opId);
+    assert.equal(result.outbox[0]!.record.stamp.counter, initialCounter + 40);
+    assert.deepEqual(result.outbox[0]!.record, result.records[recordKey({ type: "article", id: articleId })]);
     assert.deepEqual([...result.data.appliedEdits].sort((a: number, b: number) => a - b), Array.from({ length: 40 }, (_, index) => index));
   });
 });
@@ -134,7 +137,10 @@ test("IndexedDB aborts business data, versions, outbox and cursor together when 
     assert.deepEqual(await driver.read(), baseline);
     assert.deepEqual(await rawState(factory, name), baseline, "no portion of the failed update reached the object store");
     await changeTitle(driver, "Subsequent write succeeds");
-    assert.equal((await driver.read()).outbox.length, baseline.outbox.length + 1);
+    const queued = (await driver.read()).outbox;
+    assert.equal(queued.length, baseline.outbox.length, "the edit folds into the operation already queued for this article");
+    assert.notEqual(queued[0]!.opId, baseline.outbox[0]!.opId);
+    assert.equal((queued[0]!.record.value as { title: string }).title, "Subsequent write succeeds");
   });
 });
 

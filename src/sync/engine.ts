@@ -1,4 +1,4 @@
-import { applyRemote, hasSyncStorage, onLocalMutation, repairOutbox, syncDriver, notifyProjection } from "./storage.ts";
+import { applyRemote, foldOutbox, hasSyncStorage, onLocalMutation, repairOutbox, syncDriver, notifyProjection } from "./storage.ts";
 import type { SyncConfig } from "./storage.ts";
 import { PROTOCOL_VERSION, object, recordKey, validateRecord } from "./protocol.ts";
 import type { RecordType, SyncOperation, SyncRecord } from "./protocol.ts";
@@ -227,10 +227,12 @@ async function cycle():Promise<SyncStatus> {
       throw new Error("本轮下载已达批次上限，稍后继续");
     };
     await pull();
+    // 这一轮往服务器上放过东西，结尾才需要再下载一次；没放过，开头那次已经是最新的
+    let uploaded=Object.keys(object((await syncDriver().read()).data.archivePending)).length>0;
     const {flushArchives}=await import("../archive/background.ts");
     await flushArchives();
-    // 老版本留下的残缺文章先补齐再分拣；补不了的才轮到 triage 把它留下
-    if(await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");return repairOutbox(s);}))await notifyProjection();
+    // 老版本留下的残缺文章先补齐再分拣；补不了的才轮到 triage 把它留下。补齐之后同一条记录的几次改动折成一条再发
+    if(await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");const repaired=repairOutbox(s);foldOutbox(s);return repaired;}))await notifyProjection();
     const verdicts=new Map<string,string|null>();let stuck:Blocked[]=[];
     for(let batch=0;batch<100;batch++) {
       await check();const state=await syncDriver().read();
@@ -251,8 +253,10 @@ async function cycle():Promise<SyncStatus> {
       if(!Array.isArray(result.accepted)||!result.accepted.length||result.accepted.some((id:unknown)=>typeof id!=="string"||!ids.has(id)))throw new Error("无效的同步确认响应");
       await check();const accepted=new Set<string>(result.accepted);
       await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!accepted.has(op.opId));});
+      uploaded=true;
     }
-    await pull();await check();
+    if(uploaded)await pull();
+    await check();
     const blocked=stuck.length?{count:stuck.length,...describe(stuck)}:undefined;
     await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
     succeeded=true;
