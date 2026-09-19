@@ -7,6 +7,12 @@
  *
  * 目录只在宽屏上显示（断点在 options.html），窄了就是原来那一条。
  */
+/** 分区的名字：legend 里直接写着的字。旁边坐着的「i」按钮不算——App 的分区列表也靠它认分区。 */
+export function sectionName(fieldset: HTMLFieldSetElement): string {
+  const legend = fieldset.querySelector("legend");
+  return [...(legend?.childNodes ?? [])].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent ?? "").join("").trim();
+}
+
 export function setupSectionNav(): void {
   const sections = [...document.querySelectorAll<HTMLFieldSetElement>("body > fieldset[id]")];
   if (sections.length === 0) return;
@@ -24,7 +30,7 @@ export function setupSectionNav(): void {
     }
     const link = document.createElement("a");
     link.href = `#${section.id}`;
-    link.textContent = section.dataset.nav ?? section.querySelector("legend")?.textContent?.trim() ?? section.id;
+    link.textContent = section.dataset.nav ?? (sectionName(section) || section.id);
     nav.append(link);
     links.set(section, link);
   }

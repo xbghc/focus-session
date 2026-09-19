@@ -50,6 +50,59 @@
       .field label { font-size: 13px; }
 
       /*
+       * 标题旁的「i」和它的说明。说明是「这是什么」，读过一遍就够了，不该每次打开都占三行；
+       * 浮在分区里而不是顶层：App 那边没有这个按钮（legend 整个被换掉），说明照旧平铺，见 settingsLayout。
+       */
+      fieldset { position: relative; }
+      button.info {
+        width: 18px; height: 18px; margin-left: 7px; padding: 0; border-radius: 50%; vertical-align: 1px;
+        font: italic 600 12px/16px var(--serif); color: var(--muted); background: transparent;
+      }
+      button.info[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+      .info-pop {
+        position: absolute; z-index: 6; top: 16px; left: 18px; width: min(440px, calc(100% - 36px));
+        padding: 12px 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14); font-size: 12px; line-height: 1.65; color: var(--fg-soft);
+      }
+      .info-pop p { margin: 0 0 8px; }
+      .info-pop p:last-child { margin-bottom: 0; }
+
+      /*
+       * 状态块：一行结论常驻，细目收着。结论行要让人不展开也知道「好着没有」——
+       * 圆点的颜色、状态、最要紧的那一个数；账号、服务器这些只在排查时才看。
+       */
+      .status-panel { margin-top: 14px; border: 1px solid var(--line-soft); border-radius: 3px; background: var(--bg); }
+      .status-panel > summary {
+        display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; cursor: pointer; list-style: none;
+        font-size: 13px; line-height: 1.5;
+      }
+      .status-panel > summary::-webkit-details-marker { display: none; }
+      .status-panel > summary::after { content: "详情"; margin-left: auto; flex: none; font-size: 12px; color: var(--muted); }
+      .status-panel[open] > summary::after { content: "收起"; }
+      .status-panel .dot { flex: none; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .status-panel .dot[data-tone="ok"] { background: var(--ok); }
+      .status-panel .dot[data-tone="busy"] { background: var(--accent); }
+      .status-panel .dot[data-tone="warn"] { background: var(--warn); }
+      .status-panel .dot[data-tone="error"] { background: var(--danger); }
+      #sync-summary { min-width: 0; overflow-wrap: anywhere; }
+      #sync-summary .aside { color: var(--muted); font-size: 12px; }
+      #sync-summary .aside.warn { color: var(--warn); }
+      #sync-summary .aside.error { color: var(--danger); }
+      .status-panel dl {
+        display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 0;
+        padding: 10px 12px 12px; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 1.6;
+      }
+      .status-panel dt { color: var(--muted); }
+      .status-panel dd { margin: 0; color: var(--fg-soft); overflow-wrap: anywhere; }
+      .status-panel dd.mono { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+      .status-panel dd.warn { color: var(--warn); }
+      .status-panel dd.error { color: var(--danger); }
+      .status-panel dd ul { margin: 0; padding-left: 1.2em; }
+      .status-panel dd .note { display: block; margin-top: 2px; color: var(--muted); }
+      .status-panel > p { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line-soft); }
+      #sync-feedback.error { color: var(--warn); }
+
+      /*
        * 保存条。平时待在它管的那批分区后面；有没保存的修改时吸在视口边上——往上滚吸底，
        * 滚过了它（去看数据、日志）吸顶，总之改了东西就一直看得见。留白和边框平时就占着位置，
        * 吸上去的那一下版面才不会跳。
@@ -121,12 +174,12 @@
     </p>
 
     <fieldset id="sync-settings" data-nav-group="连接">
-      <legend>设备同步</legend>
-      <p class="muted small">
-        连接自己的服务器，在手机和电脑之间合并阅读记录、划词和复习数据。
-        首次启用会上传本机已有记录，并下载账号已有数据；离线时仍可正常使用。
-        阅读与翻译偏好随账号同步；模型 API Key 留在本机，同步 Token 不进入数据导出。
-      </p>
+      <legend>设备同步<button type="button" class="info" aria-label="关于设备同步" aria-expanded="false" aria-controls="sync-about">i</button></legend>
+      <div id="sync-about" class="info-pop" role="note" hidden>
+        <p>连接自己的服务器，在手机和电脑之间合并阅读记录、划词和复习数据。</p>
+        <p>首次启用会上传本机已有记录，并下载账号已有数据；离线时仍可正常使用。</p>
+        <p>阅读与翻译偏好随账号同步；模型 API Key 留在本机，同步 Token 不进入数据导出。</p>
+      </div>
       <div class="field">
         <label for="sync-url">后端地址</label>
         <input id="sync-url" type="text" class="wide" inputmode="url" autocomplete="off" spellcheck="false"
@@ -143,15 +196,20 @@
         <button id="sync-run" type="button" disabled>立即同步</button>
         <button id="sync-pause" type="button" hidden disabled>暂停同步</button>
         <button id="sync-disconnect" type="button" hidden disabled>断开连接</button>
+        <!-- 按钮按下去的回音，跟着按钮走；收在下面那块里的话，点了「测试连接」会像没反应 -->
+        <span id="sync-feedback" class="small" role="status" aria-live="polite"></span>
       </div>
-      <p id="sync-summary" class="small" role="status" aria-live="polite">正在读取同步设置…</p>
-      <p id="sync-identity" class="muted small" style="overflow-wrap: anywhere" hidden></p>
-      <p id="sync-blocked" class="small" style="overflow-wrap: anywhere; color: var(--warn)" role="status" hidden></p>
-      <p id="sync-feedback" class="small" role="status" aria-live="polite"></p>
-      <p class="muted small">
-        暂停保留连接配置，断开连接会移除 Token；两者都保留本机数据。
-        已绑定的记录只能同步到原账号；换账号前先导出备份，再使用下方「清除此设备记录」。
-      </p>
+      <details id="sync-details" class="status-panel">
+        <summary>
+          <span id="sync-dot" class="dot" aria-hidden="true"></span>
+          <span id="sync-summary" role="status" aria-live="polite">正在读取同步设置…</span>
+        </summary>
+        <dl id="sync-facts"></dl>
+        <p class="muted small">
+          暂停保留连接配置，断开连接会移除 Token；两者都保留本机数据。
+          已绑定的记录只能同步到原账号；换账号前先导出备份，再使用下方「清除此设备记录」。
+        </p>
+      </details>
     </fieldset>
 
     <fieldset id="sec-llm" data-nav="模型">

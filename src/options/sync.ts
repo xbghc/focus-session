@@ -10,8 +10,9 @@ export function setupSyncSettings(): void {
   const url = get<HTMLInputElement>("sync-url");
   const token = get<HTMLInputElement>("sync-token");
   const summary = get("sync-summary");
-  const identity = get("sync-identity");
-  const blocked = get("sync-blocked");
+  const dot = get("sync-dot");
+  const facts = get("sync-facts");
+  const details = get<HTMLDetailsElement>("sync-details");
   const feedback = get("sync-feedback");
   const save = get<HTMLButtonElement>("sync-save");
   const test = get<HTMLButtonElement>("sync-test");
@@ -23,22 +24,62 @@ export function setupSyncSettings(): void {
   let stopped = false;
   let refreshVersion = 0;
 
+  /** 今天的事只说几点，隔天的才带日期：结论行里放不下一整串年月日。 */
+  const briefTime = (ts: number): string => {
+    const at = new Date(ts);
+    return at.toDateString() === new Date().toDateString()
+      ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : at.toLocaleDateString();
+  };
+  const text = (tag: string, content: string, className = ""): HTMLElement => {
+    const el = document.createElement(tag);
+    el.textContent = content;
+    if (className) el.className = className;
+    return el;
+  };
+
+  /*
+   * 结论行只回答「好着没有」：状态，加上眼下最要紧的那一件事——出错了说错，有记录上不去说几项，
+   * 都没有才说上次什么时候同步的。其余的（账号、服务器、设备、逐类原因）只在排查时才看，收在下面。
+   */
   const render = (status: SyncStatus, fill = false): void => {
     current = status;
     if (fill) { url.value = status.baseUrl; token.value = ""; }
     token.placeholder = status.tokenSet ? "已设置，留空则保持不变" : "管理员签发的 Token";
     const state = status.running ? "正在同步…" : status.enabled ? "同步已启用" : status.tokenSet ? "同步已暂停" : "未连接";
-    const time = status.lastSuccess ? new Date(status.lastSuccess).toLocaleString() : "尚未成功同步";
-    const held = status.blocked > 0 ? `（其中 ${status.blocked} 项无法同步）` : "";
-    summary.textContent = `${state} · 待上传 ${status.pending} 项${held} · ${time}${status.error ? ` · ${status.error}` : ""}`;
-    summary.style.color = status.error ? "var(--warn)" : "";
-    // 其余记录照常同步，所以这不算「同步失败」；但这几条一直上不去，得让人看见是哪条、为什么
-    blocked.hidden = status.blocked === 0;
-    blocked.textContent = status.blocked > 0
-      ? `有 ${status.blocked} 项记录没通过校验，留在本机没有上传，其余照常同步。${status.blockedReason ?? "原因未知"}`
-      : "";
-    identity.hidden = !status.userId;
-    identity.textContent = status.userId ? `账号：${status.userId} · 服务器：${status.serverId ?? "—"}` : "";
+    const uploadable = status.pending - status.blocked;
+    const aside = status.error ? text("span", status.error, "aside error")
+      : status.blocked > 0 ? text("span", `${status.blocked} 项记录无法上传`, "aside warn")
+      : !status.tokenSet ? null
+      : text("span", [
+        uploadable > 0 ? `待上传 ${uploadable} 项` : "",
+        status.lastSuccess ? `上次同步 ${briefTime(status.lastSuccess)}` : "尚未成功同步",
+      ].filter(Boolean).join(" · "), "aside");
+    summary.replaceChildren(text("strong", state), ...(aside ? [document.createTextNode(" · "), aside] : []));
+    dot.dataset.tone = status.error ? "error" : status.blocked > 0 ? "warn" : status.running ? "busy" : status.enabled ? "ok" : "";
+
+    const rows: [string, HTMLElement][] = [];
+    const row = (label: string, value: string, className = ""): void => { rows.push([label, text("dd", value, className)]); };
+    if (status.error) row("错误", status.error, "error");
+    if (status.tokenSet) {
+      row("上次成功", status.lastSuccess ? new Date(status.lastSuccess).toLocaleString() : "尚未成功同步");
+      row("待上传", uploadable > 0 ? `${uploadable} 项，下一轮同步时上传` : "没有");
+    }
+    if (status.blocked > 0) {
+      // 其余记录照常同步，所以这不算「同步失败」；但这几条一直上不去，得让人看见是哪类、为什么
+      const dd = text("dd", "", "warn");
+      const list = document.createElement("ul");
+      for (const reason of status.blockedReasons) list.append(text("li", reason));
+      dd.append(`${status.blocked} 项没通过校验，留在本机没有上传：`, list, text("span", "其余记录照常同步。", "note"));
+      rows.push(["无法上传", dd]);
+    }
+    if (status.userId) {
+      row("账号", status.userId, "mono");
+      row("服务器", status.serverId ?? "—", "mono");
+    }
+    row("本设备", status.deviceId, "mono");
+    facts.replaceChildren(...rows.flatMap(([label, dd]) => [text("dt", label), dd]));
+
     save.textContent = status.enabled ? "保存连接设置" : "保存并启用同步";
     pause.hidden = !status.enabled;
     disconnect.hidden = !status.tokenSet;
@@ -76,7 +117,7 @@ export function setupSyncSettings(): void {
     busy = true;
     ++refreshVersion;
     if (current) render(current);
-    feedback.style.color = "";
+    feedback.classList.remove("error");
     feedback.textContent = pending;
     try {
       const reply = await chrome.runtime.sendMessage(message) as SyncReply;
@@ -86,7 +127,7 @@ export function setupSyncSettings(): void {
         ? ` · 账号：${reply.userId} · 服务器：${reply.serverId ?? "—"}` : "");
       await refresh(fill);
     } catch (error) {
-      feedback.style.color = "var(--warn)";
+      feedback.classList.add("error");
       feedback.textContent = error instanceof Error ? error.message : String(error);
       try { await refresh(); } catch { /* Keep the actionable error from this request. */ }
     } finally {
@@ -102,7 +143,7 @@ export function setupSyncSettings(): void {
         type === "sync:test" ? "正在测试连接…" : "正在验证并保存连接…",
         type === "sync:test" ? "连接成功，尚未修改配置" : "已保存，同步已启用", type === "sync:configure");
     } catch (error) {
-      feedback.style.color = "var(--warn)";
+      feedback.classList.add("error");
       feedback.textContent = error instanceof Error ? error.message : String(error);
     }
   };
@@ -114,7 +155,17 @@ export function setupSyncSettings(): void {
   });
   disconnect.addEventListener("click", () => void action({ type: "sync:disconnect" }, "正在断开…", "已断开连接，本机记录已保留", true));
 
-  void refresh(true).catch(error => { summary.textContent = error instanceof Error ? error.message : String(error); });
+  // 展开与否记在这台设备上：排查同步的人会反复刷新这一页，不该每次都重新点开
+  const OPEN_KEY = "fs:sync-details-open";
+  try { details.open = localStorage.getItem(OPEN_KEY) === "1"; } catch { /* 存不了就每次都收着 */ }
+  details.addEventListener("toggle", () => {
+    try { localStorage.setItem(OPEN_KEY, details.open ? "1" : "0"); } catch { /* 同上 */ }
+  });
+
+  void refresh(true).catch(error => {
+    summary.textContent = error instanceof Error ? error.message : String(error);
+    dot.dataset.tone = "error";
+  });
   const timer = setInterval(() => {
     if (!busy && !document.hidden) void refresh().catch(() => { /* A later refresh or an explicit operation can retry. */ });
   }, 5_000);
