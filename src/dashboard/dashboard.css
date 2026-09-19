@@ -268,6 +268,32 @@ button.mini {
 .blacklist-section summary { cursor: pointer; font-size: 12px; font-weight: 600; }
 .blacklist-section[open] summary { margin-bottom: 12px; }
 .blacklist-section .suggestion { padding: 10px; }
+/*
+ * 单篇阅读材料的详情。卡片上是合计，这里是合计背后的东西：哪几段专注、划过哪些词、同步上去了没有。
+ * 缩进和 .sub 对齐——勾选框那一列空着，三行字才站成一条线。
+ */
+.material-detail {
+  display: grid; gap: 14px; margin: 12px 0 0 24px; padding-top: 12px; border-top: 1px solid var(--line-soft);
+  font-family: var(--sans); font-size: 12.5px; line-height: 1.6;
+}
+.material-detail h4 { margin: 0 0 5px; font: 600 11.5px/1.4 var(--sans); letter-spacing: 0.04em; color: var(--muted); }
+.material-detail p { margin: 0; }
+.material-detail ul { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.material-detail li { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.material-detail .when { flex: none; color: var(--fg-soft); font-variant-numeric: tabular-nums; }
+.material-detail .meta { color: var(--muted); }
+.material-detail .word { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--serif); font-weight: 600; }
+.material-detail .gloss { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-soft); }
+.material-detail section > button.mini { margin-top: 7px; }
+.material-detail .sync-line { display: flex; align-items: baseline; gap: 8px; color: var(--fg-soft); }
+.material-detail .sync-reason { margin-left: 16px; color: var(--warn); overflow-wrap: anywhere; }
+.material-detail .dot { flex: none; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.material-detail .dot[data-tone="ok"] { background: var(--ok); }
+/* 等着上传的画成空心圈：和「上不去」的实心点同是暖色，只靠颜色分不开 */
+.material-detail .dot[data-tone="busy"] { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
+.material-detail .dot[data-tone="warn"] { background: var(--warn); }
+/* 批量管理和逐篇判别时卡片是用来勾选的，不是用来读的 */
+.managing-articles .material-detail, .article-card.has-classification .material-detail { display: none; }
 #articles { margin-top: 14px; }
 @media (max-width: 640px) {
   .article-controls { gap: 8px; }

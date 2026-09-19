@@ -9,9 +9,11 @@ import type {
   ArticleReviewView,
   ReviewCardView,
   ReviewStats,
+  Session,
   Snippet,
   SpeedSummary,
 } from "../types.ts";
+import type { MaterialSync } from "../sync/engine.ts";
 import { formatDuration } from "../lib/stats.ts";
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
@@ -94,6 +96,102 @@ $("manage-articles").addEventListener("click", () => {
 });
 /** 个人阅读速度的摘要，和文章列表一起取回，估每篇「还需多久」用。 */
 let speed: SpeedSummary | null = null;
+
+/*
+ * 单篇阅读材料的详情：卡片上只有「3 段专注」「共 12 分钟」这种合计，想知道是哪几段、
+ * 在这篇里划过哪些词、它同步上去了没有，以前无处可看。展开才去取，取回来的留着——
+ * 列表为了筛选、标记读完会整个重画，不能每画一次就重新问一遍。
+ */
+interface MaterialDetail { sessions: Session[]; snippets: Snippet[]; sync: MaterialSync | null }
+const expandedArticles = new Set<string>();
+const materialDetails = new Map<string, MaterialDetail | "loading" | { error: string }>();
+/** 长列表先给最近的几条；全摆出来的话，一篇读了三十回的文章能把下面的卡片全挤出屏幕。 */
+const DETAIL_PREVIEW = 8;
+const showAll = new Set<string>();
+
+async function loadMaterialDetail(id: string): Promise<void> {
+  materialDetails.set(id, "loading");
+  renderArticles();
+  try {
+    const [s, w, sync] = await Promise.all([
+      send<{ sessions: Session[] }>({ type: "article:sessions", articleId: id }),
+      send<{ snippets: Snippet[] }>({ type: "snippets:list", articleId: id }),
+      // 同步处境问不到不该连累前两样：专注时段和划词照样看得了
+      send<MaterialSync | { ok: false }>({ type: "sync:material", articleId: id }).catch(() => null),
+    ]);
+    materialDetails.set(id, {
+      sessions: [...(s.sessions ?? [])].sort((a, b) => b.startTs - a.startTs),
+      snippets: w.snippets ?? [],
+      sync: sync && "state" in sync ? sync : null,
+    });
+  } catch (err) {
+    materialDetails.set(id, { error: err instanceof Error ? err.message : String(err) });
+  }
+  renderArticles();
+}
+
+const clock = (ts: number): string => new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+const spellCounts = (counts: [string, number][]): string => counts.map(([label, n]) => `${n} 个${label}`).join("、");
+
+function renderMaterialDetail(a: Article): HTMLElement {
+  const box = el("div", "material-detail");
+  const detail = materialDetails.get(a.id);
+  if (!detail || detail === "loading") { box.append(el("p", "muted", "正在读取…")); return box; }
+  if ("error" in detail) {
+    const retry = el("button", "mini", "重试");
+    retry.addEventListener("click", () => void loadMaterialDetail(a.id));
+    box.append(el("p", "muted", `读取失败：${detail.error}`), retry);
+    return box;
+  }
+
+  /** 一节：标题带总数，超过预览条数时给一个「显示全部」。 */
+  const section = <T,>(key: string, heading: string, items: T[], empty: string, row: (item: T) => HTMLElement): void => {
+    const part = el("section");
+    part.append(el("h4", undefined, heading));
+    if (items.length === 0) { part.append(el("p", "muted", empty)); box.append(part); return; }
+    const all = showAll.has(`${a.id}:${key}`);
+    const list = el("ul");
+    for (const item of all ? items : items.slice(0, DETAIL_PREVIEW)) list.append(row(item));
+    part.append(list);
+    if (!all && items.length > DETAIL_PREVIEW) {
+      const more = el("button", "mini", `显示全部 ${items.length} 条`);
+      more.addEventListener("click", () => { showAll.add(`${a.id}:${key}`); renderArticles(); });
+      part.append(more);
+    }
+    box.append(part);
+  };
+
+  const total = detail.sessions.reduce((n, s) => n + s.endTs - s.startTs, 0);
+  section("sessions", `专注时段 · ${detail.sessions.length} 段${detail.sessions.length ? ` · 共 ${formatDuration(total)}` : ""}`,
+    detail.sessions, "还没有记下专注时段。", (s) => {
+      const li = el("li");
+      li.append(el("span", "when", `${fmtDate(s.startTs)} ${clock(s.startTs)}–${clock(s.endTs)}`),
+        el("span", "meta", `${formatDuration(s.endTs - s.startTs)}${s.wordsRead > 0 ? ` · 新读 ${s.wordsRead} 字` : " · 没有读到新内容"}`));
+      return li;
+    });
+  section("snippets", `划词 · ${detail.snippets.length} 条`, detail.snippets, "这篇里还没有划过词。", (w) => {
+    const li = el("li");
+    li.append(el("span", "word", w.text), el("span", "gloss", w.translation));
+    return li;
+  });
+
+  const sync = el("section");
+  sync.append(el("h4", undefined, "同步"));
+  const line = el("p", "sync-line");
+  const state = detail.sync?.state ?? "local";
+  const dot = el("span", "dot");
+  dot.dataset.tone = state === "synced" ? "ok" : state === "pending" ? "busy" : state === "blocked" ? "warn" : "";
+  const waiting = detail.sync?.waiting.length ? spellCounts(detail.sync.waiting) : "";
+  line.append(dot, el("span", undefined,
+    state === "synced" ? "已同步到服务器，名下的专注时段、段落和划词都在上面"
+      : state === "pending" ? `有改动等下一轮同步上传：${waiting}`
+      : state === "blocked" ? `无法上传，留在本机：${waiting}`
+      : "只存在这台设备上（没有启用同步，或这类材料不上传）"));
+  sync.append(line);
+  if (state === "blocked") for (const reason of detail.sync?.reasons ?? []) sync.append(el("p", "sync-reason", reason));
+  box.append(sync);
+  return box;
+}
 
 async function loadArticles(): Promise<void> {
   const res = await send<{ articles: Article[]; speed?: SpeedSummary | null }>({ type: "articles:list" });
@@ -178,6 +276,16 @@ function renderArticles(): void {
       updateArticleSelection();
     });
     row.append(select, title, pill);
+    const open = expandedArticles.has(a.id);
+    const more = el("button", "mini", open ? "收起" : "详情");
+    more.setAttribute("aria-expanded", String(open));
+    more.addEventListener("click", () => {
+      if (expandedArticles.delete(a.id)) { renderArticles(); return; }
+      expandedArticles.add(a.id);
+      // 每次展开都重新取：同步处境和专注时段是会变的，留着的那份只为扛住列表重画
+      void loadMaterialDetail(a.id);
+    });
+    row.append(more);
     // 读完了才有回顾卡；没读完的文章连正文都未必存下来了
     if (a.finished) {
       const rev = el("button", "mini", "回顾");
@@ -225,6 +333,7 @@ function renderArticles(): void {
       }
       card.append(result);
     }
+    if (open) card.append(renderMaterialDetail(a));
     card.classList.toggle("selected", selectedArticles.has(a.id));
     box.append(card);
   }

@@ -1,13 +1,41 @@
 import { applyRemote, hasSyncStorage, onLocalMutation, repairOutbox, syncDriver, notifyProjection } from "./storage.ts";
 import type { SyncConfig } from "./storage.ts";
-import { PROTOCOL_VERSION, validateRecord } from "./protocol.ts";
-import type { SyncOperation } from "./protocol.ts";
+import { PROTOCOL_VERSION, object, recordKey, validateRecord } from "./protocol.ts";
+import type { RecordType, SyncOperation, SyncRecord } from "./protocol.ts";
 
 export interface SyncStatus {
   enabled:boolean; baseUrl:string; tokenSet:boolean; userId?:string; serverId?:string;
   deviceId:string; pending:number; lastSuccess:number|null; error:string|null; running:boolean;
   /** 过不了校验、留在队列里没发出去的记录数，和按原因归堆的说明（一堆一条）。都已经算在 pending 里。 */
   blocked:number; blockedReasons:string[];
+  /** 这些记录分属几篇阅读材料。人是按「哪篇文章」想事情的，「207 项记录」对谁都没有意义。 */
+  blockedMaterials:number;
+}
+/** 一篇阅读材料在同步上的处境。 */
+export interface MaterialSync {
+  /** synced 已在服务器上；pending 有改动等下一轮；blocked 有记录过不了校验；local 同步没开，或这类材料（书）本来就不上传。 */
+  state:"synced"|"pending"|"blocked"|"local";
+  /** 还在队列里的记录，按种类计数，如 [["专注时段",3],["段落",12]]。 */
+  waiting:[string,number][];
+  /** state 为 blocked 时：卡在哪。 */
+  reasons:string[];
+}
+const LABEL:Record<RecordType,string>={article:"文章记录",session:"专注时段",paragraph:"段落",position:"阅读位置",snippet:"划词",card:"复习卡",
+  reviewEvent:"复习记录",articleReview:"文章回顾",articleCard:"文章回顾卡",setting:"设置",articleText:"正文",archive:"离线存档"};
+/** 校验函数和服务器共用，报的是英文；给人看之前把最常见的那一句说成人话。 */
+const humanize=(reason:string):string=>reason.startsWith("Invalid article: ")?`文章记录的 ${reason.slice(17).split(", ").join("、")} 字段缺失或不合规`:reason;
+/**
+ * 一条记录归哪篇阅读材料。
+ *
+ * 划词在协议里**不**挂在文章名下——删文章留词是有意的（见 background/store.ts 的 deleteArticles），
+ * 挂上去的话文章一删，词在所有设备上跟着没。但它确实是在那篇里划的，给人看的时候归过去。
+ */
+export function materialOf(record:SyncRecord|undefined):string|null {
+  if(!record)return null;
+  if(record.type==="article")return record.id;
+  if(record.articleId)return record.articleId;
+  const from=record.type==="snippet"?object(record.value).articleId:undefined;
+  return typeof from==="string"?from:null;
 }
 // Capture WebView's real fetch before native.ts installs its text-only HTTP bridge.
 // This retains redirect:'error', CORS and binary request bodies for the sync service.
@@ -40,7 +68,7 @@ export async function syncStatus():Promise<SyncStatus> {
   const s=await syncDriver().read();return {enabled:s.config.enabled,baseUrl:s.config.baseUrl,tokenSet:Boolean(s.config.token),userId:s.config.userId,serverId:s.config.serverId,
     deviceId:s.deviceId,pending:s.outbox.length+Object.keys(s.data.archivePending??{}).length,lastSuccess:s.lastSuccess,error:s.error,running:Boolean(running),
     // reason 是上一版存下的单条字符串，还没跑过新一轮同步的状态里只有它
-    blocked:s.blocked?.count??0,blockedReasons:s.blocked?.reasons??(s.blocked?.reason?[s.blocked.reason]:[])};
+    blocked:s.blocked?.count??0,blockedReasons:s.blocked?.reasons??(s.blocked?.reason?[s.blocked.reason]:[]),blockedMaterials:s.blocked?.materials??0};
 }
 /**
  * 把队列分成发得出去的和发不出去的。
@@ -81,18 +109,51 @@ function triage(outbox:SyncOperation[],verdicts:Map<string,string|null>):{ready:
   });
   return {ready,blocked,superseded};
 }
-/** 按「类型：原因」归堆，各举一例。要修的是自己有毛病的那些，被文章连累的只报个数。 */
-function describe(stuck:Blocked[]):string[] {
-  const groups=new Map<string,{count:number;sample:string}>();let dependents=0;
-  for(const {op,reason} of stuck) {
-    if(reason===DEPENDENT) {dependents++;continue;}
-    const key=`${op.record?.type}：${reason}`,group=groups.get(key);
-    if(group)group.count++;else groups.set(key,{count:1,sample:String(op.record?.id).slice(0,160)});
+const tally=(ops:SyncOperation[]):[string,number][]=>{
+  const counts=new Map<string,number>();
+  for(const op of ops) {const label=LABEL[op.record?.type as RecordType]??"记录";counts.set(label,(counts.get(label)??0)+1);}
+  return [...counts];
+};
+/** 说成了人话的那句里已经带着是哪种记录；原样的英文才在前面标一下种类。 */
+const explain=(b:Blocked):string=>{const plain=humanize(b.reason);return plain!==b.reason?plain:`${LABEL[b.op.record?.type as RecordType]??"记录"}：${plain}`;};
+const spell=(counts:[string,number][]):string=>counts.map(([label,n])=>`${n} 个${label}`).join("、");
+/**
+ * 按阅读材料说：哪篇卡住了、卡在哪、名下连带了什么。不挂在任何文章名下的（复习卡、设置）
+ * 才按「种类：原因」归堆。要修的是自己有毛病的那些，被文章连累的只报种类和个数。
+ */
+function describe(stuck:Blocked[]):{reasons:string[];materials:number} {
+  const byMaterial=new Map<string,Blocked[]>(),loose=new Map<string,{count:number;sample:string}>();
+  for(const item of stuck) {
+    const id=materialOf(item.op.record);
+    if(id!==null) {byMaterial.set(id,[...(byMaterial.get(id)??[]),item]);continue;}
+    const key=`${LABEL[item.op.record?.type as RecordType]??"记录"}：${humanize(item.reason)}`,group=loose.get(key);
+    if(group)group.count++;else loose.set(key,{count:1,sample:String(item.op.record?.id).slice(0,160)});
   }
-  const parts=[...groups].slice(0,3).map(([key,g])=>`${key} ×${g.count}（如 ${g.sample}）`);
-  if(groups.size>3)parts.push(`另有 ${groups.size-3} 类原因`);
-  if(dependents)parts.push(`${dependents} 项挂在这些文章名下`);
-  return parts;
+  const reasons:string[]=[];
+  for(const [id,items] of [...byMaterial].slice(0,5)) {
+    const own=items.filter(b=>b.reason!==DEPENDENT),dragged=items.filter(b=>b.reason===DEPENDENT);
+    const title=String(object(items.find(b=>b.op.record?.type==="article")?.op.record?.value).title||"").slice(0,60);
+    const why=[...new Set(own.map(explain))].join("；");
+    reasons.push(`${title?`《${title}》`:""}${id.slice(0,160)}：${why||"名下有记录无法上传"}`+(dragged.length?`；名下 ${spell(tally(dragged.map(b=>b.op)))}一起留在本机`:""));
+  }
+  if(byMaterial.size>5)reasons.push(`另有 ${byMaterial.size-5} 篇阅读材料`);
+  for(const [key,group] of [...loose].slice(0,3))reasons.push(`${key} ×${group.count}（如 ${group.sample}）`);
+  if(loose.size>3)reasons.push(`另有 ${loose.size-3} 类原因`);
+  return {reasons,materials:byMaterial.size};
+}
+/** 单篇阅读材料的同步处境，给文章详情用。每次现算：队列平时很短，展开一篇文章才问一次。 */
+export async function materialSync(articleId:string):Promise<MaterialSync> {
+  if(!hasSyncStorage())return {state:"local",waiting:[],reasons:[]};
+  const s=await syncDriver().read();
+  const known=Boolean(s.records[recordKey({type:"article",id:articleId})]);
+  if(!s.config.enabled||!known)return {state:"local",waiting:[],reasons:[]};
+  const mine=(op:SyncOperation):boolean=>materialOf(op.record)===articleId;
+  const waiting=s.outbox.filter(mine);
+  if(!waiting.length)return {state:"synced",waiting:[],reasons:[]};
+  const stuck=triage(s.outbox,new Map()).blocked.filter(b=>mine(b.op));
+  if(!stuck.length)return {state:"pending",waiting:tally(waiting),reasons:[]};
+  const own=stuck.filter(b=>b.reason!==DEPENDENT);
+  return {state:"blocked",waiting:tally(waiting),reasons:[...new Set(own.map(explain))]};
 }
 export async function testSync(baseUrl:string,token?:string):Promise<{serverId:string;userId:string;protocol:number}> {
   const {config}=await syncDriver().read();const url=normalizeServerUrl(baseUrl);
@@ -191,7 +252,7 @@ async function cycle():Promise<SyncStatus> {
       await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.outbox=s.outbox.filter(op=>!accepted.has(op.opId));});
     }
     await pull();await check();
-    const blocked=stuck.length?{count:stuck.length,reasons:describe(stuck)}:undefined;
+    const blocked=stuck.length?{count:stuck.length,...describe(stuck)}:undefined;
     await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
   } catch(error) {
     await syncDriver().update(s=>{

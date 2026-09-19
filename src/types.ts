@@ -303,6 +303,8 @@ export type ContentToBg =
 
 export type PopupToBg =
   | { type: "sync:get" }
+  /** 单篇阅读材料的同步处境，文章详情用。 */
+  | { type: "sync:material"; articleId: string }
   | { type: "sync:test"; baseUrl: string; token?: string }
   | { type: "sync:configure"; baseUrl: string; token?: string; enabled: boolean }
   | { type: "sync:run" }

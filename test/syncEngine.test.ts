@@ -328,7 +328,12 @@ test("a record that fails validation stays queued with its article's dependents,
   assert.notEqual(status.lastSuccess, null);
   assert.equal(status.blocked, 2);
   assert.equal(status.pending, 2);
-  assert.deepEqual(status.blockedReasons, [`article：Entity identity mismatch ×1（如 ${bad}）`, "1 项挂在这些文章名下"]);
+  // Told by reading material: which one is stuck, why, and what it holds back with it.
+  assert.equal(status.blockedMaterials, 1);
+  assert.deepEqual(status.blockedReasons, [`《An article》${bad}：文章记录：Entity identity mismatch；名下 1 个专注时段一起留在本机`]);
+  assert.deepEqual(await engine.materialSync(bad), { state: "blocked", waiting: [["文章记录", 1], ["专注时段", 1]], reasons: ["文章记录：Entity identity mismatch"] });
+  assert.deepEqual(await engine.materialSync(good), { state: "synced", waiting: [], reasons: [] });
+  assert.equal((await engine.materialSync("https://never.example/seen")).state, "local");
   const uploaded = [...server.account().records.values()].map(record => `${record.type} ${record.id}`).sort();
   assert.deepEqual(uploaded, [`article ${good}`, "session s-good", "setting idleTimeoutMs"]);
   assert.ok(queued > 2);
@@ -412,4 +417,27 @@ test("an incomplete article queued by an earlier client is repaired in place and
   const local = (await driver.read()).data.articles[url];
   assert.deepEqual([local.trackedWords, local.paragraphCount, local.finished, local.reachedBottom], [0, 0, false, false]);
   assert.equal(local.title, "Queued long ago");
+});
+
+test("a reading material reports what of its own is still waiting, counting the words looked up in it", async () => {
+  await freshServer();
+  const driver = device();
+  const url = "https://fine.example/material";
+  await localStorage().set({ articles: { [url]: article(url) }, sessions: [session("s-1", url)] });
+  assert.equal((await engine.runSync()).error, null);
+  assert.equal((await engine.materialSync(url)).state, "synced");
+
+  server.offline = true;
+  await localStorage().set({
+    sessions: [session("s-1", url), session("s-2", url)],
+    snippets: [{ id: "w-1", articleId: url, url, articleTitle: "An article", text: "consolidate", kind: "word", context: "to consolidate memory",
+      createdTs: 3_000, translation: "巩固", contextNote: "", pos: null, phonetic: null, lemma: "consolidate", usage: null, vocab: [], cardId: null }],
+  });
+  // A looked-up word is not the article's dependent on the wire, but it was looked up in it.
+  assert.deepEqual(await engine.materialSync(url), { state: "pending", waiting: [["专注时段", 1], ["划词", 1]], reasons: [] });
+  assert.equal((await driver.read()).outbox.find(op => op.record.type === "snippet")?.record.articleId, undefined);
+  server.offline = false;
+
+  await engine.disconnectSync();
+  assert.equal((await engine.materialSync(url)).state, "local");
 });

@@ -1,6 +1,6 @@
 import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "./articleFilter.ts";
 import { localStorage } from "../sync/storage.ts";
-import { configureSync, disconnectSync, runSync, syncStatus, testSync } from "../sync/engine.ts";
+import { configureSync, disconnectSync, materialSync, runSync, syncStatus, testSync } from "../sync/engine.ts";
 import { saveArchive } from "../archive/background.ts";
 import { clearArchiveCache } from "../archive/cache.ts";
 import { normalizeUrl } from "../lib/url.ts";
@@ -166,6 +166,7 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
 
   switch (msg.type) {
     case "sync:get": return syncStatus();
+    case "sync:material": return materialSync(msg.articleId);
     case "sync:test": return { ok: true, ...await testSync(msg.baseUrl, msg.token) };
     case "sync:configure": return { ok: true, status: await configureSync(msg.baseUrl, msg.token, msg.enabled) };
     case "sync:run": { const status = await runSync(); return {ok:!status.error,status,...(status.error ? {error:status.error} : {})}; }
