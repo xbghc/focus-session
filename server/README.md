@@ -14,7 +14,7 @@ npm run admin -- create-user "My account"
 npm start
 ```
 
-服务启动和管理命令自动应用版本化迁移。`create-user` 输出用户 ID、Token ID 和只显示一次的 Token；`issue-token <userId> [label]` 可为同一账号签发其他设备凭证，`revoke-token <tokenId>` 单独撤销。数据库只保存 Token 的 SHA-256 摘要。`list-users`、`list-tokens <userId>` 不返回 Token 或哈希。
+服务启动和管理命令自动应用版本化迁移。诊断用的 `stats`、`check`、`show-record` 见下文「诊断」。`create-user` 输出用户 ID、Token ID 和只显示一次的 Token；`issue-token <userId> [label]` 可为同一账号签发其他设备凭证，`revoke-token <tokenId>` 单独撤销。数据库只保存 Token 的 SHA-256 摘要。`list-users`、`list-tokens <userId>` 不返回 Token 或哈希。
 
 ## 配置
 
@@ -69,6 +69,34 @@ Android WebView 需允许 `https://appassets.androidplatform.net`。扩展发出
 清单可附加 `stamp`、`generation`、`opId` 对齐客户端同步操作。省略时服务端为该文章生成下一个逻辑版本。正文和全部已声明资源必须先上传；资源大小、版本不可变性在数据库事务内校验，文章版本和资源引用与同步日志同时提交。缺失资源列入 `missingResources`，不会伪装成完整备份。
 
 资源上传在同一文件目录写临时文件、校验 SHA-256 并刷新磁盘，再原子替换正式文件，最后提交数据库元数据。用户资源配额由数据库用户锁保护；上传期间同一用户其他写操作等待。文件返回 `attachment`、`nosniff` 和禁止脚本的 CSP，客户端读取字节并在受控阅读器中展示。后端不执行原站脚本，也不接受任意文件路径或抓取 URL。
+
+## 诊断
+
+排查问题和分析性能走下面这些入口，不需要直接连数据库。
+
+**请求日志**：每个请求结束时向标准输出写一行 JSON，成功的 `/health` 探活不记。
+
+```json
+{"ts":"2026-09-19T08:22:19.927Z","method":"POST","route":"/v1/sync/push","status":200,"ms":20,"user":"<userId>","device":"<deviceId>","ops":4,"head":13,"in":1802,"out":180}
+```
+
+`route` 是路由模板（资源统一记作 `/v1/blobs/:hash`，未知路径记作 `unknown`），`in`/`out` 是请求和响应的 `Content-Length`，`error` 是返回给客户端的错误码；响应没发完连接就断了记 `status` 0、`error` 为 `ABORTED`。上传带 `device`、`ops`、`head`，下载和快照带 `records`、`cursor`、`hasMore`。日志不含请求头、请求体、Token、查询串和资源哈希。500 另外向标准错误输出方法、路由和异常堆栈。堆栈是异常消息加调用帧，数据库异常的消息可能引用出错的那个输入值；驱动附带的 `detail`、`where`（会引用整行）不输出。
+
+**管理命令**，输出都是 JSON：
+
+| 命令 | 内容 |
+| --- | --- |
+| `stats` | 数据库和各表体积、估算行数、死元组、顺序/索引扫描次数；每个用户的 `head`、各类型记录数（含删除标记）与字节数、变更日志按类型的条数与字节数、操作回执、快照、资源、设备最近活动、最大的 10 条记录、被改写次数最多的 10 条记录。只有数量、体积和标识符，没有记录内容 |
+| `check [userId]` | 一致性自检，只读。`error`：存量记录过不了当前协议校验（`invalid-record`，客户端拉到会拒收）、行主键与记录内身份不符（`key-mismatch`）、变更日志不是连续的 `1..head`（`log-gap`）、记录与其序号处的日志条目不一致（`log-mismatch`）、序号超过 `head`（`sequence-ahead`）、文章记录指向没有清单的版本（`archive-version-missing`）、资源索引对应的文件缺失或大小不符（`blob-file-missing`）。`warning`：过期快照尚未清理（`expired-snapshots`）、磁盘上有未被索引的文件（`orphan-file`）、上传中断留下的临时文件（`upload-leftover`）。存在 `error` 时退出码为 1，可以放进定时任务；最多列出 1000 条，超出时 `truncated` 为 `true` |
+| `show-record <userId> <type> <id>` | 唯一会输出记录内容的命令：当前合并结果、最近 50 条变更历史、最近 50 条各设备上传的原始操作 |
+
+`check` 需要和服务进程相同的 `DATA_DIR`。容器里直接调用 `node`，避免 npm 在输出前面加横幅：
+
+```sh
+docker compose exec -T server node dist/server/src/admin.js stats
+docker compose exec -T server node dist/server/src/admin.js check
+docker compose logs --no-log-prefix --since 24h server | grep '^{' | jq -c 'select(.ms > 500 or .status >= 500)'
+```
 
 ## 备份与恢复
 

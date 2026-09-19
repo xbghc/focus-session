@@ -11,6 +11,22 @@ import { contentHash, safeMime, validateManifest } from './manifest.ts';
 
 type HttpDatabase = Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive'>;
 
+// One line per request. Only routing, sizes, timing and identifiers: never headers, bodies or tokens.
+export interface RequestLog {
+  ts: string; method: string; route: string; status: number; ms: number;
+  in?: number; out?: number; user?: string; device?: string; error?: string;
+  ops?: number; records?: number; head?: number; cursor?: number; hasMore?: boolean;
+}
+
+const ROUTES = ['/health', '/v1/info', '/v1/sync/push', '/v1/sync/pull', '/v1/sync/snapshot', '/v1/archives'];
+
+// Templates keep the log aggregatable and keep scanner paths and content hashes out of it.
+function routeOf(rawUrl: string | undefined): string {
+  const path = (rawUrl ?? '/').split('?')[0]!;
+  if (ROUTES.includes(path)) return path;
+  return /^\/v1\/blobs\/[^/]+$/.test(path) ? '/v1/blobs/:hash' : 'unknown';
+}
+
 function json(response: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value);
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
@@ -46,7 +62,7 @@ function numberQuery(url: URL, name: string, fallback: number, max: number): num
   return boundedInteger(Number(value), name, name === 'limit' ? 1 : 0, max);
 }
 
-export function createHttpServer(config: Config, database: HttpDatabase, files: FileStore) {
+export function createHttpServer(config: Config, database: HttpDatabase, files: FileStore, log: (entry: RequestLog) => void = entry => { console.log(JSON.stringify(entry)); }) {
   const checkArchiveFiles = async (userId: string, value: unknown) => {
     const manifest = validateManifest(value);
     const hashes = [...new Set([manifest.htmlHash, ...manifest.resources.map(resource => resource.hash)])];
@@ -56,6 +72,21 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
     }
   };
   const server = createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
+    const started = performance.now();
+    const entry: RequestLog = { ts: new Date().toISOString(), method: request.method ?? '', route: routeOf(request.url), status: 0, ms: 0 };
+    response.once('close', () => {
+      entry.status = response.statusCode;
+      // statusCode still reads 200 when the client left before anything was sent.
+      if (!response.writableFinished) { entry.status = 0; entry.error ??= 'ABORTED'; }
+      // Container health probes arrive every 30 seconds; only failing ones are worth a line.
+      if (entry.route === '/health' && entry.status === 200) return;
+      entry.ms = Math.round(performance.now() - started);
+      const received = Number(request.headers['content-length']);
+      if (Number.isFinite(received)) entry.in = received;
+      const sent = Number(response.getHeader('content-length'));
+      if (Number.isFinite(sent)) entry.out = sent;
+      log(entry);
+    });
     void (async () => {
       response.setHeader('X-Content-Type-Options', 'nosniff');
       response.setHeader('Referrer-Policy', 'no-referrer');
@@ -85,20 +116,27 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
       }
       const user = await database.authenticate(bearerToken(request.headers.authorization));
       if (!user) throw new HttpError(401, 'UNAUTHORIZED', 'Token is invalid or revoked');
+      entry.user = user.id;
       if (url.pathname === '/v1/info' && request.method === 'GET') {
         json(response, 200, { serverId: database.serverId, userId: user.id, userName: user.name, protocol: 1 });
         return;
       }
       if (url.pathname === '/v1/sync/push' && request.method === 'POST') {
         const { deviceId, operations } = validateOperations(await readJson(request, config.maxJsonBytes));
+        entry.device = deviceId;
+        entry.ops = operations.length;
         for (const operation of operations) if (operation.record.type === 'archive' && !operation.record.deleted) await checkArchiveFiles(user.id, operation.record.value);
-        json(response, 200, await database.push(user.id, deviceId, operations));
+        const result = await database.push(user.id, deviceId, operations);
+        entry.head = result.head;
+        json(response, 200, result);
         return;
       }
       if (url.pathname === '/v1/sync/pull' && request.method === 'GET') {
         const cursor = numberQuery(url, 'cursor', 0, Number.MAX_SAFE_INTEGER);
         const limit = numberQuery(url, 'limit', 200, 500);
-        json(response, 200, await database.pull(user.id, cursor, limit));
+        const result = await database.pull(user.id, cursor, limit);
+        Object.assign(entry, { records: result.records.length, cursor: result.cursor, hasMore: result.hasMore });
+        json(response, 200, result);
         return;
       }
       if (url.pathname === '/v1/sync/snapshot' && request.method === 'GET') {
@@ -106,13 +144,17 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
         const limit = numberQuery(url, 'limit', 200, 500);
         const token = url.searchParams.get('token') ?? undefined;
         if (token !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(token)) badRequest('Invalid snapshot token');
-        json(response, 200, await database.snapshot(user.id, token, cursor, limit));
+        const result = await database.snapshot(user.id, token, cursor, limit);
+        Object.assign(entry, { records: result.records.length, head: result.head, cursor: result.cursor, hasMore: result.hasMore });
+        json(response, 200, result);
         return;
       }
       if (url.pathname === '/v1/archives' && request.method === 'POST') {
         const body = await readJson(request, config.maxJsonBytes);
         await checkArchiveFiles(user.id, body);
-        json(response, 200, await database.publishArchive(user.id, body));
+        const result = await database.publishArchive(user.id, body);
+        entry.head = result.head;
+        json(response, 200, result);
         return;
       }
       const blobMatch = /^\/v1\/blobs\/([^/]+)$/.exec(url.pathname);
@@ -143,6 +185,7 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
       }
       throw new HttpError(404, 'NOT_FOUND', 'Endpoint not found');
     })().catch(error => {
+      entry.error = error instanceof HttpError ? error.code : 'INTERNAL_ERROR';
       if (response.headersSent) { response.destroy(); return; }
       if (!request.complete) {
         // Close rejected uploads rather than consuming an unlimited body on a keep-alive connection.
@@ -151,8 +194,9 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
       }
       const status = error instanceof HttpError ? error.status : 500;
       if (status === 401) response.setHeader('WWW-Authenticate', 'Bearer');
-      // Never log request headers, request bodies, tokens, or SQL connection strings.
-      if (status === 500) console.error('Request failed:', error instanceof Error ? error.name : 'UnknownError');
+      // Never log request headers, request bodies, tokens, or SQL connection strings. A stack is the
+      // message plus frames; the driver fields that quote whole rows (detail, where) stay out.
+      if (status === 500) console.error('Request failed:', entry.method, entry.route, error instanceof Error ? error.stack ?? error.name : 'UnknownError');
       json(response, status, {
         error: error instanceof HttpError ? error.code : 'INTERNAL_ERROR',
         message: error instanceof HttpError ? error.message : 'Internal server error',

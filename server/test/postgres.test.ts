@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import type { SyncRecord } from '../../src/sync/protocol.ts';
 import { Database } from '../src/database.ts';
+import { checkIntegrity, collectStats, showRecord } from '../src/diagnostics.ts';
 import { FileStore } from '../src/files.ts';
 
 function record(name: string, counter = 1, deviceId = 'device-a'): SyncRecord {
@@ -142,6 +143,59 @@ test('PostgreSQL atomic sync, user isolation, concurrency, restart and archive r
         const paths = await readdir(directory, { recursive: true });
         assert.equal(paths.filter(path => /[a-f0-9]{64}$/.test(path)).length, 1);
         assert.equal(paths.some(path => path.endsWith('.upload')), false);
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+    await t.test('diagnostics count what is stored and name exactly what is broken', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'focus-pg-diagnostics-'));
+      try {
+        const store = new FileStore(directory, 100);
+        const { user } = await database.createUser('diagnostics');
+        const kept = record('kept').id;
+        await database.push(user.id, 'a', [{ opId: 'd1', record: record('kept') }, { opId: 'd2', record: record('dropped') }]);
+        await database.push(user.id, 'a', [{ opId: 'd3', record: record('kept', 2) }, { opId: 'd4', record: { ...record('dropped', 2), deleted: true } }]);
+        const body = Buffer.from('stored');
+        const hash = createHash('sha256').update(body).digest('hex');
+        await database.uploadBlob(user.id, hash, 100, available => store.put(user.id, hash, 'text/plain', Readable.from([body]), available));
+        await database.snapshot(user.id, undefined, 0, 1);
+
+        const all = await collectStats(database.pool);
+        assert.ok(all.database.bytes > 0 && all.database.tables.some(table => table.name === 'records'));
+        const stats = all.users.find(item => item.id === user.id)!;
+        assert.equal(stats.head, 4);
+        assert.deepEqual(stats.records.map(({ type, live, deleted }) => ({ type, live, deleted })), [{ type: 'article', live: 1, deleted: 1 }]);
+        assert.deepEqual(stats.changes.byType.map(({ type, count }) => ({ type, count })), [{ type: 'article', count: 4 }]);
+        assert.deepEqual([stats.operations.count, stats.blobs.count, stats.blobs.bytes, stats.snapshots.active, stats.snapshots.items, stats.tokens.active], [4, 1, 6, 1, 2, 1]);
+        assert.deepEqual(stats.devices.map(device => device.id), ['a']);
+        assert.deepEqual(stats.mostRewritten.map(item => item.changes), [2, 2]);
+        assert.ok(stats.largestRecords[0]!.bytes >= stats.largestRecords[1]!.bytes && stats.records[0]!.largestBytes === stats.largestRecords[0]!.bytes);
+
+        const shown = await showRecord(database.pool, user.id, 'article', kept);
+        assert.equal(shown.current?.sequence, 3);
+        assert.deepEqual([shown.changes, shown.history.map(item => item.sequence)], [2, [3, 1]]);
+        assert.deepEqual(shown.operations.map(item => item.opId).sort(), ['d1', 'd3']);
+        assert.equal((await showRecord(database.pool, user.id, 'article', 'https://example.org/never')).current, null);
+
+        const healthy = await checkIntegrity(database.pool, store, user.id);
+        assert.deepEqual([healthy.ok, healthy.truncated, healthy.problems], [true, false, []]);
+        assert.deepEqual(healthy.checked, { users: 1, records: 2, blobs: 1, files: 1 });
+        await assert.rejects(checkIntegrity(database.pool, store, randomUUID()), /does not exist/);
+
+        await database.pool.query(`UPDATE records SET record=jsonb_set(record,'{value,totalWords}','"many"') WHERE user_id=$1 AND id=$2`, [user.id, kept]);
+        await database.pool.query('DELETE FROM changes WHERE user_id=$1 AND sequence=2', [user.id]);
+        await database.pool.query("UPDATE sync_snapshots SET expires_at=now()-interval '1 hour' WHERE user_id=$1", [user.id]);
+        await rm(store.path(store.storageKey(user.id, hash)));
+        const stray = join(directory, 'users', user.id, 'blobs', 'ab');
+        await mkdir(stray, { recursive: true });
+        await writeFile(join(stray, `ab${'0'.repeat(62)}`), 'orphan');
+        await writeFile(join(stray, `.ab${'0'.repeat(62)}.${randomUUID()}.upload`), 'partial');
+        const broken = await checkIntegrity(database.pool, store, user.id);
+        assert.equal(broken.ok, false);
+        assert.deepEqual(broken.problems.map(problem => `${problem.severity}:${problem.kind}`).sort(),
+          ['error:blob-file-missing', 'error:invalid-record', 'error:log-gap', 'error:log-mismatch', 'warning:expired-snapshots', 'warning:orphan-file', 'warning:upload-leftover']);
+        const invalid = broken.problems.find(problem => problem.kind === 'invalid-record')!;
+        assert.deepEqual([invalid.type, invalid.id, invalid.detail], ['article', kept, 'Invalid article: totalWords']);
+        assert.equal(broken.problems.find(problem => problem.kind === 'log-mismatch')!.id, kept);
+        assert.equal(broken.problems.find(problem => problem.kind === 'blob-file-missing')!.id, hash);
       } finally { await rm(directory, { recursive: true, force: true }); }
     });
   } finally {

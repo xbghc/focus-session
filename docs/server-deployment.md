@@ -78,6 +78,19 @@ docker compose exec server npm run admin -- revoke-token <tokenId>
 
 第一版保留同步变更、操作去重信息和删除标记，不按日期自动裁剪，以支持长时间离线的设备。文章文件不会因本机清理而被删除。不要手动删除文件卷中的单个文件；数据库里仍可能存在引用。长期运行需要根据实际数据增长安排备份和容量。
 
+## 诊断与日志
+
+后端每个请求写一行 JSON 日志（路由模板、状态码、耗时、字节数、用户 ID、同步批量大小），不含请求头、请求体、Token 和查询串；成功的 `/health` 探活不记。`compose.yaml` 把 `server` 的容器日志限制为 5 个 10 MiB 文件。
+
+```bash
+docker compose logs --no-log-prefix --since 24h server | grep '^{' | jq -c 'select(.ms > 500 or .status >= 500)'
+docker compose exec -T server node dist/server/src/admin.js stats
+docker compose exec -T server node dist/server/src/admin.js check
+docker compose exec -T server node dist/server/src/admin.js show-record <userId> <type> <id>
+```
+
+`stats` 输出各表体积和每个用户的记录、变更日志、资源统计，只有数量、体积和标识符。`check` 是只读的一致性自检：存量记录能否通过当前协议校验、变更日志是否连续、资源文件与索引是否一致，发现 `error` 时退出码为 1。`show-record` 是唯一输出记录内容的命令，用于按 ID 查看某条记录的当前值、变更历史和各设备上传的原始操作。字段和问题类型见 [后端说明](../server/README.md#诊断)。排查时优先使用这些入口，不要直接连接数据库。
+
 ## 配置项
 
 | 变量 | 默认或要求 |
