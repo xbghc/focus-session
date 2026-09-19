@@ -4,6 +4,7 @@ import { readConfig } from './config.ts';
 import { Database } from './database.ts';
 import { checkIntegrity, collectStats, showRecord } from './diagnostics.ts';
 import { FileStore } from './files.ts';
+import { usageReport } from './usage.ts';
 
 function uuid(value: string | undefined): string {
   if (!value || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) throw new Error('Expected a UUID');
@@ -12,10 +13,10 @@ function uuid(value: string | undefined): string {
 
 async function main(): Promise<void> {
   const [command, argument, label, recordId] = process.argv.slice(2);
-  const supported = ['create-user', 'issue-token', 'revoke-token', 'list-users', 'list-tokens', 'migrate', 'rotate-server-id', 'stats', 'check', 'show-record'];
+  const supported = ['create-user', 'issue-token', 'revoke-token', 'list-users', 'list-tokens', 'migrate', 'rotate-server-id', 'stats', 'check', 'show-record', 'usage'];
   if (!command || !supported.includes(command)) {
     console.log('Usage: npm run admin -- create-user <name> | issue-token <userId> [label] | revoke-token <tokenId> | list-users | list-tokens <userId> | migrate | rotate-server-id'
-      + ' | stats | check [userId] | show-record <userId> <type> <id>');
+      + ' | stats | check [userId] | show-record <userId> <type> <id> | usage [userId]');
     process.exitCode = 1;
     return;
   }
@@ -48,6 +49,8 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(report, null, 2));
       // Warnings are leftovers a healthy server may carry; only errors fail a scheduled check.
       if (!report.ok) process.exitCode = 1;
+    } else if (command === 'usage') {
+      console.log(JSON.stringify(await usageReport(database.pool, argument === undefined ? undefined : uuid(argument)), null, 2));
     } else if (command === 'show-record') {
       if (!(RECORD_TYPES as readonly string[]).includes(label ?? '') || !recordId) throw new Error(`Expected a record type (${RECORD_TYPES.join(', ')}) and a record id`);
       console.log(JSON.stringify(await showRecord(database.pool, uuid(argument), label!, recordId), null, 2));

@@ -185,6 +185,7 @@ async function cycle():Promise<SyncStatus> {
   const initial=await syncDriver().read(); if(!initial.config.enabled)return syncStatus();
   const config=initial.config;
   const check=async()=>{const s=await syncDriver().read();if(!s.config.enabled||JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");};
+  let succeeded=false;
   try {
     const info=await (await request(config,"/v1/info")).json();
     if(info.protocol!==PROTOCOL_VERSION||info.userId!==config.userId||info.serverId!==config.serverId)throw new Error("服务器身份或协议已变化，请检查同步设置");
@@ -254,6 +255,7 @@ async function cycle():Promise<SyncStatus> {
     await pull();await check();
     const blocked=stuck.length?{count:stuck.length,...describe(stuck)}:undefined;
     await syncDriver().update(s=>{if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");s.lastSuccess=Date.now();s.error=null;s.failures=0;s.retryAt=0;s.blocked=blocked;});
+    succeeded=true;
   } catch(error) {
     await syncDriver().update(s=>{
       if(JSON.stringify(s.config)!==JSON.stringify(config))return;
@@ -262,6 +264,10 @@ async function cycle():Promise<SyncStatus> {
       if((error as {status?:number}).status===401)s.config.enabled=false;
     });
   }
+  // 界面埋点的计数搭这一轮的车传上去（background/uiUsage.ts）。排在整轮的成败之外：
+  // 它不是同步记录，传不上去不算同步失败，服务器比客户端旧、没有这个接口也一样。
+  if(succeeded)await import("../background/uiUsage.ts").then(({uploadUiUsage})=>uploadUiUsage(
+    body=>request(config,"/v1/usage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),initial.deviceId)).catch(()=>undefined);
   return syncStatus();
 }
 export function runSync():Promise<SyncStatus> {

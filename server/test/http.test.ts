@@ -21,7 +21,8 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs, serves ine
   const otherToken = generateToken();
   const blobs = new Map<string, StoredBlob>();
   let healthy = true;
-  const fake: Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive'> = {
+  const usage: Array<{ user: string; device: string; platform: string; rows: number }> = [];
+  const fake: Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive' | 'recordUsage'> = {
     serverId: randomUUID(),
     authenticate: async value => value === token ? { id: userId, name: 'one' } : value === otherToken ? { id: otherId, name: 'two' } : undefined,
     healthy: async () => { if (!healthy) throw new Error('down'); return true; },
@@ -35,6 +36,7 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs, serves ine
       return blob;
     },
     publishArchive: async () => { throw new Error('unexpected'); },
+    recordUsage: async (user, upload) => { usage.push({ user, device: upload.deviceId, platform: upload.platform, rows: upload.rows.length }); return upload.rows.length; },
   };
   const config = readConfig({ DATABASE_URL: 'postgres://unused', DATA_DIR: directory, CORS_ORIGINS: 'https://allowed.example', MAX_JSON_BYTES: '100', MAX_BLOB_BYTES: '100' });
   const log: RequestLog[] = [];
@@ -60,6 +62,15 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs, serves ine
     assert.equal((await fetch(`${base}/v1/sync/push`, { method: 'POST', headers: { authorization, 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: 'phone', operations: [] }) })).status, 200);
     assert.equal((await fetch(`${base}/v1/sync/pull?cursor=7`, { headers: { authorization } })).status, 200);
     assert.equal((await fetch(`${base}/.env?token=${token}`, { headers: { authorization } })).status, 404);
+    // Button counts: the user comes from the token, never from the body; a day from a broken clock is dropped, not refused.
+    const today = new Date().toISOString().slice(0, 10);
+    const counts = (days: unknown) => fetch(`${base}/v1/usage`, { method: 'POST', headers: { authorization, 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: 'phone', platform: 'app', days }) });
+    assert.equal((await fetch(`${base}/v1/usage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+    assert.deepEqual(await (await counts({ [today]: { speak: 2 }, '2001-01-01': { speak: 9 } })).json(), { accepted: 1, ignored: 1 });
+    assert.deepEqual(usage, [{ user: userId, device: 'phone', platform: 'app', rows: 1 }]);
+    assert.equal((await counts({ [today]: { speak: 0 } })).status, 400);
+    assert.equal((await fetch(`${base}/v1/usage`, { headers: { authorization } })).status, 404);
+    assert.equal(usage.length, 1);
     const content = '<script>alert(1)</script><p>Hello</p>';
     const hash = createHash('sha256').update(content).digest('hex');
     const endpoint = `${base}/v1/blobs/${hash}`;
@@ -90,6 +101,9 @@ test('HTTP requires token, checks CORS and body limits, scopes blobs, serves ine
   assert.deepEqual([pushed.device, pushed.ops, pushed.head, pushed.in], ['phone', 0, 1, 36]);
   const pulled = entries('/v1/sync/pull', 200)[0]!;
   assert.deepEqual([pulled.records, pulled.cursor, pulled.hasMore], [0, 7, false]);
+  const counted = entries('/v1/usage', 200)[0]!;
+  assert.deepEqual([counted.user, counted.device, counted.records], [userId, 'phone', 1]);
+  assert.equal(entries('/v1/usage', 400)[0]!.error, 'INVALID_REQUEST');
   assert.equal(entries('/v1/blobs/:hash', 201).length, 1);
   assert.equal(entries('/v1/blobs/:hash', 404)[0]!.user, otherId);
   assert.equal(entries('unknown', 404)[0]!.error, 'NOT_FOUND');

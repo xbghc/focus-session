@@ -8,8 +8,9 @@ import { validateOperations } from './database.ts';
 import { HttpError, badRequest, boundedInteger } from './errors.ts';
 import type { FileStore } from './files.ts';
 import { contentHash, safeMime, validateManifest } from './manifest.ts';
+import { validateUsage } from './usage.ts';
 
-type HttpDatabase = Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive'>;
+type HttpDatabase = Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive' | 'recordUsage'>;
 
 // One line per request. Only routing, sizes, timing and identifiers: never headers, bodies or tokens.
 export interface RequestLog {
@@ -18,7 +19,7 @@ export interface RequestLog {
   ops?: number; records?: number; head?: number; cursor?: number; hasMore?: boolean;
 }
 
-const ROUTES = ['/health', '/v1/info', '/v1/sync/push', '/v1/sync/pull', '/v1/sync/snapshot', '/v1/archives'];
+const ROUTES = ['/health', '/v1/info', '/v1/sync/push', '/v1/sync/pull', '/v1/sync/snapshot', '/v1/archives', '/v1/usage'];
 
 // Templates keep the log aggregatable and keep scanner paths and content hashes out of it.
 function routeOf(rawUrl: string | undefined): string {
@@ -155,6 +156,14 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
         const result = await database.publishArchive(user.id, body);
         entry.head = result.head;
         json(response, 200, result);
+        return;
+      }
+      if (url.pathname === '/v1/usage' && request.method === 'POST') {
+        const upload = validateUsage(await readJson(request, config.maxJsonBytes));
+        entry.device = upload.deviceId;
+        const accepted = await database.recordUsage(user.id, upload);
+        entry.records = accepted;
+        json(response, 200, { accepted, ignored: upload.ignored });
         return;
       }
       const blobMatch = /^\/v1\/blobs\/([^/]+)$/.exec(url.pathname);

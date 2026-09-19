@@ -10,3 +10,5 @@
 !src/
 !src/sync/
 !src/sync/protocol.ts
+!src/lib/
+!src/lib/uiUsage.ts

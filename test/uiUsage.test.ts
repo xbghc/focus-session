@@ -8,10 +8,20 @@ import {
   dayKey,
   emptyUiUsage,
   normalizeUiUsage,
+  settleUiUpload,
   summarizeUiUsage,
   type UiEvent,
 } from "../src/lib/uiUsage.ts";
-import { KEY_UI_USAGE, getUiUsage, recordUiUsage } from "../src/background/uiUsage.ts";
+import {
+  KEY_UI_USAGE,
+  UPLOAD_EVERY_MS,
+  UPLOAD_RETRY_MS,
+  UPLOAD_UNSUPPORTED_MS,
+  getUiUsage,
+  recordUiUsage,
+  uploadUiUsage,
+  type UiUsageUpload,
+} from "../src/background/uiUsage.ts";
 import { clearLlmLog, llmLogBundle } from "../src/background/llmLog.ts";
 import { clearData } from "../src/background/store.ts";
 
@@ -57,10 +67,11 @@ test("记数：同一天累加，表外的名字不收，不改传进来的对�
   const before = emptyUiUsage();
   const once = bumpUiUsage(before, ["articles.detail", "articles.detail", "nope", 42, "__proto__"], NOON);
   assert.deepEqual(before, emptyUiUsage());
-  assert.deepEqual(once, { since: "2026-09-19", days: { "2026-09-19": { "articles.detail": 2 } } });
+  assert.deepEqual(once, { since: "2026-09-19", days: { "2026-09-19": { "articles.detail": 2 } }, pending: ["2026-09-19"], nextUploadAt: 0 });
   const next = bumpUiUsage(once, ["articles.detail", "speak"], NOON + DAY);
   assert.equal(next.since, "2026-09-19", "since 是第一次记数那天，之后不动");
   assert.deepEqual(next.days["2026-09-20"], { "articles.detail": 1, "speak": 1 });
+  assert.deepEqual(next.pending, ["2026-09-19", "2026-09-20"], "哪天动过，哪天就等着上传");
   assert.deepEqual(once.days["2026-09-19"], { "articles.detail": 2 });
 });
 
@@ -73,6 +84,7 @@ test("过了保留期的桶在下一次记数时滚掉", () => {
   log = bumpUiUsage(log, ["page.open"], NOON - (UI_USAGE_DAYS - 1) * DAY);
   log = bumpUiUsage(log, ["page.open"], NOON);
   assert.deepEqual(Object.keys(log.days).sort(), [dayKey(NOON - (UI_USAGE_DAYS - 1) * DAY), dayKey(NOON)]);
+  assert.deepEqual([...log.pending].sort(), Object.keys(log.days).sort(), "滚掉的那天也不再等着上传");
 });
 
 test("normalize：形状不对的整份当空的，坏的天和坏的数丢掉", () => {
@@ -80,8 +92,12 @@ test("normalize：形状不对的整份当空的，坏的天和坏的数丢掉",
   assert.deepEqual(normalizeUiUsage("x"), emptyUiUsage());
   assert.deepEqual(
     normalizeUiUsage({ since: "2026-09-01", days: { "2026-09-01": { "speak": 3, "nope": 1, "page.open": -2, "nav.words": 1.5 }, "昨天": { "speak": 1 }, "2026-09-02": null } }),
-    { since: "2026-09-01", days: { "2026-09-01": { "speak": 3 } } },
+    // 没有 pending 的是上传出现之前存下的：每一天服务器上都没有，都得传
+    { since: "2026-09-01", days: { "2026-09-01": { "speak": 3 } }, pending: ["2026-09-01"], nextUploadAt: 0 },
   );
+  const kept = normalizeUiUsage({ since: null, days: { "2026-09-01": { "speak": 1 } }, pending: ["2026-09-01", "2026-08-01", 7], nextUploadAt: 99 });
+  assert.deepEqual([kept.pending, kept.nextUploadAt], [["2026-09-01"], 99], "等着上传的只能是还留着的天");
+  assert.deepEqual(normalizeUiUsage({ days: { "2026-09-01": { "speak": 1 } }, pending: [] }).pending, [], "传完了的就是传完了，不因为重读一遍又全部重传");
 });
 
 test("报表：表里每个事件都有一行，零也列；次数多的在前，同次数按表里的顺序", () => {
@@ -150,4 +166,50 @@ test("进诊断导出；「清空日志」不清它，「清空全部记录」�
   assert.ok(area.data.has(KEY_UI_USAGE), "清日志是排查的第一步，不该把攒了几周的计数归零");
   await clearData();
   assert.deepEqual(await getUiUsage(), emptyUiUsage());
+});
+
+/* ==================== 上传 ==================== */
+
+test("settle：传的过程中没再涨的那几天划掉，涨了的留着", () => {
+  let log = bumpUiUsage(emptyUiUsage(), ["speak"], NOON - DAY);
+  log = bumpUiUsage(log, ["speak"], NOON);
+  const sent = structuredClone(log.days);
+  log = bumpUiUsage(log, ["speak"], NOON); // 请求在路上的时候又点了一下
+  const after = settleUiUpload(log, sent, 123);
+  assert.deepEqual([after.pending, after.nextUploadAt], [[dayKey(NOON)], 123]);
+  assert.deepEqual(settleUiUpload(log, {}, 456).pending, log.pending, "没传成：一天都不划");
+});
+
+test("上传：发的是每天的累计数，成了就划掉并隔一阵再传；没有待传的、没到点的不发", async () => {
+  const posts: UiUsageUpload[] = [];
+  const post = async (body: UiUsageUpload) => { posts.push(structuredClone(body)); };
+  await uploadUiUsage(post, "device-1", NOON);
+  assert.equal(posts.length, 0, "什么都没点过");
+
+  await recordUiUsage(["speak", "speak"], NOON - DAY);
+  await recordUiUsage(["nav.words"], NOON);
+  await uploadUiUsage(post, "device-1", NOON);
+  assert.deepEqual(posts, [{ deviceId: "device-1", platform: "extension", days: { [dayKey(NOON - DAY)]: { "speak": 2 }, [dayKey(NOON)]: { "nav.words": 1 } } }]);
+  const settled = await getUiUsage();
+  assert.deepEqual([settled.pending, settled.nextUploadAt], [[], NOON + UPLOAD_EVERY_MS]);
+  assert.equal(Object.keys(settled.days).length, 2, "传上去的还留在本机，设置页的表照样看得到");
+
+  await recordUiUsage(["nav.words"], NOON + 1000);
+  await uploadUiUsage(post, "device-1", NOON + 2000);
+  assert.equal(posts.length, 1, "刚传过，攒着");
+  await uploadUiUsage(post, "device-1", NOON + UPLOAD_EVERY_MS);
+  assert.deepEqual(posts[1]!.days, { [dayKey(NOON)]: { "nav.words": 2 } }, "只发动过的那天，发的是累计数");
+});
+
+test("上传没成：待传的原样留着，一小时后再试；服务器没有这个接口就一天问一次；都不抛错", async () => {
+  await recordUiUsage(["speak"], NOON);
+  let calls = 0;
+  const failing = (status?: number) => async () => { calls += 1; throw Object.assign(new Error("同步请求失败"), { status }); };
+  await assert.doesNotReject(uploadUiUsage(failing(), "device-1", NOON));
+  assert.deepEqual([(await getUiUsage()).pending, (await getUiUsage()).nextUploadAt], [[dayKey(NOON)], NOON + UPLOAD_RETRY_MS]);
+  await uploadUiUsage(failing(), "device-1", NOON + UPLOAD_RETRY_MS - 1);
+  assert.equal(calls, 1, "没到点不试");
+  await uploadUiUsage(failing(404), "device-1", NOON + UPLOAD_RETRY_MS);
+  assert.deepEqual([calls, (await getUiUsage()).nextUploadAt], [2, NOON + UPLOAD_RETRY_MS + UPLOAD_UNSUPPORTED_MS]);
+  assert.deepEqual((await getUiUsage()).pending, [dayKey(NOON)]);
 });

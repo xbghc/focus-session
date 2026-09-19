@@ -87,9 +87,10 @@ docker compose logs --no-log-prefix --since 24h server | grep '^{' | jq -c 'sele
 docker compose exec -T server node dist/server/src/admin.js stats
 docker compose exec -T server node dist/server/src/admin.js check
 docker compose exec -T server node dist/server/src/admin.js show-record <userId> <type> <id>
+docker compose exec -T server node dist/server/src/admin.js usage [userId]
 ```
 
-`stats` 输出各表体积和每个用户的记录、变更日志、资源统计，只有数量、体积和标识符。`check` 是只读的一致性自检：存量记录能否通过当前协议校验、变更日志是否连续、资源文件与索引是否一致，发现 `error` 时退出码为 1。`show-record` 是唯一输出记录内容的命令，用于按 ID 查看某条记录的当前值、变更历史和各设备上传的原始操作。字段和问题类型见 [后端说明](../server/README.md#诊断)。排查时优先使用这些入口，不要直接连接数据库。
+`stats` 输出各表体积和每个用户的记录、变更日志、资源统计，只有数量、体积和标识符。`check` 是只读的一致性自检：存量记录能否通过当前协议校验、变更日志是否连续、资源文件与索引是否一致，发现 `error` 时退出码为 1。`show-record` 是唯一输出记录内容的命令，用于按 ID 查看某条记录的当前值、变更历史和各设备上传的原始操作。`usage` 汇总各设备上传的首页按钮点击计数：按平台（扩展 / App）分开，每个按钮近 7 天、近 30 天和累计的次数、用过它的用户数和设备数，一次没人点过的也列出来，用来决定界面上哪些东西该留、该藏。字段和问题类型见 [后端说明](../server/README.md#诊断)。排查时优先使用这些入口，不要直接连接数据库。
 
 ## 配置项
 

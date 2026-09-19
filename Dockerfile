@@ -7,6 +7,7 @@ RUN npm ci --ignore-scripts
 COPY server/tsconfig.json ./
 COPY server/src ./src
 COPY src/sync/protocol.ts /build/src/sync/protocol.ts
+COPY src/lib/uiUsage.ts /build/src/lib/uiUsage.ts
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM node:22-bookworm-slim AS runtime
