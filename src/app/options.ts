@@ -7,13 +7,17 @@ import type { Update } from "../lib/update.ts";
 import {
   RELEASES_PAGE,
   autoCheckEnabled,
+  autoInstallEnabled,
   canSelfUpdate,
   checkForUpdate,
   currentVersion,
   downloadAndInstall,
   isDebugBuild,
+  lastFailure,
   markChecked,
+  readyVersion,
   setAutoCheck,
+  setAutoInstall,
   skipVersion,
 } from "./update.ts";
 
@@ -118,6 +122,28 @@ function addUpdateSection(): void {
   check.append(autoLabel, auto, autoHint);
   box.append(check);
 
+  // 自动下载并安装。老宿主（没有 updateReady）和 debug 包上这件事做不了，开关也就不摆出来
+  if (selfUpdate && !debug && native()?.updateReady) {
+    const install = document.createElement("div");
+    install.className = "field check";
+    const installLabel = document.createElement("label");
+    installLabel.htmlFor = "update-install";
+    installLabel.textContent = "自动下载并安装";
+    const installBox = document.createElement("input");
+    installBox.id = "update-install";
+    installBox.type = "checkbox";
+    installBox.style.width = "auto";
+    installBox.checked = autoInstallEnabled();
+    installBox.addEventListener("change", () => setAutoInstall(installBox.checked));
+    const installHint = document.createElement("span");
+    installHint.className = "hint";
+    installHint.textContent =
+      "只在不按流量计费的网络上下载；下好之后等你离开 App 再装（正读着文章时不装）。" +
+      "Android 12 起、且允许过「安装未知应用」时不用再点确认；否则下好后首页会给一个「安装」。";
+    install.append(installLabel, installBox, installHint);
+    box.append(install);
+  }
+
   const row = document.createElement("div");
   row.className = "row";
   const checkBtn = document.createElement("button");
@@ -134,7 +160,12 @@ function addUpdateSection(): void {
   skipBtn.hidden = true;
   const status = document.createElement("span");
   status.className = "muted small";
-  status.textContent = `当前版本 ${currentVersion()}`;
+  const failed = lastFailure();
+  const ready = readyVersion();
+  status.textContent = `当前版本 ${currentVersion()}`
+    + (ready ? `，${ready} 已下载` : "")
+    // 自动安装是在人不在的时候做的，没成的话这儿是唯一看得见原因的地方
+    + (failed?.message ? `；上次自动安装${failed.version ? ` ${failed.version}` : ""}没成：${failed.message}` : "");
   row.append(checkBtn, installBtn, skipBtn, status);
   box.append(row);
 

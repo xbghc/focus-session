@@ -50,6 +50,17 @@ export interface NativeBridge {
   updateDownload(url: string, expectedBytes: number): void;
   /** 把下好的包交给系统安装器。没有「安装未知应用」的授权时先送用户去那一页。 */
   updateInstall(): void;
+  /* ---- 自动更新（宿主的 UpdateInstaller）。老宿主没有这几个，调之前都要先问有没有 ---- */
+  /** 当前网络按不按流量计费。问不到时宿主报 true：宁可不下。 */
+  isMetered(): boolean;
+  /** 缓存里躺着的、完整且比装着的新的升级包是哪个版本；没有是空串。 */
+  updateReady(): string;
+  /** 这台设备上静默安装值不值得试：Android 12+、允许了「安装未知应用」、系统没在这个版本上拒绝过。 */
+  canSilentUpdate(): boolean;
+  /** 这个版本下好了，人离开 App 之后就装；传空串撤销。只记在宿主的内存里，每次开首页都要再说一次。 */
+  updateArm(version: string): void;
+  /** 上一次自动安装失败的原因，JSON `{version,message}`；没有是空串。 */
+  updateFailure(): string;
 }
 
 /** 宿主 → 页面的回调。宿主用 evaluateJavascript 调它们。 */

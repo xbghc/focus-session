@@ -2,7 +2,8 @@ import "./boot.ts";
 import "../dashboard/index.ts";
 import { go, readerUrl } from "./boot.ts";
 import { reasonOf } from "../lib/reason.ts";
-import { autoCheck, skipVersion } from "./update.ts";
+import { autoUpdate, skipVersion } from "./update.ts";
+import { native } from "./native.ts";
 import { localStorage } from "../sync/storage.ts";
 import { ARCHIVES_KEY, type ArchiveManifest } from "../archive/types.ts";
 import { cachedBlob } from "../archive/cache.ts";
@@ -314,34 +315,49 @@ const sharedBook = new URLSearchParams(location.search).get("epub");
 if (sharedBook) void importBook(sharedBook);
 
 /*
- * 开 App 时问一次有没有新版本（一天最多一次，设置页能关，详见 update.ts）。
+ * 开 App 时的自动更新（详见 update.ts 的 autoUpdate）：问一次有没有新版本（一天最多一次），
+ * 在不计费的网络上悄悄下好，人离开 App 之后由宿主装上——Android 12 起可以不弹确认框。
  *
- * 只在页首挂一条能划掉的横幅，不弹窗：来这儿是为了读文章，
- * 「有新版本」永远不比手头这篇要紧。真要更新在设置页里点。
+ * 页面上只挂一条能划掉的横幅，不弹窗：来这儿是为了读文章，「有新版本」永远不比手头这篇要紧。
+ * 横幅有三种说法，对应三种处境：
+ * - 下好了、会自己装：说一声就够了，给一个「现在就装」；
+ * - 下好了、但得人点（系统太老、没授权过、系统拒绝过静默）：给「安装」；
+ * - 没下（设置里关了、在计费网络上、老宿主）：老样子，「去更新」。
  */
 void (async () => {
-  const update = await autoCheck();
-  if (!update) return;
+  const step = await autoUpdate();
+  if (!step) return;
+  const version = step.do === "ready" ? step.version : step.update.version;
   const bar = document.createElement("div");
   bar.className = "update-bar";
   const text = document.createElement("span");
-  text.textContent = `有新版本 ${update.version}`;
-  const open = document.createElement("a");
-  open.href = "options.html#update";
-  open.textContent = "去更新";
-  open.addEventListener("click", (e) => {
-    e.preventDefault();
-    void go("options.html#update");
-  });
+  const act = document.createElement("a");
+  act.href = "options.html#update";
+  if (step.do === "ready") {
+    text.textContent = step.silent ? `新版本 ${version} 已下载，离开 App 后自动安装` : `新版本 ${version} 已下载`;
+    act.textContent = step.silent ? "现在就装" : "安装";
+    act.addEventListener("click", (e) => {
+      e.preventDefault();
+      native()?.updateInstall?.();
+    });
+  } else {
+    text.textContent = `有新版本 ${version}`;
+    act.textContent = "去更新";
+    act.addEventListener("click", (e) => {
+      e.preventDefault();
+      void go("options.html#update");
+    });
+  }
   const no = document.createElement("button");
   no.type = "button";
   no.className = "mini";
   no.textContent = "不用了";
   no.addEventListener("click", () => {
-    // 只跳过这一个版本；下一个照常提示
-    skipVersion(update.version);
+    // 只跳过这一个版本；下一个照常提示。已经武装的也一并撤销——「不用了」说的就是别装
+    skipVersion(version);
+    native()?.updateArm?.("");
     bar.remove();
   });
-  bar.append(text, open, no);
+  bar.append(text, act, no);
   document.querySelector("header")?.after(bar);
 })();

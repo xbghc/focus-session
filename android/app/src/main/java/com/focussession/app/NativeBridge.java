@@ -3,6 +3,7 @@ package com.focussession.app;
 import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
+import android.net.ConnectivityManager;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
@@ -51,6 +52,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -89,6 +91,10 @@ public class NativeBridge {
     /** 打开着的 EPUB，按页面给的句柄索引。 */
     private final Map<String, OpenBook> books = new ConcurrentHashMap<>();
     private final Set<String> aborted = ConcurrentHashMap.newKeySet();
+    /** 升级包正在下。下载和「看看下好了没有」「拿去装」都得让着它。 */
+    private final AtomicBoolean updateBusy = new AtomicBoolean();
+    /** 页面武装的那个版本，见 updateArm。 */
+    private volatile String armedUpdate;
     private TextRecognizer recognizer;
     private boolean closed;
 
@@ -536,7 +542,72 @@ public class NativeBridge {
      */
     @JavascriptInterface
     public void updateDownload(String url, long expectedBytes) {
-        pool.execute(() -> download(url, expectedBytes));
+        // 自动更新在首页悄悄下着的时候，人也可能在设置页手按一次：两个线程写同一个文件，出来的是个坏包
+        if (!updateBusy.compareAndSet(false, true)) {
+            js("window.__fsUpdate&&window.__fsUpdate.error(" + JSONObject.quote("已经在下载了，稍等一会儿") + ")");
+            return;
+        }
+        pool.execute(() -> {
+            try { download(url, expectedBytes); }
+            finally { updateBusy.set(false); }
+        });
+    }
+
+    /* ---- 自动更新：下好之后不用人点的那一半，见 UpdateInstaller ---- */
+
+    /** 当前网络按不按流量计费。自动下载只在不计费的网络上做；问不到就当计费，宁可不下。 */
+    @JavascriptInterface
+    public boolean isMetered() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) activity.getSystemService(Context.CONNECTIVITY_SERVICE);
+            return cm == null || cm.isActiveNetworkMetered();
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** 缓存里躺着的、完整且比装着的新的升级包是哪个版本；没有就是空串。 */
+    @JavascriptInterface
+    public String updateReady() {
+        return updateBusy.get() ? "" : UpdateInstaller.readyVersion(activity);
+    }
+
+    /** 这台设备上静默安装值不值得试（Android 12+、允许了「安装未知应用」、系统没在这个版本上拒绝过）。 */
+    @JavascriptInterface
+    public boolean canSilentUpdate() {
+        return UpdateInstaller.canSilent(activity);
+    }
+
+    /**
+     * 页面说：这个版本下好了，人离开 App 之后就装。传空串是撤销（设置里关掉了自动安装）。
+     * 只记在内存里：进程没了就等下回打开首页时页面再说一次。
+     */
+    @JavascriptInterface
+    public void updateArm(String version) {
+        armedUpdate = version == null || version.isEmpty() ? null : version;
+    }
+
+    /** MainActivity 在人离开之后来问：要装的是哪个版本。 */
+    String armedUpdate() {
+        return armedUpdate;
+    }
+
+    /** 上一次自动安装失败的原因，JSON {version,message}；没有就是空串。 */
+    @JavascriptInterface
+    public String updateFailure() {
+        return UpdateInstaller.failure(activity);
+    }
+
+    /** 人离开 App 几秒之后由 MainActivity 调过来。拷文件要时间，放到线程池里。 */
+    void installArmedUpdate() {
+        String version = armedUpdate;
+        if (version == null || updateBusy.get()) return;
+        pool.execute(() -> {
+            // 武装之后可能又过了很久：再核对一遍躺着的还是不是那个版本、现在还能不能静默装
+            if (!version.equals(UpdateInstaller.readyVersion(activity)) || !UpdateInstaller.canSilent(activity)) return;
+            armedUpdate = null;
+            UpdateInstaller.commitSilently(activity, updateApk(activity), version);
+        });
     }
 
     /** 升级包的落点。MainActivity 恢复「刚才正等着装」时也要认得这个路径。 */

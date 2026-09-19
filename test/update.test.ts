@@ -5,8 +5,11 @@ import {
   isNewer,
   parseVersion,
   pickReleaseApk,
+  planAutoUpdate,
   readUpdate,
+  type AutoInput,
   type ReleaseAsset,
+  type Update,
 } from "../src/lib/update.ts";
 
 const asset = (name: string, size = 1024): ReleaseAsset => ({
@@ -123,4 +126,57 @@ test("readUpdate 没有说明时 notes 是空串而不是 undefined", () => {
     "0.3.4",
   );
   assert.equal(up?.notes, "");
+});
+
+/* ==================== 自动下载并安装 ==================== */
+
+const found = (version: string): Update => ({ tag: `v${version}`, version, notes: "", apk: asset(`focus-session-v${version}.apk`) });
+/** 一切就绪的默认处境：开着自动安装、新宿主、不计费的网络、能静默装、没失败过、没跳过。 */
+const auto = (over: Partial<AutoInput> = {}): AutoInput => ({
+  ready: "", found: null, skipped: () => false, autoInstall: true, canPrefetch: true, metered: false, canSilent: true, failedVersion: null, ...over,
+});
+
+test("没有躺着的包、也没问到新版本：什么都不做", () => {
+  assert.deepEqual(planAutoUpdate(auto()), { do: "nothing" });
+});
+
+test("问到新版本：不计费的网络上悄悄下", () => {
+  const update = found("0.4.0");
+  assert.deepEqual(planAutoUpdate(auto({ found: update })), { do: "download", update });
+});
+
+test("不该悄悄下的四种处境都退回老样子——出一条横幅，下不下由人决定", () => {
+  const update = found("0.4.0");
+  for (const over of [{ metered: true }, { autoInstall: false }, { canPrefetch: false }, { failedVersion: "0.4.0" }]) {
+    assert.deepEqual(planAutoUpdate(auto({ found: update, ...over })), { do: "offer", update }, JSON.stringify(over));
+  }
+  // 失败过的是别的版本：这个照下
+  assert.equal(planAutoUpdate(auto({ found: update, failedVersion: "0.3.9" })).do, "download");
+});
+
+test("包已经躺着：武装它，人离开之后自己装", () => {
+  assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0" })), { do: "ready", version: "0.4.0", silent: true });
+  // 躺着的就是今天问到的那个：不重下
+  assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0", found: found("0.4.0") })), { do: "ready", version: "0.4.0", silent: true });
+});
+
+test("包躺着但静默装不了：照样认它，只是得人点一下", () => {
+  for (const over of [{ canSilent: false }, { autoInstall: false }, { failedVersion: "0.4.0" }]) {
+    assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0", ...over })), { do: "ready", version: "0.4.0", silent: false }, JSON.stringify(over));
+  }
+  // 计费网络只管下不下；已经下好的照装
+  assert.equal(planAutoUpdate(auto({ ready: "0.4.0", metered: true })).do, "ready");
+});
+
+test("用户对这个版本说过「不用了」：躺着的包不提、不装", () => {
+  assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0", skipped: (v) => v === "0.4.0" })), { do: "nothing" });
+});
+
+test("躺着的包已经不是最新的：去下新的那个，不装旧的", () => {
+  const update = found("0.4.1");
+  assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0", found: update })), { do: "download", update });
+  // 新的那个下不了（计费网络）：出横幅说有 0.4.1，也不去装躺着的 0.4.0
+  assert.deepEqual(planAutoUpdate(auto({ ready: "0.4.0", found: update, metered: true })), { do: "offer", update });
+  // 问到的反而更旧（发布被撤回之类）：躺着的照装
+  assert.equal(planAutoUpdate(auto({ ready: "0.4.1", found: found("0.4.0") })).do, "ready");
 });
