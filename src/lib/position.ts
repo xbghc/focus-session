@@ -87,6 +87,23 @@ export function planRestore(input: RestoreInput): RestorePlan | null {
   return { index: at, offset: Math.round(pos.offset), matched, total: list.length };
 }
 
+/** 夹偏移时在段落末尾留出的余量，差不多一行字高：落点停在这段的最后一行上，而不是正好贴着它的下边。 */
+export const ANCHOR_TAIL_PX = 24;
+
+/**
+ * 把存下来的偏移夹进**这台设备上**锚点段落的高度里。
+ *
+ * 偏移是像素，是在记下它的那台设备的排版下量的。同一段字在手机上有六百像素高，在电脑上只有一百五——
+ * 手机上「滚进这段四百像素」原样搬到电脑上，落点就越过了这段的末尾，后面两三段直接被跳过，
+ * 而人会以为那些自己读过了。夹住之后最坏是停在这段的最后一行：多读半段，不漏读。
+ *
+ * 同一台设备上这条几乎不起作用（偏移本来就小于段高）；负的偏移（视口顶落在段前的空隙里）不动它。
+ */
+export function clampOffset(offset: number, anchorHeight: number): number {
+  if (!Number.isFinite(anchorHeight) || anchorHeight <= 0) return offset;
+  return Math.min(offset, Math.max(0, Math.round(anchorHeight) - ANCHOR_TAIL_PX));
+}
+
 /**
  * 两次采到的位置算不算「同一个地方」。
  *

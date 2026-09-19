@@ -2,7 +2,7 @@ import { test, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import type { ReadingPosition } from "../src/types.ts";
-import { planRestore, samePosition, type RestoreInput } from "../src/lib/position.ts";
+import { ANCHOR_TAIL_PX, clampOffset, planRestore, samePosition, type RestoreInput } from "../src/lib/position.ts";
 
 /** 10 段的文章，指纹是 h0…h9。 */
 const PARAS = Array.from({ length: 10 }, (_, i) => ({ hash: `h${i}` }));
@@ -240,4 +240,20 @@ test("没挂出来时 hide 不炸", () => {
 test("带上剩余时间时，说明里跟一句还需多久", () => {
   card.show(5, 10, "还需约 12 分钟");
   assert.equal(text(".sub"), "第 5 段 / 共 10 段 · 还需约 12 分钟");
+});
+
+/* ==================== 跨设备：偏移是别人的屏幕上量的 ==================== */
+
+test("手机上滚进段落四百像素，搬到电脑上不能越过这段的末尾——否则后面几段直接被跳过", () => {
+  // 同一段字：手机上 600px 高，电脑上 150px 高
+  assert.equal(clampOffset(400, 150), 150 - ANCHOR_TAIL_PX);
+  assert.equal(clampOffset(400, 600), 400, "反方向（电脑→手机）段落更高，偏移原样用");
+});
+
+test("同一台设备上这条不起作用；段前空隙里的负偏移不动；量不到高度就不夹", () => {
+  assert.equal(clampOffset(80, 300), 80);
+  assert.equal(clampOffset(-12, 300), -12);
+  assert.equal(clampOffset(400, 0), 400);
+  assert.equal(clampOffset(400, Number.NaN), 400);
+  assert.equal(clampOffset(400, 10), 0, "段落比余量还矮：停在段首，不出负数");
 });

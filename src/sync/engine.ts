@@ -282,6 +282,26 @@ export function runSync():Promise<SyncStatus> {
   };
   running=work().finally(()=>{running=null;});return running.then(s=>({...s,running:false}));
 }
+/**
+ * 马上要用到「另一台设备刚写的东西」之前调：等一轮同步，但只等一小会儿。
+ *
+ * 现在只有续读位置用它。在电脑上读到一半、拿起手机打开同一篇——位置是几秒前才传到服务器的，
+ * 而这台设备上一次拉取可能是一分钟前（扩展的定时器）、也可能还没发生（App 刚冷启动，头一轮排在一秒后）。
+ * 不等的话读到的是旧位置，人会被放回上上次停下的地方，比不跳还糟。
+ *
+ * 刚同步过（freshMs 内）就不再跑；正在退避（服务器连不上）也不跑——这时候等只是白等。
+ * 等不到就算了：超时之后那一轮照常在后台跑完，只是这一次用的是本机已有的位置。
+ */
+export async function syncBefore(maxWaitMs=2500,freshMs=10_000):Promise<void> {
+  try {
+    if(!hasSyncStorage())return;
+    const s=await syncDriver().read();
+    if(!s.config.enabled||s.retryAt>Date.now())return;
+    if(!running&&s.lastSuccess!==null&&Date.now()-s.lastSuccess<freshMs)return;
+    let timeout:ReturnType<typeof setTimeout>|undefined;
+    await Promise.race([runSync(),new Promise<void>(resolve=>{timeout=setTimeout(resolve,maxWaitMs);})]).finally(()=>clearTimeout(timeout));
+  } catch { /* 同步出不出错都不该拦着人打开文章 */ }
+}
 export function scheduleSync(delay=2000):void {
   if(timer)clearTimeout(timer);
   timer=setTimeout(()=>{timer=undefined;void (async()=>{
