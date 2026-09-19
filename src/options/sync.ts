@@ -43,10 +43,14 @@ export function setupSyncSettings(): void {
 
   const refresh = async (fill = false): Promise<void> => {
     const version = ++refreshVersion;
-    const status = await chrome.runtime.sendMessage({ type: "sync:get" }) as SyncStatus;
+    const reply = await chrome.runtime.sendMessage({ type: "sync:get" }) as SyncStatus | SyncReply | undefined;
     if (version !== refreshVersion || stopped) return;
-    if (!status || typeof status.enabled !== "boolean") throw new Error("无法读取同步设置，请重新打开设置页");
-    render(status, fill);
+    // 后台出错时回的是 {ok:false,error}；把原因带出来，别让所有故障都长成同一句话。
+    if (!reply || !("enabled" in reply) || typeof reply.enabled !== "boolean") {
+      const reason = reply && "error" in reply && reply.error ? `：${reply.error}` : "";
+      throw new Error(`无法读取同步设置，请重新打开设置页${reason}`);
+    }
+    render(reply, fill);
   };
 
   const connection = (): { baseUrl: string; token?: string } => {
