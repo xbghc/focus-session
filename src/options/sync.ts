@@ -49,7 +49,7 @@ export function setupSyncSettings(): void {
     const state = status.running ? "正在同步…" : status.enabled ? "同步已启用" : status.tokenSet ? "同步已暂停" : "未连接";
     const uploadable = status.pending - status.blocked;
     const aside = status.error ? text("span", status.error, "aside error")
-      : status.blocked > 0 ? text("span", `${status.blocked} 项记录无法上传`, "aside warn")
+      : status.blocked > 0 ? text("span", status.blockedMaterials > 0 ? `${status.blockedMaterials} 篇阅读材料无法上传` : `${status.blocked} 项记录无法上传`, "aside warn")
       : !status.tokenSet ? null
       : text("span", [
         uploadable > 0 ? `待上传 ${uploadable} 项` : "",
@@ -70,7 +70,8 @@ export function setupSyncSettings(): void {
       const dd = text("dd", "", "warn");
       const list = document.createElement("ul");
       for (const reason of status.blockedReasons) list.append(text("li", reason));
-      dd.append(`${status.blocked} 项没通过校验，留在本机没有上传：`, list, text("span", "其余记录照常同步。", "note"));
+      const scope = status.blockedMaterials > 0 ? `${status.blockedMaterials} 篇阅读材料（连同名下共 ${status.blocked} 项记录）` : `${status.blocked} 项记录`;
+      dd.append(`${scope}没通过校验，留在本机没有上传：`, list, text("span", "其余照常同步。在首页展开那篇文章的「详情」可以看到它名下有什么。", "note"));
       rows.push(["无法上传", dd]);
     }
     if (status.userId) {

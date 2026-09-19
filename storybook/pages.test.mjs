@@ -18,8 +18,8 @@ const scenarios = [
   ['dashboard', 'error', 'classification', '判别失败'],
   ['app', 'populated', 'classification', 'LLM：非文章'],
   ['options', 'populated', 'articles', '文章记录黑名单'],
-  ['options', 'error', 'articles', '项没通过校验，留在本机没有上传'],
-  ['appOptions', 'error', 'articles', '项没通过校验，留在本机没有上传'],
+  ['options', 'error', 'articles', '1 篇阅读材料（连同名下共 2 项记录）没通过校验，留在本机没有上传'],
+  ['appOptions', 'error', 'articles', '1 篇阅读材料（连同名下共 2 项记录）没通过校验，留在本机没有上传'],
   ['sidepanel', 'populated', 'articles', 'consolidate'],
   ['app', 'populated', 'articles', '共 3 篇'],
   ['app', 'populated', 'articles', '深度阅读的技艺'],
@@ -246,7 +246,8 @@ test('sync section keeps its explanation behind the title button and its diagnos
     assert.equal(document.getElementById('sync-summary').textContent, '同步已启用 · 服务器暂时不可达（模拟）');
     assert.equal(document.getElementById('sync-dot').dataset.tone, 'error');
     assert.deepEqual([...document.querySelectorAll('#sync-facts dt')].map(dt => dt.textContent).slice(0, 4), ['错误', '上次成功', '待上传', '无法上传']);
-    assert.equal(document.querySelectorAll('#sync-facts li').length, 2);
+    assert.equal(document.querySelectorAll('#sync-facts li').length, 1);
+    assert.ok(document.querySelector('#sync-facts li').textContent.startsWith('《旧文章》'));
   } finally { failing.close(); }
 
   const app = open('appOptions', 'populated');
@@ -257,4 +258,46 @@ test('sync section keeps its explanation behind the title button and its diagnos
     assert.equal(document.getElementById('sync-about').hidden, false);
     assert.equal(document.getElementById('sync-settings').closest('details').querySelector('summary strong').textContent, '设备同步');
   } finally { app.close(); }
+});
+
+test('an article card unfolds into its own focus sessions, looked-up words and sync standing, on the extension and in the App', async () => {
+  for (const page of ['dashboard', 'app']) {
+    const html = pages[page].replace('<!--PREVIEW_CONFIG-->', `<script>window.__PREVIEW__=${JSON.stringify({ page, state: 'populated', tab: 'articles' })}</script>`);
+    let closeWindow;
+    const dom = new JSDOM(html, {
+      url: 'https://preview.invalid/', runScripts: 'dangerously', pretendToBeVisual: true,
+      beforeParse(window) {
+        closeWindow = window.close.bind(window);
+        window.structuredClone = structuredClone;
+        window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
+        window.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
+        window.scrollTo = () => {};
+        window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+      },
+    });
+    const settle = () => new Promise(resolve => setTimeout(resolve, 60));
+    try {
+      await settle();
+      const { document } = dom.window;
+      const toggle = index => document.querySelectorAll('#articles .article-card')[index].querySelector('button[aria-expanded]');
+      assert.equal(document.querySelector('.material-detail'), null, page);
+      for (const index of [0, 1, 2]) { toggle(index).click(); await settle(); }
+      const details = [...document.querySelectorAll('.material-detail')];
+      assert.equal(details.length, 3, page);
+      assert.deepEqual([...details[0].querySelectorAll('h4')].map(h => h.textContent.split(' · ')[0]), ['专注时段', '划词', '同步']);
+      assert.ok(details[0].textContent.includes('consolidate'));
+      assert.ok(details[0].querySelector('.sync-line').textContent.startsWith('已同步到服务器'));
+      assert.ok(details[1].textContent.includes('这篇里还没有划过词'));
+      assert.ok(details[1].querySelector('.sync-line').textContent.includes('1 个专注时段、12 个段落'));
+      assert.ok(details[2].querySelector('.sync-reason').textContent.includes('trackedWords'));
+      // Survives the list being redrawn, and folds back.
+      const search = document.getElementById('q-article');
+      search.value = ''; search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      assert.equal(document.querySelectorAll('.material-detail').length, 3, page);
+      assert.equal(toggle(0).textContent, '收起');
+      toggle(0).click();
+      assert.equal(document.querySelectorAll('.material-detail').length, 2, page);
+      assert.deepEqual(Array.from(dom.window.__previewErrors), []);
+    } finally { closeWindow(); }
+  }
 });

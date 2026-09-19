@@ -12,7 +12,8 @@ let syncStatus: SyncStatus = {
   tokenSet: options.state !== 'empty', deviceId: 'storybook-device', pending: options.state === 'error' ? 3 : 0,
   lastSuccess: options.state === 'empty' ? null : Date.now() - 60_000,
   error: options.state === 'error' ? '服务器暂时不可达（模拟）' : null, running: options.state === 'loading',
-  blocked: options.state === 'error' ? 2 : 0, blockedReasons: options.state === 'error' ? ['article：Entity identity mismatch ×1（如 https://example.com/legacy）', '1 项挂在这些文章名下'] : [],
+  blocked: options.state === 'error' ? 2 : 0, blockedReasons: options.state === 'error' ? ['《旧文章》https://example.com/legacy：文章记录的 trackedWords、reachedBottom 字段缺失或不合规；名下 1 个专注时段一起留在本机'] : [],
+  blockedMaterials: options.state === 'error' ? 1 : 0,
   ...(options.state === 'empty' ? {} : { userId: 'preview-user', serverId: 'preview-server' }),
 };
 const storage = memoryBackend();
@@ -47,6 +48,14 @@ export const shim = installChromeShim({
   async handle(raw, sender) {
     const sync = raw as { type: string; baseUrl?: string; token?: string; enabled?: boolean };
     if (sync.type === 'sync:get') return { ...syncStatus };
+    // 预览里没有真的同步库：三篇文章各摆一种处境，详情里三种说法都看得到
+    if (sync.type === 'sync:material') {
+      const at = seed.articles.findIndex(a => a.id === (raw as { articleId?: string }).articleId);
+      return options.state === 'empty' || at < 0 ? { state: 'local', waiting: [], reasons: [] }
+        : at === 0 ? { state: 'synced', waiting: [], reasons: [] }
+        : at === 1 ? { state: 'pending', waiting: [['专注时段', 1], ['段落', 12]], reasons: [] }
+        : { state: 'blocked', waiting: [['文章记录', 1], ['专注时段', 2]], reasons: ['文章记录的 trackedWords、reachedBottom 字段缺失或不合规'] };
+    }
     if (sync.type.startsWith('sync:')) {
       if (sync.type === 'sync:disconnect') {
         syncStatus = { ...syncStatus, enabled: false, tokenSet: false, error: null, running: false };
