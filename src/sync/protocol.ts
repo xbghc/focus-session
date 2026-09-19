@@ -93,7 +93,12 @@ export function validateRecord(input: unknown): SyncRecord {
     if (["article","position","articleReview","articleCard","articleText","archive"].includes(r.type)&&!url(r.id))throw new Error("Invalid article identity");
     if (r.articleId!==undefined && !url(r.articleId))throw new Error("Invalid parent article");
     if (["session","position","articleReview","articleCard","articleText","archive"].includes(r.type)&&v.articleId!==r.articleId)throw new Error("Parent identity mismatch");
-    if (r.type==="article" && (![v.totalWords,v.trackedWords,v.paragraphCount,v.firstSeenTs,v.lastSeenTs].every(finite)||typeof v.title!=="string"||!url(v.url)||typeof v.finished!=="boolean"||typeof v.reachedBottom!=="boolean"))throw new Error("Invalid article");
+    if (r.type==="article") {
+      // Name the fields: "Invalid article" alone cannot tell a legacy record from a corrupt one.
+      const bad=[...["totalWords","trackedWords","paragraphCount","firstSeenTs","lastSeenTs"].filter(k=>!finite(v[k])),...(typeof v.title!=="string"?["title"]:[]),
+        ...(!url(v.url)?["url"]:[]),...["finished","reachedBottom"].filter(k=>typeof v[k]!=="boolean")];
+      if(bad.length)throw new Error(`Invalid article: ${bad.join(", ")}`);
+    }
     if (r.type==="card" && (v.key!==r.id||!validText(v.id)||!texts(v.snippetIds)||!fsrs(v.base)))throw new Error("Invalid review card");
     if (r.type==="articleCard" && !fsrs(v.base))throw new Error("Invalid article review card");
     if(r.type==="position"&&(!validText(v.hash)||![v.index,v.paragraphCount,v.savedTs].every(finite)||typeof v.offset!=="number"||!Number.isFinite(v.offset)))throw new Error("Invalid reading position");
