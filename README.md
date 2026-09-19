@@ -922,6 +922,8 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 页面入口：`popup`（当前页状态）、`dashboard`（文章 / 复习 / 生词本）、`sidepanel`（本页生词）、
 `options`（设置）。App 的入口在 `src/app/`：`index`（首页 = dashboard）、`read`（阅读器）、
 `options`（= 扩展的设置页）；每个入口的第一个 import 都是 `boot.ts`，装 chrome 垫片和宿主桥。
+设置页的表单本体在 `options/form.ts`，两端共用；`options/index.ts` 只是扩展那一端的入口，多挂一个
+左侧分区目录（`options/nav.ts`）——App 把分区折成一行一个，那份列表自己就是目录，用不着它。
 两边共用的本体：`background/handle.ts`（消息处理）、`content/track.ts`（页内追踪）。
 只有扩展用得上的是 `content/host.ts`——单页应用换文章时按新地址重起一轮，App 的阅读器
 自己渲染正文，没有这个问题。

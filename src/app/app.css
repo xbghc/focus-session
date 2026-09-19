@@ -279,10 +279,14 @@ body.mobile-settings { padding-bottom: calc(130px + var(--sa-bottom)); }
 .mobile-settings input, .mobile-settings textarea { min-width: 0; max-width: 100%; border-radius: 6px; }
 .mobile-settings button { min-height: 44px; border-radius: 6px; }
 .mobile-settings .settings-section p { overflow-wrap: anywhere; }
-.mobile-settings .settings-savebar { position: fixed; z-index: 10; bottom: 0; left: 0; right: 0; max-width: 620px; margin: 0 auto; padding: 12px max(14px, var(--sa-right)) calc(12px + var(--sa-bottom)) max(14px, var(--sa-left)); background: var(--bg); border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
+/* 选择器带上 body、top 写回 auto：options.html 里那条「有修改就吸边」的 .savebar.is-dirty 排在这份样式之后，
+   同样两个类的话它赢，App 这条固定在底部的保存条一改东西就会被换成 sticky，还被 top: 0 拉成一整屏高。 */
+body.mobile-settings .settings-savebar { position: fixed; z-index: 10; top: auto; bottom: 0; left: 0; right: 0; max-width: 680px; margin: 0 auto; padding: 12px max(14px, var(--sa-right)) calc(12px + var(--sa-bottom)) max(14px, var(--sa-left)); background: var(--bg); border-top: 1px solid var(--line); border-bottom: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
 .mobile-settings .settings-savebar #status { grid-column: 1 / -1; min-height: 0; }
 .mobile-settings .settings-savebar #status:empty { display: none; }
 .mobile-settings .settings-savebar button { width: 100%; }
+/* 保存条在手机上是两格，塞不下第三个按钮；改错了重进一次设置页就回去了 */
+.mobile-settings #revert { display: none; }
 
 button.mini {
   font-family: var(--sans); font-size: 12px; cursor: pointer;

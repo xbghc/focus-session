@@ -12,7 +12,7 @@ import { bootSync } from "../sync/engine.ts";
 /**
  * App 每个页面的第一件事：把 chrome.* 垫片和宿主桥装好。
  *
- * 必须是各页面入口的**第一个 import**——dashboard/index.ts、options/index.ts 在模块顶层
+ * 必须是各页面入口的**第一个 import**——dashboard/index.ts、options/form.ts 在模块顶层
  * 就开始发消息，那时 chrome 得已经在了。
  */
 

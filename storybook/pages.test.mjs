@@ -104,3 +104,84 @@ test('sync settings keep secrets out of status, require a new token for a new ad
     assert.deepEqual(Array.from(dom.window.__previewErrors), []);
   } finally { closeWindow(); }
 });
+
+test('options form tracks unsaved changes, keeps blacklists on reset, and only the extension page gets a section index', async () => {
+  const open = (page) => {
+    const html = pages[page].replace('<!--PREVIEW_CONFIG-->', `<script>window.__PREVIEW__=${JSON.stringify({ page, state: 'populated', tab: 'articles' })}</script>`);
+    let closeWindow;
+    const dom = new JSDOM(html, {
+      url: 'https://preview.invalid/', runScripts: 'dangerously', pretendToBeVisual: true,
+      beforeParse(window) {
+        closeWindow = window.close.bind(window);
+        window.structuredClone = structuredClone;
+        window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
+        window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+      },
+    });
+    return { dom, close: () => closeWindow() };
+  };
+  const settle = () => new Promise(resolve => setTimeout(resolve, 30));
+
+  const app = open('appOptions');
+  try {
+    await settle();
+    assert.equal(app.dom.window.document.querySelector('.section-nav'), null);
+  } finally { app.close(); }
+
+  const { dom, close } = open('options');
+  try {
+    await settle();
+    const { document, chrome, Event } = dom.window;
+    const type = (id, value) => { const el = document.getElementById(id); el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); };
+    const bar = document.getElementById('savebar');
+    const status = document.getElementById('status');
+    const revert = document.getElementById('revert');
+
+    const links = [...document.querySelectorAll('.section-nav a')];
+    assert.equal(links.length, document.querySelectorAll('body > fieldset').length);
+    assert.ok(links.every(link => document.getElementById(link.getAttribute('href').slice(1))?.tagName === 'FIELDSET'));
+    assert.deepEqual([...document.querySelectorAll('.section-nav p')].map(p => p.textContent), ['连接', '偏好', '维护']);
+
+    // 刚读进来的值不算修改；模型那组字段不归「保存」管，改了也不算
+    assert.equal(bar.classList.contains('is-dirty'), false);
+    assert.equal(revert.hidden, true);
+    type('model', 'another-model');
+    assert.equal(bar.classList.contains('is-dirty'), false);
+
+    type('finishRatio', '85');
+    type('excluded', 'https://example.com/search\nnews.example.com');
+    assert.equal(bar.classList.contains('is-dirty'), true);
+    assert.equal(status.textContent, '2 项修改尚未保存');
+    assert.equal(revert.hidden, false);
+
+    // 恢复默认只动开关和阈值，名单原样留着
+    type('idle', '45');
+    document.getElementById('reset').click();
+    assert.equal(document.getElementById('idle').value, '30');
+    assert.equal(document.getElementById('finishRatio').value, '80');
+    assert.equal(document.getElementById('excluded').value, 'https://example.com/search\nnews.example.com');
+
+    revert.click();
+    assert.equal(bar.classList.contains('is-dirty'), false);
+    assert.equal(document.getElementById('excluded').value.includes('news.example.com'), false);
+
+    // stall 不大于 idle：不保存，错标在那一对框上，改了就消
+    const saved = await chrome.runtime.sendMessage({ type: 'settings:get' });
+    type('idle', '100'); type('stall', '90');
+    document.getElementById('save').click();
+    await settle();
+    assert.deepEqual(await chrome.runtime.sendMessage({ type: 'settings:get' }), saved);
+    assert.equal(document.getElementById('idle').getAttribute('aria-invalid'), 'true');
+    assert.equal(document.getElementById('stall').validity.customError, true);
+    assert.equal(status.classList.contains('error'), true);
+    type('stall', '200');
+    assert.equal(document.getElementById('idle').hasAttribute('aria-invalid'), false);
+    assert.equal(document.getElementById('stall').validity.customError, false);
+
+    document.getElementById('save').click();
+    await settle();
+    assert.equal((await chrome.runtime.sendMessage({ type: 'settings:get' })).stallTimeoutMs, 200_000);
+    assert.equal(bar.classList.contains('is-dirty'), false);
+    assert.deepEqual(Array.from(dom.window.__previewErrors), []);
+  } finally { close(); }
+});
