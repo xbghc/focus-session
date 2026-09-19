@@ -20,7 +20,7 @@ import { DEFAULT_SETTINGS, PORT_TRANSLATE } from "../types.ts";
 import { normalizeUrl, hostnameOf, isUrlExcluded } from "../lib/url.ts";
 import { isFinished } from "../lib/finish.ts";
 import { reasonOf } from "../lib/reason.ts";
-import { planRestore, type RestorePlan } from "../lib/position.ts";
+import { clampOffset, planRestore, type RestorePlan } from "../lib/position.ts";
 import { estimateReading, formatEstimate } from "../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, extractFromContainer, ParagraphTracker } from "./paragraphs.ts";
 import { selectRegion, cancelRegion } from "./screenshot.ts";
@@ -689,7 +689,9 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     syncScrollBaseline();
   }
 
-  function applyRestore(target: Element, p: RestorePlan): void {
+  function applyRestore(target: Element, plan: RestorePlan): void {
+    // 位置可能是另一台设备记的，那边的像素偏移搬到这块屏上会越过段尾，见 clampOffset
+    const p = { ...plan, offset: clampOffset(plan.offset, target.getBoundingClientRect().height) };
     scrollToAnchor(target, p.offset);
     // 跳回来的那一刻顺便说一句还要读多久：「现在读还是待会儿读」最需要的就是这个数
     const left = estimateNow();

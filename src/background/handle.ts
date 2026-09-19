@@ -1,6 +1,6 @@
 import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "./articleFilter.ts";
 import { localStorage } from "../sync/storage.ts";
-import { configureSync, disconnectSync, materialSync, runSync, syncStatus, testSync } from "../sync/engine.ts";
+import { configureSync, disconnectSync, materialSync, runSync, syncBefore, syncStatus, testSync } from "../sync/engine.ts";
 import { saveArchive } from "../archive/background.ts";
 import { clearArchiveCache } from "../archive/cache.ts";
 import { normalizeUrl } from "../lib/url.ts";
@@ -176,8 +176,14 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       if(sender.url && new URL(sender.url).protocol !== "chrome-extension:" && normalizeUrl(sender.url)!==msg.payload.articleId)throw new Error("只能保存当前页面的文章");
       return saveArchive(msg.payload);
     }
-    case "article:local-state": return localStorage().get([`p:${msg.articleId}`,`pos:${msg.articleId}`,"articles","speed"]);
-    case "article:classify": return classifyPage(msg.url, msg.title, msg.text);
+    case "article:local-state":
+      // 续读位置可能是另一台设备几秒前才写的：先等一轮拉取（有上限），再读
+      await syncBefore();
+      return localStorage().get([`p:${msg.articleId}`,`pos:${msg.articleId}`,"articles","speed"]);
+    case "article:classify":
+      // 判别要问模型，少说一两秒。同步趁这会儿先跑起来，等轮到上面那条读位置时多半已经是新的了，不用再等
+      void syncBefore();
+      return classifyPage(msg.url, msg.title, msg.text);
     case "article:classify-history": return classifyHistoryArticle(msg.articleId);
     case "articles:blacklist-suggest": return suggestBlacklist(msg.articleIds);
     case "articles:delete": {

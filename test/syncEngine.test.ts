@@ -696,3 +696,77 @@ test("a cycle with nothing to upload checks identity and downloads once; the clo
   assert.equal((await syncDriverCursor()), server.account().head, "the closing download moves the cursor past this device's own upload");
 });
 async function syncDriverCursor(): Promise<number> { return (await (await import("../src/sync/storage.ts")).syncDriver().read()).cursor; }
+
+test("reading on the computer, then opening the same article on the phone: the phone asks the server first and lands on the computer's position", async () => {
+  await freshServer();
+  const { handle } = await import("../src/background/handle.ts");
+  const ephemeral: Record<string, unknown> = {};
+  const g = globalThis as Record<string, any>;
+  const prior = g["chrome"];
+  g["chrome"] = { storage: { session: {
+    get: async (key: string) => structuredClone({ [key]: ephemeral[key] }),
+    set: async (values: Record<string, unknown>) => { Object.assign(ephemeral, structuredClone(values)); },
+  } } };
+  const id = "https://example.com/long-read";
+  const meta = { articleId: id, url: id, title: "Long read", totalWords: 900, trackedWords: 900, paragraphCount: 30, expectedMs: 240_000 };
+  const position = (hash: string, index: number, offset: number, savedTs: number) => ({ articleId: id, hash, index, offset, paragraphCount: 30, savedTs });
+  const localState = async () => (await handle({ type: "article:local-state", articleId: id }, {}) as Record<string, any>)[`pos:${id}`];
+  try {
+    // The phone read a little of it last week and is up to date with the server.
+    const phone = device("user-a", TOKEN_A2);
+    await handle({ type: "article:meta", meta }, { tab: { id: 7 } });
+    await handle({ type: "session:start", articleId: id, url: id, title: "Long read", startTs: 1_000 }, { tab: { id: 7 } });
+    await handle({ type: "session:heartbeat", articleId: id, now: 6_000, wordsRead: 40, position: position("para-3", 3, 20, 6_000) }, { tab: { id: 7 } });
+    assert.equal((await engine.runSync()).error, null);
+
+    // Today, on the computer: further into the same article. Heartbeats push within seconds.
+    const desktop = device("user-a", TOKEN_A);
+    assert.equal((await engine.runSync()).error, null);
+    assert.equal((await localState()).hash, "para-3", "the computer starts from where the phone stopped");
+    await handle({ type: "session:start", articleId: id, url: id, title: "Long read", startTs: 100_000 }, { tab: { id: 1 } });
+    await handle({ type: "session:heartbeat", articleId: id, now: 105_000, wordsRead: 300, position: position("para-17", 17, 64, 105_000) }, { tab: { id: 1 } });
+    assert.equal((await engine.runSync()).error, null);
+    assert.equal((await desktop.read()).outbox.length, 0);
+
+    // Back on the phone. Its last pull predates the computer's session.
+    installStorage(phone);
+    await phone.update(state => { state.lastSuccess = Date.now() - 5 * 60_000; });
+    assert.equal((await phone.read()).data[`pos:${id}`].hash, "para-3", "what the phone would have jumped to without asking");
+    const before = server.calls.length;
+    const resumed = await localState();
+    assert.deepEqual([resumed.hash, resumed.index, resumed.offset], ["para-17", 17, 64]);
+    assert.ok(server.calls.slice(before).some(call => call.url.includes("/v1/sync/pull")));
+
+    // Just synchronised: opening the next article does not run another cycle.
+    const quiet = server.calls.length;
+    await localState();
+    assert.equal(server.calls.length, quiet);
+
+    // No network: the article still opens, promptly, on the position this device has.
+    await phone.update(state => { state.lastSuccess = Date.now() - 5 * 60_000; });
+    server.offline = true;
+    const started = Date.now();
+    assert.equal((await localState()).hash, "para-17");
+    assert.ok(Date.now() - started < 2_000);
+    // Backing off after that failure: the next open does not even try.
+    const tried = server.calls.length;
+    await localState();
+    assert.equal(server.calls.length, tried);
+  } finally { if (prior === undefined) delete g["chrome"]; else g["chrome"] = prior; }
+});
+
+test("a slow server delays opening an article by a bounded wait, never by the whole cycle", async () => {
+  await freshServer();
+  const phone = device();
+  await phone.update(state => { state.lastSuccess = Date.now() - 60_000; state.initializedRemote = true; });
+  let release: (() => void) | undefined;
+  server.beforePullResponse = () => undefined;
+  const realFetch = server.fetch.bind(server);
+  server.fetch = async (input, init) => { await new Promise<void>(resolve => { release = resolve; setTimeout(resolve, 400); }); return realFetch(input, init); };
+  const started = Date.now();
+  await engine.syncBefore(80);
+  assert.ok(Date.now() - started < 350, "gave up waiting while the first request was still in flight");
+  release?.();
+  // The cycle it started still finishes in the background and is not run twice.
+  assert.equal((await engine.runSync()).error, null);
+});
