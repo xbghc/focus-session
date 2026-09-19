@@ -1,5 +1,5 @@
 import { native, downloadUpdate } from "./native.ts";
-import { readUpdate, type Update } from "../lib/update.ts";
+import { planAutoUpdate, readUpdate, type AutoStep, type Update } from "../lib/update.ts";
 
 /**
  * 「有没有新版本」这件事的 App 侧。纯逻辑（版本比较、挑附件）在 lib/update.ts，
@@ -20,13 +20,14 @@ export const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 const DAY = 24 * 60 * 60 * 1000;
 
 /*
- * 这三个开关只跟这台手机上的这个安装有关，所以放 localStorage，不进 Settings：
+ * 这几个开关只跟这台手机上的这个安装有关，所以放 localStorage，不进 Settings：
  * Settings 是扩展和 App 共用的那份类型，也会随数据导出走——「上次检查更新是什么时候」
  * 跟到另一台设备上没有任何意义，而多一个字段两端都得跟着改。
  */
 const KEY_AUTO = "fs:update:auto";
 const KEY_LAST = "fs:update:last";
 const KEY_SKIP = "fs:update:skip";
+const KEY_INSTALL = "fs:update:install";
 
 /** 装着的到底是哪个版本，以宿主报的为准；在普通浏览器里调试时退回构建时注入的那个。 */
 export function currentVersion(): string {
@@ -113,6 +114,86 @@ export async function autoCheck(): Promise<Update | null> {
   }
 }
 
+/* ==================== 自动下载并安装 ==================== */
+
+export function autoInstallEnabled(): boolean {
+  // 默认开。关掉之后回到老样子：首页出一条横幅，下不下、装不装都由人点
+  return localStorage.getItem(KEY_INSTALL) !== "off";
+}
+
+export function setAutoInstall(on: boolean): void {
+  localStorage.setItem(KEY_INSTALL, on ? "on" : "off");
+  // 关掉的那一刻就撤销：宿主是在人**离开** App 之后装的，不撤的话这次离开还是会装
+  if (!on) native()?.updateArm?.("");
+}
+
+/** 宿主缓存里躺着的可装版本。老宿主问不到，当没有。 */
+export function readyVersion(): string {
+  try {
+    return native()?.updateReady?.() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** 上一次自动安装是怎么失败的。 */
+export function lastFailure(): { version: string; message: string } | null {
+  try {
+    const raw = native()?.updateFailure?.();
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { version?: unknown; message?: unknown };
+    return { version: typeof v.version === "string" ? v.version : "", message: typeof v.message === "string" ? v.message : "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 首页开着时的那一趟：有躺着的包就武装它，没有就问一次 GitHub，该悄悄下就悄悄下。
+ * 返回首页该出哪一种横幅；什么都不用说就是 null。和 autoCheck 一样，任何一步出错都不往外冒。
+ *
+ * 下载只在不计费的网络上做，也只由首页发起：阅读器里人在读东西，不拿他的带宽。
+ * 首页上没下完人就走了也没关系——宿主那边照下不误，下回开首页时 `updateReady()` 会报出来。
+ */
+export async function autoUpdate(): Promise<Exclude<AutoStep, { do: "nothing" | "download" }> | null> {
+  try {
+    if (!canSelfUpdate() || isDebugBuild()) return null;
+    const bridge = native();
+    const canPrefetch = Boolean(bridge?.updateReady);
+    const plan = (found: Update | null): AutoStep =>
+      planAutoUpdate({
+        ready: readyVersion(),
+        found,
+        skipped: isSkipped,
+        autoInstall: autoInstallEnabled(),
+        canPrefetch,
+        metered: bridge?.isMetered?.() ?? true,
+        canSilent: bridge?.canSilentUpdate?.() ?? false,
+        failedVersion: lastFailure()?.version || null,
+      });
+    const settle = (step: AutoStep): Exclude<AutoStep, { do: "nothing" | "download" }> | null => {
+      if (step.do === "ready") bridge?.updateArm?.(step.silent ? step.version : "");
+      return step.do === "ready" || step.do === "offer" ? step : null;
+    };
+
+    // 先看躺着的：一天只问 GitHub 一次，但下好的包每次开首页都该认
+    const first = plan(null);
+    if (first.do === "ready") return settle(first);
+    const found = await autoCheck();
+    const step = plan(found);
+    if (step.do !== "download") return settle(step);
+    try {
+      await downloadUpdate(step.update.apk.browser_download_url, step.update.apk.size, () => undefined);
+    } catch {
+      return { do: "offer", update: step.update }; // 没下成：退回老样子，让人自己决定
+    }
+    const after = plan(null);
+    return after.do === "ready" ? settle(after) : { do: "offer", update: step.update };
+  } catch {
+    return null;
+  }
+}
+
 /** 手按的那次检查不受「今天问过了」限制，但同样把时间戳往前推。 */
 export function markChecked(): void {
   localStorage.setItem(KEY_LAST, String(Date.now()));
@@ -126,6 +207,9 @@ export async function downloadAndInstall(
   update: Update,
   onProgress: (received: number, total: number) => void,
 ): Promise<void> {
-  await downloadUpdate(update.apk.browser_download_url, update.apk.size, onProgress);
+  // 自动更新可能已经把这个版本下好了：不用再下一遍
+  if (readyVersion() !== update.version) {
+    await downloadUpdate(update.apk.browser_download_url, update.apk.size, onProgress);
+  }
   native()?.updateInstall?.();
 }

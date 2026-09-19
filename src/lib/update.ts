@@ -105,3 +105,49 @@ export function readUpdate(release: unknown, current: string): Update | null {
   if (!apk) return null;
   return { tag, version, notes: typeof r.body === "string" ? r.body : "", apk };
 }
+
+/* ==================== 自动下载并安装 ==================== */
+
+/**
+ * 首页开着的时候，自动更新下一步该干什么。判定放在这儿是因为它全是分支，而真正动手的那几样
+ * （问 GitHub、让宿主下载、问宿主缓存里躺着什么）只有装进 App 才跑得起来。
+ */
+export type AutoStep =
+  | { do: "nothing" }
+  /** 老样子：首页出一条「有新版本，去更新」，下不下由人决定。 */
+  | { do: "offer"; update: Update }
+  /** 悄悄下。下完再判一次。 */
+  | { do: "download"; update: Update }
+  /** 包已经躺在缓存里了。silent：人离开 App 之后宿主会自己装；否则得他点一下。 */
+  | { do: "ready"; version: string; silent: boolean };
+
+export interface AutoInput {
+  /** 宿主缓存里躺着的、完整且比装着的新的升级包版本；没有是空串。 */
+  ready: string;
+  /** 今天问 GitHub 问到的新版本（已经滤掉了用户跳过的那个）；没问、没有都是 null。 */
+  found: Update | null;
+  skipped: (version: string) => boolean;
+  /** 设置里的「自动下载并安装」。 */
+  autoInstall: boolean;
+  /** 宿主会不会自己报「下好了哪个版本」。老宿主不会，那就只能走老路。 */
+  canPrefetch: boolean;
+  /** 当前网络按流量计费。 */
+  metered: boolean;
+  /** 这台设备上静默安装值不值得试（Android 12+、授权过、系统没拒绝过）。 */
+  canSilent: boolean;
+  /** 上一次自动安装失败的那个版本。同一个包不再自动试第二遍——下载几兆、再失败一次，天天如此。 */
+  failedVersion: string | null;
+}
+
+export function planAutoUpdate(input: AutoInput): AutoStep {
+  const { ready, found } = input;
+  // 躺着的包已经不是最新的了：当它不存在，去下新的那个（下载会把旧包顶掉）
+  const stale = ready !== "" && found !== null && isNewer(found.version, ready);
+  if (ready !== "" && !stale) {
+    if (input.skipped(ready)) return { do: "nothing" };
+    return { do: "ready", version: ready, silent: input.autoInstall && input.canSilent && input.failedVersion !== ready };
+  }
+  if (!found) return { do: "nothing" };
+  const quietly = input.autoInstall && input.canPrefetch && !input.metered && input.failedVersion !== found.version;
+  return quietly ? { do: "download", update: found } : { do: "offer", update: found };
+}

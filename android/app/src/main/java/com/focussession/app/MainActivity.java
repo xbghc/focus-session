@@ -70,6 +70,15 @@ public class MainActivity extends ComponentActivity {
     /** 系统栏正收着（阅读器要整块屏）。切到别的应用再回来要照这个再收一次。 */
     private boolean fullscreen;
 
+    /**
+     * 人离开 App 之后隔这么久才去装下好的升级包（见 onStop）。装成的那一刻进程会被杀：
+     * 只是切出去复制个词、几秒就回来的话不该撞上。也不能拖太久——Android 11 起缓存进程
+     * 过十秒左右会被冻结，定时器就再也不响了。
+     */
+    private static final long SILENT_UPDATE_DELAY_MS = 5_000;
+    private final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable silentUpdate = () -> { if (bridge != null) bridge.installArmedUpdate(); };
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle state) {
@@ -430,6 +439,27 @@ public class MainActivity extends ComponentActivity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        // 人回来了：还没开始装的话就先不装，等他下次离开
+        main.removeCallbacks(silentUpdate);
+    }
+
+    /**
+     * 人离开了 App：有下好并且武装过的升级包（NativeBridge.updateArm）就趁现在装，装完他下次打开就是新版。
+     *
+     * 停在阅读器里时不装。装成的那一刻进程会被杀、任务栈一并清掉，锁屏再回来看到的会是首页而不是
+     * 读到一半的那篇——位置虽然找得回来，但这一下是我们打断的。等他从首页或设置页离开的那一次再装。
+     */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        String url = web == null ? null : web.getUrl();
+        boolean reading = url != null && url.startsWith(READER);
+        if (!reading && bridge != null && bridge.armedUpdate() != null) main.postDelayed(silentUpdate, SILENT_UPDATE_DELAY_MS);
+    }
+
+    @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         web.saveState(outState);
@@ -438,6 +468,7 @@ public class MainActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
+        main.removeCallbacks(silentUpdate);
         bridge.shutdown();
         web.destroy();
         super.onDestroy();
