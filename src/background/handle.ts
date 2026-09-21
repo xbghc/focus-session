@@ -298,6 +298,12 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
 
     /* ---- popup / options ---- */
     case "articles:list": {
+      /*
+       * 有人要看文章列表了——多半是刚放下手机、来电脑上找那篇。列表照旧立刻用本机的答，不等网络；
+       * 同时催一轮同步（十秒内刚同步过、正在退避都不跑），拉到新东西会广播 `sync:updated`，页面再取一次。
+       * 扩展平时一分钟才拉一回，不催的话「刚读的那篇」最坏要等满一分钟才进得了本机。
+       */
+      void syncBefore();
       const articles = Object.values(await getArticles()).sort((a, b) => b.lastSeenTs - a.lastSeenTs);
       // 速度摘要一并带上：列表里每篇「还需多久」都要拿它当先验
       return { articles, speed: await getSpeedSummary() };

@@ -13,6 +13,7 @@ import { formatDuration, overviewInsights, wordsPerMinute } from "../lib/stats.t
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
 import { clear, el, empty } from "./dom.ts";
+import { onSyncUpdated } from "../lib/syncUpdated.ts";
 
 const REASON_LABEL: Record<EndReason, string> = {
   idle: "走神",
@@ -280,16 +281,29 @@ function timeline(done: NonNullable<PageState["sessionsThisLoad"]>, activeSince:
 
 const expanded = new Set<string>();
 
-async function renderHistory(): Promise<void> {
+/** 画着的那份历史长什么样；后台刷新拿它比，没变就不重画。 */
+let paintedHistory = "";
+
+/**
+ * onlyIfChanged：同步拉到新东西之后的那次刷新用（见文件末尾）。先取、再清、一口气画完——
+ * 清在前面的话，两次调用叠在一起会各画一遍，列表翻倍。
+ */
+async function renderHistory(onlyIfChanged = false): Promise<void> {
   const root = panels.history;
-  clear(root);
   const res = await ask<{ articles: Article[]; speed: SpeedSummary | null }>({ type: "articles:list" });
   const withData = res.articles.filter((a) => a.sessionCount > 0);
+  // 速度摘要的 updatedTs 每次落库都是「现在」，不参与比较
+  const face = JSON.stringify([withData, res.speed && { ...res.speed, updatedTs: 0 }]);
+  if (onlyIfChanged && face === paintedHistory) return;
+  paintedHistory = face;
+  const top = root.scrollTop;
+  clear(root);
   if (withData.length === 0) {
     root.append(empty("还没有记录。打开一篇文章读一会儿就会出现。"));
     return;
   }
   for (const a of withData) root.append(articleItem(a, res.speed ?? null));
+  root.scrollTop = top;
 }
 
 function articleItem(a: Article, speed: SpeedSummary | null): HTMLElement {
@@ -470,6 +484,11 @@ document.getElementById("open-panel")!.addEventListener("click", (e) => {
     console.warn("[focus-session] 打开侧边栏失败", err);
   });
   window.close();
+});
+
+// 打开历史会催后台同步一轮（background/handle.ts 的 articles:list）；手机上刚读的那篇拉到之后，开着的历史跟着补上
+onSyncUpdated(() => {
+  if (!panels.history.hasAttribute("hidden")) void renderHistory(true).catch(() => undefined);
 });
 
 async function refreshCurrent(): Promise<void> {

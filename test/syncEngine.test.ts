@@ -25,7 +25,7 @@ class SyncServer {
   supportsUsage = true;
   usage: Array<{ userId: string; body: { deviceId: string; platform: string; days: Record<string, Record<string, number>> } }> = [];
   afterSnapshotCreated: (() => void) | undefined;
-  beforePullResponse: (() => void) | undefined;
+  beforePullResponse: (() => void | Promise<void>) | undefined;
   /** Runs after the server has committed a push and before the client hears about it. */
   beforePushResponse: (() => Promise<void>) | undefined;
   calls: RequestLog[] = [];
@@ -80,7 +80,7 @@ class SyncServer {
       if (this.malformedPull) return Response.json({ records: [], cursor, hasMore: true });
       const changes = account.changes.filter(entry => entry.sequence > cursor);
       const page = changes.slice(0, this.pageSize);
-      this.beforePullResponse?.();
+      await this.beforePullResponse?.();
       return Response.json({ records: page.map(entry => entry.record), cursor: page.at(-1)?.sequence ?? cursor, hasMore: changes.length > page.length });
     }
     if (url.pathname === "/v1/sync/push" && method === "POST") {
@@ -802,4 +802,156 @@ test("a slow server delays opening an article by a bounded wait, never by the wh
   release?.();
   // The cycle it started still finishes in the background and is not run twice.
   assert.equal((await engine.runSync()).error, null);
+});
+
+test("reading on the phone, putting it down, then opening the list on the computer: asking for the list fetches what the phone just wrote and tells open pages to repaint", async () => {
+  await freshServer();
+  const { handle } = await import("../src/background/handle.ts");
+  const ephemeral: Record<string, unknown> = {};
+  const broadcasts: unknown[] = [];
+  const g = globalThis as Record<string, any>;
+  const prior = g["chrome"];
+  g["chrome"] = {
+    storage: { session: {
+      get: async (key: string) => structuredClone({ [key]: ephemeral[key] }),
+      set: async (values: Record<string, unknown>) => { Object.assign(ephemeral, structuredClone(values)); },
+    } },
+    // The service worker's only way to reach the dashboard and the popup.
+    runtime: { sendMessage: async (msg: unknown) => { broadcasts.push(msg); } },
+  };
+  const old = "https://example.com/read-last-week", fresh = "https://example.com/read-on-the-phone";
+  const meta = (id: string, title: string) => ({ articleId: id, url: id, title, totalWords: 900, trackedWords: 900, paragraphCount: 30, expectedMs: 240_000 });
+  const list = async () => (await handle({ type: "articles:list" }, {}) as { articles: Array<{ id: string; sessionCount: number }> }).articles;
+  const settle = async () => { await engine.runSync(); await new Promise(resolve => setImmediate(resolve)); };
+  try {
+    // The computer knows one article and is up to date.
+    const desktop = device("user-a", TOKEN_A);
+    await handle({ type: "article:meta", meta: meta(old, "Last week") }, { tab: { id: 1 } });
+    assert.equal((await engine.runSync()).error, null);
+
+    // On the phone: a new article, read for a while, then the screen goes off — the session ends and is uploaded.
+    const phone = device("user-a", TOKEN_A2);
+    assert.equal((await engine.runSync()).error, null);
+    const now = Date.now();
+    await handle({ type: "article:meta", meta: meta(fresh, "On the phone") }, { tab: { id: 7 } });
+    await handle({ type: "session:start", articleId: fresh, url: fresh, title: "On the phone", startTs: now - 120_000 }, { tab: { id: 7 } });
+    await handle({ type: "session:end", articleId: fresh, startTs: now - 120_000, endTs: now, wordsRead: 400, endReason: "hidden", discard: false,
+      reachedBottom: false, paragraphs: [], position: { articleId: fresh, hash: "para-12", index: 12, offset: 30, paragraphCount: 30, savedTs: now } }, { tab: { id: 7 } });
+    assert.equal((await engine.runSync()).error, null);
+    assert.equal((await phone.read()).outbox.length, 0);
+
+    // At the computer. Its last pull predates the phone's reading, and the dashboard asks for the list.
+    installStorage(desktop);
+    await desktop.update(state => { state.lastSuccess = Date.now() - 45_000; });
+    broadcasts.length = 0;
+    const before = server.calls.length;
+    assert.deepEqual((await list()).map(a => a.id), [old], "answered at once from what this device has, without waiting for the network");
+    // Nobody else runs a cycle here: whatever arrives was fetched because the list was asked for.
+    for (let i = 0; i < 100 && !broadcasts.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(broadcasts.length >= 1, "the list request alone brought the phone's records in");
+    await settle();
+    assert.ok(server.calls.slice(before).some(call => call.url.includes("/v1/sync/pull")), "asking for the list started a cycle");
+    // One per downloaded page that changed something (the fixture pages by two records).
+    assert.ok(broadcasts.length >= 1 && broadcasts.every(msg => JSON.stringify(msg) === '{"type":"sync:updated"}'), "the pull changed this device's data, so open pages are told");
+    const after = await list();
+    assert.equal(after[0]!.id, fresh, "the article from the phone is first");
+    assert.equal(after[0]!.sessionCount, 1, "with the session that ended when the screen went off — the popup only lists articles that have one");
+    assert.equal(((await handle({ type: "article:local-state", articleId: fresh }, {}) as Record<string, any>)[`pos:${fresh}`]).hash, "para-12");
+
+    // Nothing new on the server: later cycles stay silent, so an open page is not repainted every minute.
+    broadcasts.length = 0;
+    await desktop.update(state => { state.lastSuccess = Date.now() - 45_000; });
+    await list(); await settle();
+    assert.deepEqual(broadcasts, []);
+
+    // This device's own upload coming back in the closing download is not news either.
+    await handle({ type: "session:start", articleId: old, url: old, title: "Last week", startTs: now + 1_000 }, { tab: { id: 1 } });
+    await handle({ type: "session:end", articleId: old, startTs: now + 1_000, endTs: now + 61_000, wordsRead: 200, endReason: "blur", discard: false, reachedBottom: false, paragraphs: [] }, { tab: { id: 1 } });
+    broadcasts.length = 0;
+    assert.equal((await engine.runSync()).error, null);
+    assert.equal((await desktop.read()).outbox.length, 0);
+    assert.deepEqual(broadcasts, []);
+
+    // Just synchronised: asking again does not contact the server.
+    const quiet = server.calls.length;
+    await list();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(server.calls.length, quiet, "fresh within ten seconds");
+  } finally { if (prior === undefined) delete g["chrome"]; else g["chrome"] = prior; }
+});
+
+test("a write that lands while a cycle is already past its upload is sent by a follow-up cycle, not left for the next trigger", async () => {
+  await freshServer();
+  const phone = device();
+  await localStorage().set({ settings: { translateEnabled: true } });
+  // The cycle in flight is done uploading and is in its closing download; the screen goes off now and the last session is written.
+  let pulls = 0;
+  server.beforePullResponse = async () => {
+    if (++pulls !== 2) return;
+    await localStorage().set({ settings: { translateEnabled: false } });
+    engine.scheduleSync(0);
+    // Let the timer fire while this cycle is still running.
+    await new Promise(resolve => setTimeout(resolve, 20));
+  };
+  assert.equal((await engine.runSync()).error, null);
+  assert.equal(pulls, 2);
+  assert.equal((await phone.read()).outbox.length, 1, "the cycle that was running had already read the queue");
+  for (let i = 0; i < 50 && (await phone.read()).outbox.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal((await phone.read()).outbox.length, 0, "the follow-up cycle uploaded it");
+  assert.equal(server.account().records.get(recordKey({ type: "setting", id: "translateEnabled" } as SyncRecord))?.value, false);
+  await engine.runSync();
+
+  // A timer that fires during a cycle with nothing left to send does not ask the server again.
+  let fired = false;
+  server.beforePullResponse = async () => {
+    if (fired) return;
+    fired = true;
+    engine.scheduleSync(0);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  };
+  assert.equal((await engine.runSync()).error, null);
+  assert.equal(fired, true);
+  const calls = server.calls.length;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(server.calls.length, calls);
+});
+
+test("local writes are batched for two seconds while someone is looking, and uploaded at once after the page is hidden", async () => {
+  const g = globalThis as Record<string, any>;
+  const prior = g["document"];
+  try {
+    delete g["document"];
+    assert.equal(engine.mutationDelay(), 2000, "service worker: no document, no host");
+    g["document"] = { visibilityState: "visible" };
+    assert.equal(engine.mutationDelay(), 2000);
+    g["document"] = { visibilityState: "hidden" };
+    assert.equal(engine.mutationDelay(), 0);
+    // The app's host says so before the WebView's own visibility catches up: the session is settled on the host's word.
+    g["document"] = { visibilityState: "visible" };
+    engine.setHostVisible(false);
+    assert.equal(engine.mutationDelay(), 0, "screen off on the phone: the last session goes out now");
+    engine.setHostVisible(true);
+    assert.equal(engine.mutationDelay(), 2000);
+  } finally { if (prior === undefined) delete g["document"]; else g["document"] = prior; }
+
+  // Zero means no timer at all — a hidden page's timers are throttled to one tick a second, setTimeout(0) included.
+  await freshServer();
+  const phone = device();
+  await localStorage().set({ settings: { translateEnabled: false } });
+  const realSetTimeout = globalThis.setTimeout;
+  let timers = 0;
+  globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => { if (ms === 0 || ms === undefined) timers++; return realSetTimeout(fn, ms, ...rest); }) as typeof setTimeout;
+  try { engine.scheduleSync(0); } finally { globalThis.setTimeout = realSetTimeout; }
+  assert.equal(timers, 0);
+  for (let i = 0; i < 50 && (await phone.read()).outbox.length; i++) await new Promise(resolve => realSetTimeout(resolve, 10));
+  assert.equal((await phone.read()).outbox.length, 0);
+
+  // A settlement is several writes in a row, each asking for an upload: one cycle takes them all, at most one follow-up.
+  const before = server.calls.filter(call => call.url.includes("/v1/info")).length;
+  for (const translateEnabled of [true, false, true]) { await localStorage().set({ settings: { translateEnabled } }); engine.scheduleSync(0); }
+  for (let i = 0; i < 50 && ((await phone.read()).outbox.length || (await engine.syncStatus()).running); i++) await new Promise(resolve => realSetTimeout(resolve, 10));
+  await new Promise(resolve => realSetTimeout(resolve, 30));
+  assert.equal((await phone.read()).outbox.length, 0);
+  const cycles = server.calls.filter(call => call.url.includes("/v1/info")).length - before;
+  assert.ok(cycles >= 1 && cycles <= 2, `three writes cost ${cycles} cycle(s)`);
 });

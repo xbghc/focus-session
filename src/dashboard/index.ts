@@ -23,6 +23,7 @@ import { fillMeta } from "../lib/speak.ts";
 import { BOOKS_KEY, parseChapterId, type Book } from "../books/types.ts";
 import { localStorage } from "../sync/storage.ts";
 import { createUiTracker, isUiEvent, type UiEvent } from "../lib/uiUsage.ts";
+import { onSyncUpdated } from "../lib/syncUpdated.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const send = <T,>(msg: unknown): Promise<T> => chrome.runtime.sendMessage(msg) as Promise<T>;
@@ -271,12 +272,17 @@ function renderMaterialDetail(a: Article): HTMLElement {
 async function loadArticles(): Promise<void> {
   await guarded($("articles"), fetchArticles);
 }
-async function fetchArticles(): Promise<void> {
+/** onlyIfChanged：后台刷新用。取回来的和手里这份一样就什么都不动——重画会收起正选着的字、打断正要点下去的那一下。 */
+async function fetchArticles(onlyIfChanged = false): Promise<void> {
   const res = await send<{ articles: Article[]; speed?: SpeedSummary | null }>({ type: "articles:list" });
-  articles = res.articles ?? [];
   // 走 localStorage() 而不是 chrome.storage.local：App 里数据在同步库那一份下，
   // 扩展的这个页面没装过垫片，退回真正的 chrome.storage.local——那边本来就没有书。
-  books = ((await localStorage().get(BOOKS_KEY))[BOOKS_KEY] ?? {}) as Record<string, Book>;
+  const shelf = ((await localStorage().get(BOOKS_KEY))[BOOKS_KEY] ?? {}) as Record<string, Book>;
+  // 速度摘要的 updatedTs 每次落库都是「现在」，带着它比的话永远不一样
+  const face = (a: Article[], sp: SpeedSummary | null, b: Record<string, Book>): string => JSON.stringify([a, sp && { ...sp, updatedTs: 0 }, b]);
+  if (onlyIfChanged && face(res.articles ?? [], res.speed ?? null, shelf) === face(articles, speed, books)) return;
+  articles = res.articles ?? [];
+  books = shelf;
   for (const id of selectedArticles) if (!articles.some(a => a.id === id)) selectedArticles.delete(id);
   for (const id of classifications.keys()) if (!articles.some(a => a.id === id)) classifications.delete(id);
   for (const id of expandedArticles) if (!articles.some(a => a.id === id)) expandedArticles.delete(id);
@@ -284,6 +290,22 @@ async function fetchArticles(): Promise<void> {
   speed = res.speed ?? null;
   renderArticles();
 }
+
+/*
+ * 别的设备上刚读的文章要自己冒出来：在手机上读完、关了屏、走到电脑前，这一页多半早就开着。
+ * 两个时机再取一次列表——同步拉到了让本机数据变样的东西（lib/syncUpdated.ts），以及这一页重新回到眼前
+ * （取列表本身会催后台同步一轮，见 background/handle.ts 的 articles:list；拉到了就回到前一种）。
+ *
+ * 只管文章这一栏：复习翻到一半的卡不能被换掉，另外两栏每次切过去本来就重新取。
+ * 批量删除、逐篇判别正跑着时不动，它们结束时自己会重画。
+ */
+function refreshArticles(): void {
+  if ($("pane-articles").hidden || articleActionBusy || classificationRunning) return;
+  // 后台刷新取不到不说话：画着的那份还是好的，轮不到拿一条报错把它换掉
+  void fetchArticles(true).catch(() => undefined);
+}
+onSyncUpdated(refreshArticles);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshArticles(); });
 
 function renderArticles(): void {
   const q = searchInput.value.trim().toLowerCase();
@@ -345,7 +367,8 @@ function renderArticles(): void {
           finished: !a.finished,
         });
         if (!r.article) throw new Error("这篇文章的记录已经不在了");
-        Object.assign(a, r.article);
+        // 按 id 找现在那一份：等应答的工夫列表可能被后台刷新换过一遍，手里这个 a 已经不在 articles 里了
+        Object.assign(articles.find((x) => x.id === a.id) ?? a, r.article);
         renderArticles();
       } catch (err) {
         // 就写在按钮上：批量操作那行状态在列表最顶上，离这儿可能隔着几十张卡片

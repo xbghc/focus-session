@@ -361,6 +361,15 @@ export type OcrReply = { ok: true; text: string } | { ok: false; error: string }
  */
 export type BgToContent = { type: "page:url-changed"; url: string };
 
+/**
+ * 后台广播给扩展自己的页面（首页、弹窗）的消息。不应答。
+ *
+ * 同步跑在 service worker 里，拉到别的设备写的记录时页面并不知道——`chrome.storage.onChanged` 指望不上，
+ * 数据早就不在 chrome.storage 里了。App 里没有这条：同步和页面在同一个上下文，用 window 事件
+ * `focus-sync-updated`。两条路在 lib/syncUpdated.ts 里收成一个订阅。
+ */
+export type BgToPage = { type: "sync:updated" };
+
 export type AnyMessage = ContentToBg | PopupToBg | PopupToContent;
 
 export interface ReadState {

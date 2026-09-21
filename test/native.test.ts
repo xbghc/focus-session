@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { captureVisible, recognizeNative, installNative } from "../src/app/native.ts";
+import { captureVisible, recognizeNative, installNative, hostHooks, onHostVisibility } from "../src/app/native.ts";
 import { cleanOcrLines } from "../src/lib/ocrText.ts";
 
 const g = globalThis as Record<string, unknown>;
@@ -65,4 +65,17 @@ test("识别坏 JSON 或错误行结构都拒绝", async () => {
     window.Native = { ocrStart(id) { window.__fsOcr!.done(id, json); } };
     await assert.rejects(recognizeNative("png"));
   }
+});
+
+test("宿主说「看不见了」：页面之外登记的先听到，再轮到页面自己那一格——阅读器当场结算，那时同步引擎得已经知道", () => {
+  const heard: string[] = [];
+  const prior = hostHooks.visibility;
+  onHostVisibility((v) => heard.push(`engine:${v}`));
+  // 阅读器会把这一格整个换掉；另外登记的不受影响
+  hostHooks.visibility = (v) => heard.push(`page:${v}`);
+  try {
+    window.__fsHost!.visibility(false);
+    window.__fsHost!.visibility(true);
+    assert.deepEqual(heard, ["engine:false", "page:false", "engine:true", "page:true"]);
+  } finally { hostHooks.visibility = prior; }
 });
