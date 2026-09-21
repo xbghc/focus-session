@@ -698,6 +698,11 @@ export interface LlmFailure {
   stream?: LlmStreamTrace;
   /** 流式翻译下浮层是否已经显示过译文：「先显示再报错」和「一开始就报错」是两类问题 */
   partialShown: boolean | null;
+  /**
+   * 这次失败人没看见：retry 是自动重发的那一次成了，salvage 是两次都坏、从闭合的字段里拼出了译文（多半缺生词）。
+   * 照样记下来——不记的话，模型写坏 JSON 的频率就从这份日志里消失了。没有这个字段的是人真撞上的失败。
+   */
+  recovered?: "retry" | "salvage";
   /** 当时请求里值得留下的部分，各路径各留各的；不存文章正文 */
   request: Record<string, string | number | boolean | null>;
   model: string;

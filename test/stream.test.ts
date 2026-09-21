@@ -5,6 +5,7 @@ import {
   askStream,
   callMessagesStream,
   closedVocab,
+  openTranslation,
   partialField,
   partialOf,
   sseEvents,
@@ -345,21 +346,126 @@ test("译文没闭合就失败的，firstFieldMs 留 null——浮层确实什�
 });
 
 test("先显示了译文再失败的，那个时刻照样留着", async () => {
-  // 译文字段闭合了、浮层已经显示，坏在后面——这类和"一开始就报错"要分得开
+  // 译文推给过浮层、坏在后面，重发一次还是坏——这类和"一开始就报错"要分得开。译文没闭合，抢救不了
   await assert.rejects(
     translateStream(REQ, CFG, () => {}, undefined, {
       now: stepClock(),
-      fetch: fetchOf(textStream('{"translation": "泄漏", "pos": }', 4)),
+      fetch: fetchOf(textStream(`{"translation": "${"泄漏".repeat(12)}`, 4)),
     }),
-    (e: unknown) => e instanceof LlmError && e.kind === "parse" && e.timing?.firstFieldMs !== null,
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && e.timing?.firstFieldMs !== null && e.timing?.attempts === 2,
   );
 });
 
 test("只在字段新闭合时回调，不是每个 token 都推", async () => {
   let calls = 0;
   await translateStream(REQ, CFG, () => (calls += 1), undefined, { fetch: fetchOf(textStream(FULL_JSON, 1)) });
-  // FULL_JSON 逐字流出有一百多个 delta，但可显示字段只有四个
+  // FULL_JSON 逐字流出有一百多个 delta，但可显示字段只有四个；两个字的译文不值得半截推
   assert.ok(calls > 0 && calls <= 4, `回调次数应当 ≤4，实际 ${calls}`);
+});
+
+/* ---------- 长译文边流边显示 ---------- */
+
+const LONG_TR = "去年，我们的团队公布了 TypeScript 在扩展性上的下一步：让工具链的每个部分都快一个数量级。为此要用 Go 写一个原生移植版，把现代硬件的能力用足。";
+const LONG_REQ: TranslateRequest = { ...REQ, kind: "sentence", text: "Last year, our team unveiled TypeScript's next step in scaling." };
+const LONG_JSON = JSON.stringify({ translation: LONG_TR, phonetic: null, pos: null, lemma: null, context_note: "开篇交代背景。", vocab: [] });
+
+test("长选区的译文不等闭合：先出头十几个字，一路往后长，闭合时是完整的", async () => {
+  const seen: string[] = [];
+  const { result, timing } = await translateStream(LONG_REQ, CFG, (p) => { if (p.translation) seen.push(p.translation); }, undefined, {
+    now: stepClock(),
+    fetch: fetchOf(textStream(LONG_JSON, 3)),
+  });
+  assert.ok(seen.length >= 3, `应当分几次推出来，实际 ${seen.length} 次`);
+  assert.ok(seen[0]!.length >= 16 && seen[0]!.length < LONG_TR.length, "头一次是半截");
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i]!.startsWith(seen[i - 1]!), "只往后长，浮层才能只接新长出来的那截");
+  assert.equal(seen.at(-1), LONG_TR);
+  assert.equal(result.translation, LONG_TR);
+  // 八十来个字、每 16 字一推，不是每个 delta 都推
+  assert.ok(seen.length <= 8, `推得太碎：${seen.length} 次`);
+  // 两层各有各的起跑时刻，假时钟下差一格；要盯的是它记在流中途而不是收尾
+  assert.ok(timing.firstFieldMs !== null && timing.firstFieldMs <= timing.totalMs);
+});
+
+test("半截译文停在转义中间时不推，等下一批凑齐", () => {
+  const head = `{"translation": "${"他说".repeat(10)}`;
+  assert.equal(openTranslation(head + "\\"), null, "反斜杠后面的字符还没到");
+  assert.equal(openTranslation(head + "\\u4f"), null, "\\u 没凑够四位");
+  assert.equal(openTranslation(head + "\\u4f60"), "他说".repeat(10) + "你");
+  assert.equal(openTranslation(head + '\\"好\\"'), "他说".repeat(10) + '"好"');
+  assert.equal(openTranslation(head + '", "pos": "v'), null, "译文已经闭合，归 closedFields 管");
+  assert.equal(openTranslation('{"translation": "'), null);
+  // 生词里的字段不算：word / meaning 没闭合不显示
+  assert.equal(openTranslation(`{"translation": "好", "vocab": [{"word": "x", "meaning": "translation": "半截`), null);
+});
+
+/* ---------- 解析失败：重发一次，再不行就抢救 ---------- */
+
+/** 每次调用依次给出下一条流；用完了重复最后一条。 */
+function fetchSeq(streams: string[][]): typeof fetch & { calls: number } {
+  const fn = (async () => {
+    const chunks = streams[Math.min(fn.calls, streams.length - 1)]!;
+    fn.calls += 1;
+    return new Response(streamOf(chunks), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as unknown as typeof fetch & { calls: number };
+  fn.calls = 0;
+  return fn;
+}
+
+// 诊断日志里的原样输出：译文给了个空串，别的字段都在
+const EMPTY_TR = `{"translation":"","phonetic":"/ˈtaɪtˌroʊp/","pos":"noun","lemma":"tightrope","context_note":"文中用「踩钢丝」来比喻骑车时维持平衡的感觉。","usage":"常搭配 walk a tightrope。"}`;
+const GOOD_TR = `{"translation":"钢丝","phonetic":"/ˈtaɪtroʊp/","pos":"noun","lemma":"tightrope","context_note":"比喻在窄面上保持平衡。","usage":"walk a tightrope：走钢丝。"}`;
+
+test("模型给了空译文：自动重发一次，第二次的结果照常返回，两次的 token 都算上", async () => {
+  const fetch = fetchSeq([textStream(EMPTY_TR, 7), textStream(GOOD_TR, 7)]);
+  const seen: PartialTranslation[] = [];
+  const out = await translateStream(REQ, CFG, (p) => seen.push({ ...p }), undefined, { now: stepClock(), fetch });
+  assert.equal(fetch.calls, 2);
+  assert.equal(out.result.translation, "钢丝");
+  assert.equal(out.timing.attempts, 2);
+  assert.deepEqual(out.usage, { inputTokens: 498, outputTokens: 116 }, "textStream 每条流报 249 / 58");
+  assert.equal(out.recovered?.by, "retry");
+  assert.match(out.recovered!.error.message, /没有返回 translation/);
+  assert.equal(out.recovered!.error.raw?.text, EMPTY_TR, "头一次的原文留着进诊断日志");
+  // 头一轮推过音标和语境解释（没有译文）；第二轮的译文到了才第一次有译文
+  assert.equal(seen[0]!.translation, null);
+  assert.ok(seen.some((p) => p.translation === "钢丝"));
+  assert.ok(out.timing.firstFieldMs !== null && out.timing.firstTextMs !== null && out.timing.firstTextMs < out.timing.firstFieldMs);
+});
+
+// 同上，原样：生词对象里混进一个没有值的键和一个裸 null
+const BROKEN_VOCAB = `{"translation": "我们的团队揭晓了 TypeScript 的下一步计划", "phonetic": null, "pos": null, "lemma": null, "context_note": "unveil 在这里指首次公布。", "vocab": [{"word": "unveiled", "phonetic": "/ʌnˈveɪld/", "pos": "verb", "meaning": "公开揭示", "note": "原形 unveil", "next step": "下一步", null}]}`;
+
+test("两次都坏在生词里：译文闭合过，就从闭合的字段里拼一份出来，坏掉的那条生词丢掉", async () => {
+  const fetch = fetchSeq([textStream(BROKEN_VOCAB, 9)]);
+  const req: TranslateRequest = { ...REQ, kind: "sentence", text: "our team unveiled TypeScript’s next step" };
+  const out = await translateStream(req, CFG, () => {}, undefined, { fetch });
+  assert.equal(fetch.calls, 2);
+  assert.equal(out.result.translation, "我们的团队揭晓了 TypeScript 的下一步计划");
+  assert.equal(out.result.contextNote, "unveil 在这里指首次公布。");
+  assert.deepEqual(out.result.vocab, []);
+  assert.equal(out.recovered?.by, "salvage");
+  assert.equal(out.timing.attempts, 2);
+});
+
+test("两次都坏、译文也没有：照旧报错，带着两次的用量和请求次数", async () => {
+  const fetch = fetchSeq([textStream(EMPTY_TR, 7)]);
+  await assert.rejects(translateStream(REQ, CFG, () => {}, undefined, { fetch }), (e: unknown) =>
+    e instanceof LlmError && e.kind === "parse" && e.timing?.attempts === 2 && e.usage?.outputTokens === 116 && e.raw?.text === EMPTY_TR);
+  assert.equal(fetch.calls, 2);
+});
+
+test("被截断不重发：再来一次还是截断", async () => {
+  const fetch = fetchSeq([textStream(`{"translation": "泄`, 4, "max_tokens")]);
+  await assert.rejects(translateStream(REQ, CFG, () => {}, undefined, { fetch }), (e: unknown) => e instanceof LlmError && e.kind === "token_limit");
+  assert.equal(fetch.calls, 1);
+});
+
+test("解析失败时人已经走了（浮层关了）：不重发", async () => {
+  const ctrl = new AbortController();
+  const fetch = fetchSeq([textStream(EMPTY_TR, 7)]);
+  // 头一轮的字段一到就取消：这一轮照常跑完（见 streamTranslate 的 cancel），但不该再为没人看的浮层烧一次
+  await assert.rejects(translateStream(REQ, CFG, () => ctrl.abort(), ctrl.signal, { fetch }), (e: unknown) => e instanceof LlmError);
+  assert.equal(fetch.calls, 1);
 });
 
 test("流式结果同样走 normalizeTranslation 做最终校正", async () => {

@@ -9,8 +9,8 @@ import type {
 } from "../types.ts";
 import { LlmError, askStream, assist, translate, translateStream } from "../lib/llm.ts";
 import type { AssistMode } from "../types.ts";
-import { addSnippet, addUsage, getLlmConfig } from "./vocab.ts";
-import { type FailureContext, recordFailure, recordTiming } from "./llmLog.ts";
+import { addSnippet, getLlmConfig } from "./vocab.ts";
+import { type FailureContext, later, recordCall, recordFailure, recordTiming } from "./llmLog.ts";
 import type { TranslationBackendTiming } from "../lib/translationDiagnostics.ts";
 
 /**
@@ -57,12 +57,15 @@ function describe(err: unknown): TranslateFailure {
 /**
  * 失败的统一出口：把现场记进诊断日志（见 llmLog.ts），再折成给调用方的回复。
  * 控制台那行也保留：开着 DevTools 时不用去设置页导出就能看。
+ *
+ * 现场、耗时和「失败一次」的用量一笔写完，而且**不等它**：报错要紧，账随后记（见 llmLog.ts 的 `later`）。
+ * `count` 为 false 的是测连通——那条路不记用量。
  */
-async function report(err: unknown, config: LlmConfig, ctx: FailureContext): Promise<TranslateFailure> {
+function report(err: unknown, config: LlmConfig, ctx: FailureContext, count = true): TranslateFailure {
   if (err instanceof LlmError && err.raw) {
     console.warn("[focus-session] 模型输出解析失败", err.message, `stop_reason=${err.raw.stopReason}`, err.raw.text);
   }
-  await recordFailure(err, config, ctx);
+  later(() => recordFailure(err, config, { ...ctx, countUsage: count }));
   return describe(err);
 }
 
@@ -92,8 +95,21 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
   const config = await getLlmConfig();
   metrics.configMs = performance.now() - start;
   const modelStart = performance.now();
+  const context = (): FailureContext => ({
+    source: "translate",
+    request: {
+      kind: req.kind,
+      text: req.text,
+      context: req.context,
+      explainVocab: req.explainVocab,
+      articleTitle: req.articleTitle,
+      url: req.url,
+    },
+    // 译文已经显示过才报错，问题在尾部；一个字都没出就报错，问题在开头——两类分开看
+    partialShown: Boolean(e.last?.translation),
+  });
   try {
-    const { result, usage, timing } = await translateStream(
+    const { result, usage, timing, recovered } = await translateStream(
       req,
       config,
       (p) => {
@@ -112,13 +128,12 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
     metrics.firstTextMs = timing.firstTextMs;
     metrics.firstFieldMs = timing.firstFieldMs;
     metrics.attempts = timing.attempts;
-    let stageStart = performance.now();
-    await addUsage(usage.inputTokens, usage.outputTokens);
-    metrics.accountingMs = performance.now() - stageStart;
-    stageStart = performance.now();
-    await recordTiming("translate", config, timing, usage);
-    metrics.diagnosticWriteMs = performance.now() - stageStart;
-    stageStart = performance.now();
+    /*
+     * 模型答完之后，挡在回复前面的只剩存划词这一笔——回复里要带它的 id。用量和耗时随后再记，不让人等：
+     * 早先三笔串着写，诊断日志里这一段的中位数是一秒（最长 4.1 秒），译文早就流完了，浮层的收尾却迟迟不来。
+     * accountingMs / diagnosticWriteMs 因此不再有数：它们量的那两笔已经不在这条路上了。
+     */
+    const stageStart = performance.now();
     const { snippet } = await addSnippet({
       articleId: req.articleId,
       url: req.url,
@@ -131,6 +146,12 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
     });
     metrics.snippetWriteMs = performance.now() - stageStart;
     remember(key, snippet);
+    later(() => recordCall("translate", config, timing, usage));
+    // 自动重发、抢救回来的，人没看见失败，日志里照样留一条（带 recovered 标记）
+    if (recovered) {
+      const ctx = { ...context(), recovered: recovered.by };
+      later(() => recordFailure(recovered.error, config, ctx));
+    }
     return { ok: true, snippet, cached: false };
   } catch (err) {
     metrics.modelMs ??= performance.now() - modelStart;
@@ -139,22 +160,8 @@ async function runStream(req: TranslateRequest, key: string, e: Live): Promise<T
       metrics.firstFieldMs = err.timing.firstFieldMs;
       metrics.attempts = err.timing.attempts;
     }
-    // 主动取消和缺配置都不算"调用失败"，别污染用量统计
-    const skip = err instanceof LlmError && (err.kind === "abort" || err.kind === "config");
-    if (!skip) await addUsage(0, 0, true);
-    return await report(err, config, {
-      source: "translate",
-      request: {
-        kind: req.kind,
-        text: req.text,
-        context: req.context,
-        explainVocab: req.explainVocab,
-        articleTitle: req.articleTitle,
-        url: req.url,
-      },
-      // 译文已经显示过才报错，问题在尾部；一个字都没出就报错，问题在开头——两类分开看
-      partialShown: Boolean(e.last?.translation),
-    });
+    // 主动取消和缺配置都不算"调用失败"，不记用量也不进日志（recordFailure 里挡）
+    return report(err, config, context());
   } finally {
     metrics.totalMs = performance.now() - start;
     live.delete(key);
@@ -241,14 +248,11 @@ async function runAsk(req: AskRequest, onDelta: (text: string) => void, signal: 
   const config = await getLlmConfig();
   try {
     const { text, usage, timing } = await askStream(req, config, onDelta, signal);
-    await addUsage(usage.inputTokens, usage.outputTokens);
-    await recordTiming("ask", config, timing, usage);
+    later(() => recordCall("ask", config, timing, usage));
     return { ok: true, text };
   } catch (err) {
     // 同 runStream：主动取消和缺配置都不算"调用失败"
-    const skip = err instanceof LlmError && (err.kind === "abort" || err.kind === "config");
-    if (!skip) await addUsage(0, 0, true);
-    const f = await report(err, config, {
+    const f = report(err, config, {
       source: "ask",
       request: { text: req.text, question: req.question, articleTitle: req.articleTitle, turns: req.history.length },
     });
@@ -271,12 +275,10 @@ export async function handleAssist(
   const config = await getLlmConfig();
   try {
     const { text, usage, timing } = await assist(mode, input, config);
-    await addUsage(usage.inputTokens, usage.outputTokens);
-    await recordTiming("assist", config, timing, usage);
+    later(() => recordCall("assist", config, timing, usage));
     return { ok: true, text };
   } catch (err) {
-    if (!(err instanceof LlmError && err.kind === "config")) await addUsage(0, 0, true);
-    const f = await report(err, config, { source: "assist", request: { mode, key: input.key, articleTitle: input.articleTitle } });
+    const f = report(err, config, { source: "assist", request: { mode, key: input.key, articleTitle: input.articleTitle } });
     return { ok: false, error: f.error, needsConfig: f.needsConfig };
   }
 }
@@ -299,9 +301,9 @@ export async function testConnection(): Promise<{ ok: boolean; error?: string; m
       config,
     );
     // 测连通不记用量（见上），但耗时要记——它本来就是用来量延迟的那一下
-    await recordTiming("test", config, timing, usage);
+    later(() => recordTiming("test", config, timing, usage));
     return { ok: true, model: `${config.model} → ${result.translation}` };
   } catch (err) {
-    return { ok: false, error: (await report(err, config, { source: "test", request: { text: "hello" } })).error };
+    return { ok: false, error: report(err, config, { source: "test", request: { text: "hello" } }, false).error };
   }
 }

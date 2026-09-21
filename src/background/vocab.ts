@@ -3,7 +3,7 @@ import type { LlmConfig, LlmUsage, ReviewCardView, Snippet, StoredCard, Translat
 import { DEFAULT_LLM, EMPTY_USAGE } from "../types.ts";
 import { cardKeyOf } from "../lib/lang.ts";
 import { type GradeValue, gradeCard, newCard } from "../lib/review.ts";
-import { serialize } from "./store.ts";
+import { serialize, updateLocalOnly } from "./store.ts";
 
 /**
  * 划词记录、复习卡片、LLM 配置的持久化。
@@ -78,19 +78,20 @@ export async function getUsage(): Promise<LlmUsage> {
   return { ...EMPTY_USAGE, ...((got[KEY_USAGE] as Partial<LlmUsage>) ?? {}) };
 }
 
+/** 在一份用量上记一次调用。单拎出来是给 llmLog.ts 的 recordCall 用：用量和耗时一笔写完。 */
+export function bumpUsage(stored: unknown, input: number, output: number, failed: boolean): LlmUsage {
+  const u: LlmUsage = { ...EMPTY_USAGE, ...((stored as Partial<LlmUsage> | undefined) ?? {}) };
+  return {
+    requests: u.requests + 1,
+    inputTokens: u.inputTokens + input,
+    outputTokens: u.outputTokens + output,
+    errors: u.errors + (failed ? 1 : 0),
+    lastTs: Date.now(),
+  };
+}
+
 export async function addUsage(input: number, output: number, failed = false): Promise<void> {
-  await serialize(async () => {
-    const u = await getUsage();
-    await local().set({
-      [KEY_USAGE]: {
-        requests: u.requests + 1,
-        inputTokens: u.inputTokens + input,
-        outputTokens: u.outputTokens + output,
-        errors: u.errors + (failed ? 1 : 0),
-        lastTs: Date.now(),
-      } satisfies LlmUsage,
-    });
-  });
+  await updateLocalOnly([KEY_USAGE], (v) => ({ [KEY_USAGE]: bumpUsage(v[KEY_USAGE], input, output, failed) }));
 }
 
 /* ==================== 划词记录 ==================== */
@@ -117,6 +118,20 @@ export async function getCards(): Promise<StoredCard[]> {
   return (got[KEY_CARDS] as StoredCard[]) ?? [];
 }
 
+/**
+ * 划词和卡片一次读出来。分开读是两次整库读取（状态库是一整个值，读哪个键都得把它全读出来），
+ * `addSnippet` 挡在翻译回复前面，前后各读一次，省下的两趟在五千条记录的库上是一两百毫秒。
+ */
+async function getSnippetsAndCards(): Promise<[Snippet[], StoredCard[]]> {
+  const got = await local().get([KEY_SNIPPETS, KEY_CARDS]);
+  const snippets = (got[KEY_SNIPPETS] as Snippet[]) ?? [];
+  for (const s of snippets) {
+    s.usage ??= null;
+    s.vocab ??= [];
+  }
+  return [snippets, (got[KEY_CARDS] as StoredCard[]) ?? []];
+}
+
 export interface AddSnippetInput {
   articleId: string;
   url: string;
@@ -137,7 +152,7 @@ export interface AddSnippetInput {
  */
 export async function addSnippet(input: AddSnippetInput): Promise<{ snippet: Snippet; card: StoredCard | null }> {
   return serialize(async () => {
-    const [snippets, cards] = await Promise.all([getSnippets(), getCards()]);
+    const [snippets, cards] = await getSnippetsAndCards();
 
     const snippet: Snippet = {
       id: crypto.randomUUID(),
@@ -175,7 +190,11 @@ export async function addSnippet(input: AddSnippetInput): Promise<{ snippet: Sni
     snippets.push(snippet);
     const trimmed = !hasSyncStorage() && snippets.length > MAX_SNIPPETS ? snippets.slice(-MAX_SNIPPETS) : snippets;
     await local().set({ [KEY_SNIPPETS]: trimmed, [KEY_CARDS]: cards });
-    if(hasSyncStorage())return {snippet:(await getSnippets()).find(s=>s.id===snippet.id)??snippet,card:card?(await getCards()).find(c=>c.key===card!.key)??null:null};
+    if (hasSyncStorage()) {
+      // 写回去之后按投影出来的为准（卡片的 id、来源会被同步层规整），划词和卡片一趟读完
+      const [savedSnippets, savedCards] = await getSnippetsAndCards();
+      return { snippet: savedSnippets.find((s) => s.id === snippet.id) ?? snippet, card: card ? savedCards.find((c) => c.key === card!.key) ?? null : null };
+    }
     return { snippet, card };
   });
 }

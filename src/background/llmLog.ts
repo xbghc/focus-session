@@ -2,8 +2,8 @@ import { localStorage } from "../sync/storage.ts";
 import type { LlmConfig, LlmFailure, LlmLogBundle, LlmTiming } from "../types.ts";
 import { type CallTiming, LlmError, type RawUsage } from "../lib/llm.ts";
 import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./appLog.ts";
-import { getLlmConfig } from "./vocab.ts";
-import { serialize } from "./store.ts";
+import { KEY_USAGE, bumpUsage, getLlmConfig } from "./vocab.ts";
+import { serialize, updateLocalOnly } from "./store.ts";
 import { getTranslationTraces, KEY_TRANSLATION_TRACE } from "./translationLog.ts";
 import { getUiUsage } from "./uiUsage.ts";
 
@@ -44,19 +44,22 @@ export function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…[已截断，原长 ${s.length}]` : s;
 }
 
-export async function recordLlmFailure(entry: LlmFailure): Promise<void> {
-  const safe: LlmFailure = {
+/** 进日志之前收一收：超长的原文和请求字段截尾。 */
+function clipped(entry: LlmFailure): LlmFailure {
+  return {
     ...entry,
     raw: entry.raw === null ? null : clip(entry.raw, MAX_RAW_CHARS),
     request: Object.fromEntries(
       Object.entries(entry.request).map(([k, v]) => [k, typeof v === "string" ? clip(v, MAX_FIELD_CHARS) : v]),
     ),
   };
-  await serialize(async () => {
-    const log = await getLlmLog();
-    log.push(safe);
-    await local().set({ [KEY_LLM_LOG]: log.slice(-MAX_LOG_ENTRIES) });
-  });
+}
+
+const pushFailure = (stored: unknown, entry: LlmFailure): LlmFailure[] =>
+  [...(Array.isArray(stored) ? (stored as LlmFailure[]) : []), clipped(entry)].slice(-MAX_LOG_ENTRIES);
+
+export async function recordLlmFailure(entry: LlmFailure): Promise<void> {
+  await updateLocalOnly([KEY_LLM_LOG], (v) => ({ [KEY_LLM_LOG]: pushFailure(v[KEY_LLM_LOG], entry) }));
 }
 
 /** 清空按钮清的是整份诊断日志，不只 LLM 那两份。界面埋点除外，理由见 uiUsage.ts。 */
@@ -90,6 +93,22 @@ const NO_USAGE: RawUsage = { inputTokens: 0, outputTokens: 0 };
  *
  * 落盘失败吞掉，理由同 `recordFailure`：日志是附属品。
  */
+const timingEntry = (source: LlmFailure["source"], config: LlmConfig, timing: CallTiming, usage: RawUsage, failedKind: string | null): LlmTiming => ({
+  ts: Date.now(),
+  source,
+  failedKind,
+  totalMs: timing.totalMs,
+  firstTextMs: timing.firstTextMs,
+  firstFieldMs: timing.firstFieldMs,
+  attempts: timing.attempts,
+  inputTokens: usage.inputTokens,
+  outputTokens: usage.outputTokens,
+  model: config.model,
+});
+
+const pushTiming = (stored: unknown, entry: LlmTiming): LlmTiming[] =>
+  [...(Array.isArray(stored) ? (stored as LlmTiming[]) : []), entry].slice(-MAX_TIMING_ENTRIES);
+
 export async function recordTiming(
   source: LlmFailure["source"],
   config: LlmConfig,
@@ -98,26 +117,37 @@ export async function recordTiming(
   failedKind: string | null = null,
 ): Promise<void> {
   try {
-    await serialize(async () => {
-      const log = await getLlmTimings();
-      log.push({
-        ts: Date.now(),
-        source,
-        failedKind,
-        totalMs: timing.totalMs,
-        firstTextMs: timing.firstTextMs,
-        firstFieldMs: timing.firstFieldMs,
-        attempts: timing.attempts,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        model: config.model,
-      });
-      await local().set({ [KEY_LLM_TIMING]: log.slice(-MAX_TIMING_ENTRIES) });
-    });
+    await updateLocalOnly([KEY_LLM_TIMING], (v) => ({ [KEY_LLM_TIMING]: pushTiming(v[KEY_LLM_TIMING], timingEntry(source, config, timing, usage, failedKind)) }));
   } catch {
     /* 同 recordFailure：日志不能反过来把主流程搞坏 */
   }
 }
+
+/**
+ * 一次成功的调用记一笔账：用量和耗时**一笔写完**。早先是两次读改写，各把整份状态库读出来再写回去。
+ * 落盘失败吞掉，理由同 `recordFailure`。
+ */
+export async function recordCall(source: LlmFailure["source"], config: LlmConfig, timing: CallTiming, usage: RawUsage): Promise<void> {
+  try {
+    await updateLocalOnly([KEY_USAGE, KEY_LLM_TIMING], (v) => ({
+      [KEY_USAGE]: bumpUsage(v[KEY_USAGE], usage.inputTokens, usage.outputTokens, false),
+      [KEY_LLM_TIMING]: pushTiming(v[KEY_LLM_TIMING], timingEntry(source, config, timing, usage, null)),
+    }));
+  } catch {
+    /* 见上 */
+  }
+}
+
+/*
+ * 不挡回复的落盘。记账和日志是附属品，人等的是译文：模型答完就该回话，账随后再记。
+ * 排成一条链：几笔账之间不抢同一个库事务，测试也有个地方等它们落定（`bookkeepingSettled`）。
+ * service worker 在最后一个事件之后还活三十秒，来得及；真被回收了丢的也只是一条日志。
+ */
+let deferred: Promise<void> = Promise.resolve();
+export function later(task: () => Promise<void>): void {
+  deferred = deferred.then(task).catch(() => undefined);
+}
+export const bookkeepingSettled = (): Promise<void> => deferred;
 
 /** 各条路径交给 recordFailure 的现场。 */
 export interface FailureContext {
@@ -126,6 +156,8 @@ export interface FailureContext {
   request: LlmFailure["request"];
   /** 流式翻译下浮层是否已经显示过译文；非流式路径不填 */
   partialShown?: boolean;
+  /** 人没看见的失败（自动重发成了、或抢救出了译文），见 `LlmFailure.recovered`。这类不记用量和耗时：那一整次调用另有一笔成功的账。 */
+  recovered?: "retry" | "salvage";
 }
 
 /**
@@ -134,30 +166,39 @@ export interface FailureContext {
  * 主动取消和缺配置不记——那不是"调用失败"，和用量统计的口径一致。
  * 落盘失败（多半是配额）吞掉：日志是附属品，不能反过来把给调用方的回复搞丢。
  */
-export async function recordFailure(err: unknown, config: LlmConfig, ctx: FailureContext): Promise<void> {
+export async function recordFailure(err: unknown, config: LlmConfig, ctx: FailureContext & { countUsage?: boolean }): Promise<void> {
   const e = err instanceof LlmError ? err : null;
   if (e && (e.kind === "abort" || e.kind === "config")) return;
-  try {
-    await recordLlmFailure({
-      ts: Date.now(),
-      source: ctx.source,
-      kind: e?.kind ?? "unknown",
-      status: e?.status ?? null,
-      message: e ? e.message : String(err),
-      stopReason: e?.raw?.stopReason ?? null,
-      raw: e?.raw?.text ?? null,
-      ...(e?.stream ? { stream: e.stream } : {}),
-      partialShown: ctx.partialShown ?? null,
-      request: ctx.request,
-      model: config.model,
-      maxTokens: config.maxTokens,
-    });
-  } catch {
-    /* 见上：日志不能影响主流程 */
-  }
+  const entry: LlmFailure = {
+    ts: Date.now(),
+    source: ctx.source,
+    kind: e?.kind ?? "unknown",
+    status: e?.status ?? null,
+    message: e ? e.message : String(err),
+    stopReason: e?.raw?.stopReason ?? null,
+    raw: e?.raw?.text ?? null,
+    ...(e?.stream ? { stream: e.stream } : {}),
+    partialShown: ctx.partialShown ?? null,
+    ...(ctx.recovered ? { recovered: ctx.recovered } : {}),
+    request: ctx.request,
+    model: config.model,
+    maxTokens: config.maxTokens,
+  };
   // 失败也占"最近 50 次调用"里的一格：只记成功会把耗时分布看成一片岁月静好。
-  // 缺配置那类没发出去的没有 timing，自然也就不记。
-  if (e?.timing) await recordTiming(ctx.source, config, e.timing, undefined, e.kind);
+  // 缺配置那类没发出去的没有 timing，自然也就不记。模型答了、坏在解析上的，token 照样烧了（`LlmError.usage`），照实记。
+  const spent = e?.usage ?? NO_USAGE;
+  const timing = !ctx.recovered && e?.timing ? timingEntry(ctx.source, config, e.timing, spent, e.kind) : null;
+  const keys = [KEY_LLM_LOG, ...(timing ? [KEY_LLM_TIMING] : []), ...(ctx.countUsage ? [KEY_USAGE] : [])];
+  try {
+    // 现场、耗时、用量三样一笔写完
+    await updateLocalOnly(keys, (v) => ({
+      [KEY_LLM_LOG]: pushFailure(v[KEY_LLM_LOG], entry),
+      ...(timing ? { [KEY_LLM_TIMING]: pushTiming(v[KEY_LLM_TIMING], timing) } : {}),
+      ...(ctx.countUsage ? { [KEY_USAGE]: bumpUsage(v[KEY_USAGE], spent.inputTokens, spent.outputTokens, true) } : {}),
+    }));
+  } catch {
+    /* 日志是附属品，不能反过来把给调用方的回复搞丢 */
+  }
 }
 
 /** 导出格式。和数据导出同一条规矩：密钥只导出"设没设过"。 */

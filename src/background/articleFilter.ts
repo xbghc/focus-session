@@ -2,8 +2,8 @@ import { localStorage } from "../sync/storage.ts";
 import { decodeWith, pickCharset } from "../lib/charset.ts";
 import { ARTICLE_SYSTEM, parseDecision, parseSuggestions, samplePage } from "../lib/articleFilter.ts";
 import { callMessages, extractJson } from "../lib/llm.ts";
-import { addUsage, getLlmConfig } from "./vocab.ts";
-import { recordFailure, recordTiming } from "./llmLog.ts";
+import { getLlmConfig } from "./vocab.ts";
+import { later, recordCall, recordFailure } from "./llmLog.ts";
 import { getArticles, getSettings } from "./store.ts";
 import { isUrlExcluded } from "../lib/url.ts";
 import type { HistoryArticleDecision } from "../lib/articleFilter.ts";
@@ -13,12 +13,12 @@ async function query(system: string, input: unknown, source: "articleFilter" | "
   const config = { ...saved, maxTokens: Math.max(1500, saved.maxTokens), timeoutMs: Math.max(60_000, saved.timeoutMs) };
   try {
     const result = await callMessages(config, system, JSON.stringify(input));
-    await addUsage(result.usage.inputTokens, result.usage.outputTokens);
-    await recordTiming(source, config, result.timing, result.usage);
+    // 记账不挡判别结果：页面等着这一句「是文章」才开始计时，早先两笔落盘让它白等半秒
+    later(() => recordCall(source, config, result.timing, result.usage));
     if (result.truncated) throw new Error("模型输出被截断，请重试");
     return extractJson(result.text);
   } catch (err) {
-    await recordFailure(err, config, { source, request: {} });
+    later(() => recordFailure(err, config, { source, request: {} }));
     throw err;
   }
 }

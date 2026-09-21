@@ -41,7 +41,7 @@ export interface CallTiming {
   totalMs: number;
   /** 第一个文本增量到达。非流式为 null——那条路在整段生成完之前什么都没有。 */
   firstTextMs: number | null;
-  /** 模型译文字段闭合；页面实际显示另由翻译链路日志记录。 */
+  /** 译文第一次推给浮层（长译文是还在流的头十几个字，短的是整个字段闭合）；页面实际显示另由翻译链路日志记录。 */
   firstFieldMs: number | null;
   /** 实际发出去几次请求。>1 说明撞上过 429/529，`totalMs` 里有一段是退避。 */
   attempts: number;
@@ -69,6 +69,11 @@ export class LlmError extends Error {
    * 和 `raw` 同一个思路：能挂上去的现场都挂上，日志才看得出"慢到超时"和"秒失败"的区别。
    */
   timing: CallTiming | undefined;
+  /**
+   * 这次调用烧掉的 token。只挂在**调用成功之后**才造出来的失败上（解析失败、截断）：模型照样生成了、也照样计了费，
+   * 早先这类失败一律记成 0 token，用量统计和耗时日志里都对不上账。
+   */
+  usage?: RawUsage;
 
   constructor(message: string, kind: LlmErrorKind, status?: number) {
     super(message);
@@ -568,12 +573,30 @@ function closesString(src: string, at: number): boolean {
 /** 值位置上裸着的音标：`"phonetic": /frɔːt/,`。要求后面跟着 `,` `}` `]`，免得错认。 */
 const BARE_SLASHED = /^(\s*)(\/[^/"\n]*\/)(?=\s*[,}\]])/;
 
+/** 冒号后面合法的开头：字符串、对象、数组，或者一个写完整了的数字 / true / false / null。 */
+const VALID_VALUE_START = /^\s*(?:["{[]|(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)\s*[,}\]])/;
+
 /**
- * 修模型写坏的 JSON。只在严格解析失败之后跑，只修两类**在合法 JSON 里根本不可能出现**的写法：
+ * 值位置上丢了**开头那个引号**的字符串：`"translation":忠实地；尽可能贴近原貌地",`、`"pos":noun phrase",`。
+ * 收尾的引号模型照写了，所以认法是：冒号后面不是任何合法的开头，而往后第一个 `"` 恰好能给字符串收尾
+ * （后面跟着 `,` `}` `]`）、中间没有换行。返回该在哪儿补上开头的引号（跳过空白之后），认不出返回 -1。
+ */
+function missingOpenQuote(rest: string): number {
+  if (VALID_VALUE_START.test(rest)) return -1;
+  const at = rest.search(/\S/);
+  if (at < 0 || rest[at] === "/") return -1; // 裸音标归 BARE_SLASHED 管
+  const close = rest.indexOf('"', at);
+  if (close <= at || rest.slice(at, close).includes("\n")) return -1;
+  return /^\s*[,}\]]/.test(rest.slice(close + 1)) ? at : -1;
+}
+
+/**
+ * 修模型写坏的 JSON。只在严格解析失败之后跑，只修三类**在合法 JSON 里根本不可能出现**的写法：
  *
  * 1. 字符串里没转义的半角引号。模型写中文时爱拿它引术语——
  *    `"context_note": "它能做"细致"的半透明效果"`——一处就废掉整份输出，实测这是头号死因。
  * 2. 值位置上裸着的音标：`"phonetic": /frɔːt/`。prompt 里说"含首尾斜杠"，模型偶尔连引号一起省了。
+ * 3. 值丢了开头的引号：`"translation":忠实地…",`。诊断日志里三天撞见两回（见 `missingOpenQuote`）。
  *
  * 判定收尾引号的规矩：一个 `"` 结束字符串，当且仅当它后面（跳过空白）是 `,` `}` `]` `:`
  * 之一或者已经到头；否则它是正文里的引号，补成 `\"`。这条判断在合法 JSON 上永远成立，
@@ -603,10 +626,18 @@ export function repairJson(src: string): string {
     if (c === '"') {
       inStr = true;
     } else if (c === ":") {
-      const m = BARE_SLASHED.exec(src.slice(i + 1));
+      const rest = src.slice(i + 1);
+      const m = BARE_SLASHED.exec(rest);
       if (m) {
         out += m[1]! + JSON.stringify(m[2]!);
         i += m[0]!.length;
+        continue;
+      }
+      const at = missingOpenQuote(rest);
+      if (at >= 0) {
+        out += rest.slice(0, at) + '"';
+        i += at;
+        inStr = true; // 接下来照字符串走，模型写了的那个收尾引号会把它关上
       }
     }
   }
@@ -772,6 +803,7 @@ function finishTranslation(res: CallResult, req: TranslateRequest, config: LlmCo
   } catch (err) {
     if (err instanceof LlmError) {
       err.raw = { text: res.text, stopReason: res.stopReason };
+      err.usage = res.usage;
       err.stream = res.stream;
       // 这个错是调用成功**之后**才造出来的，身上没有耗时；补上，
       // 不然日志里"生成了 40 秒最后解析失败"和"秒失败"分不开
@@ -899,6 +931,41 @@ export function closedVocab(text: string, selection: string): VocabNote[] {
   return out;
 }
 
+/** 一个**还没闭合**、正写到文本末尾的 translation 值。和 FIELD_RE 同一套转义规则，只是收尾换成了 `$`。 */
+const OPEN_TRANSLATION = /"translation"\s*:\s*"((?:[^"\\]|\\.)*)$/;
+
+/**
+ * 还在流的那截译文；译文已经闭合、还没开始写、或者正卡在半个转义上（`\` 后面的字符还没到、`\u` 没凑够四位）都返回 null。
+ *
+ * 只给译文开这个口子。「只认闭合的字段」对短字段是对的，对长选区的译文不是：诊断日志里五百到一千字的选区，
+ * 模型 0.7–1 秒就开口了，译文却要再流 2–4 秒才闭合（最长一次 4.4 秒），这期间浮层一片空白。
+ * 译文是纯文本、只会往后长，半截照样读得通；音标、词性半截没法看，语境解释等它写完也就一秒，都不值得开。
+ */
+export function openTranslation(text: string): string | null {
+  const m = OPEN_TRANSLATION.exec(topLevelSlice(text));
+  if (!m || !m[1]) return null;
+  try {
+    return (JSON.parse(`"${m[1]}"`) as string).trimStart() || null;
+  } catch {
+    return null; // 半个 \uXXXX，下一批就齐了
+  }
+}
+
+/** 还在流的译文每长出这么多字推一次浮层。按字数而不是按时间：不用多取一次时钟，回调次数也好断言。 */
+const OPEN_STEP = 16;
+
+/**
+ * 整份输出解析不了时的最后一招：只要**译文闭合过**，就拿流式那套只认闭合字段的扫描拼一份结果出来——
+ * 坏在生词数组里（`{"word": …, null}`）的，译文和语境解释都是好的，没道理整个作废。
+ * 坏掉的那条生词被 `closedVocab` 逐条解析时自然丢掉。译文没闭合（坏在开头、或被截断）返回 null。
+ */
+export function salvageTranslation(text: string, kind: SnippetKind, selection: string): TranslationResult | null {
+  const p = partialOf(text, kind, selection);
+  if (!p.translation) return null;
+  const lemma = kind === "sentence" ? null : str(closedFields(topLevelSlice(text))["lemma"]);
+  return { translation: p.translation, contextNote: p.contextNote ?? "", pos: p.pos, phonetic: p.phonetic, lemma, usage: p.usage, vocab: p.vocab };
+}
+
 /** 把流到目前为止的文本折成一份可显示的快照。缺的字段就是还没生成到。 */
 export function partialOf(text: string, kind: SnippetKind, selection: string): PartialTranslation {
   const f = closedFields(topLevelSlice(text));
@@ -915,9 +982,25 @@ export function partialOf(text: string, kind: SnippetKind, selection: string): P
   };
 }
 
+/** 失败之后是怎么救回来的，给调用方记日志用：救回来了也得留痕，不然模型写坏 JSON 的频率就从诊断日志里消失了。 */
+export interface Recovery {
+  /** retry：重发了一次，第二次是好的。salvage：两次都坏，从闭合的字段里拼出来的，多半缺生词。 */
+  by: "retry" | "salvage";
+  /** 头一次失败的现场（原文、流、耗时、用量都挂在上面）。 */
+  error: LlmError;
+}
+
+const addUsage = (a: RawUsage, b: RawUsage | undefined): RawUsage =>
+  b ? { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens } : a;
+
 /**
- * 流式翻译。`onPartial` **只在有字段新闭合时**触发，不是每个 token 都推——
- * 一次翻译至多回调四次，浮层因此只需要重排四次。
+ * 流式翻译。`onPartial` 在**有字段新闭合**、或者**还在流的译文又长出一截**（见 `openTranslation`）时触发，
+ * 不是每个 token 都推——单词和短语的译文几个字就闭合，一次翻译仍是三四次回调；只有长选区的译文会多推几次。
+ *
+ * **解析失败自动重发一次。**诊断日志里三天 62 次翻译有 5 次坏在模型自己写的 JSON 上（译文给了个空串、
+ * 值丢了引号、生词对象里混进一个裸的 null），每次都要人重新划一遍——而重划的那一次全都成了。重发期间浮层上
+ * 已经显示的字段原样留着（浮层不拿空字段盖已有的），新一轮的字段到了再盖上去；生词从头长。
+ * 两次都坏才轮到 `salvageTranslation`，再不行照旧报错。被截断（token_limit）不重发：再来一次还是截断。
  */
 export async function translateStream(
   req: TranslateRequest,
@@ -925,42 +1008,77 @@ export async function translateStream(
   onPartial: (p: PartialTranslation) => void,
   signal?: AbortSignal,
   deps?: LlmDeps,
-): Promise<{ result: TranslationResult; usage: RawUsage; timing: CallTiming }> {
+): Promise<{ result: TranslationResult; usage: RawUsage; timing: CallTiming; recovered?: Recovery }> {
   const now = deps?.now ?? (() => performance.now());
   const t0 = now();
   /** 浮层第一次真显示出译文的时刻——用户感知的"等了多久"就是这个数，不是 totalMs。 */
   let firstFieldMs: number | null = null;
-  let last = "";
-  try {
-    const res = await callMessagesStream(
+  const system = translateSystem(req.kind, req.explainVocab);
+  const prompt = buildTranslatePrompt(req);
+  let first: LlmError | undefined;
+
+  const attempt = async (): Promise<CallResult> => {
+    let last = "";
+    /** 上一次推出去时，还开着的译文有多长。 */
+    let openShown = 0;
+    return callMessagesStream(
       config,
-      translateSystem(req.kind, req.explainVocab),
-      buildTranslatePrompt(req),
+      system,
+      prompt,
       {
         signal,
         onDelta: (full) => {
           const p = partialOf(full, req.kind, req.text);
           const key = JSON.stringify(p);
-          if (key === last) return; // 这几个 token 没让任何字段闭合
-          last = key;
-          // 头几个 token 还在写 `{"translation": "`，一个字段都没闭合，没什么可显示的
-          if (!p.translation && !p.phonetic && !p.pos && !p.contextNote && !p.usage && p.vocab.length === 0) return;
-          // 记在两道早退之后：走到这儿才是真推给了浮层
+          if (key === last) {
+            // 没有字段新闭合。译文还开着的话，看它长出来的够不够推一次
+            if (p.translation) return;
+            const open = openTranslation(full);
+            if (!open || open.length < openShown + OPEN_STEP) return;
+            openShown = open.length;
+            p.translation = open;
+          } else {
+            last = key;
+            // 头几个 token 还在写 `{"translation": "`，一个字段都没闭合，没什么可显示的
+            if (!p.translation && !p.phonetic && !p.pos && !p.contextNote && !p.usage && p.vocab.length === 0) return;
+          }
+          // 记在几道早退之后：走到这儿才是真推给了浮层
           if (p.translation && firstFieldMs === null) firstFieldMs = now() - t0;
           onPartial(p);
         },
       },
       deps,
     );
-    return {
-      result: finishTranslation(res, req, config),
-      usage: res.usage,
-      timing: { ...res.timing, firstFieldMs },
-    };
-  } catch (err) {
-    // 底下那层填不了这个数，只有这里知道字段什么时候闭合的
-    if (err instanceof LlmError && err.timing) err.timing.firstFieldMs = firstFieldMs;
-    throw err;
+  };
+  /** 两轮合成一个数：总时长从头算起，请求次数相加，首字是头一轮的——人是从那时候开始看到东西的。 */
+  const timingOf = (t: CallTiming): CallTiming =>
+    first ? { totalMs: now() - t0, firstTextMs: first.timing?.firstTextMs ?? t.firstTextMs, firstFieldMs, attempts: (first.timing?.attempts ?? 1) + t.attempts }
+      : { ...t, firstFieldMs };
+
+  for (;;) {
+    try {
+      const res = await attempt();
+      const result = finishTranslation(res, req, config);
+      return { result, usage: addUsage(res.usage, first?.usage), timing: timingOf(res.timing), ...(first ? { recovered: { by: "retry" as const, error: first } } : {}) };
+    } catch (err) {
+      if (!(err instanceof LlmError)) throw err;
+      if (err.kind === "parse" && !first && !signal?.aborted) {
+        first = err;
+        if (err.timing) err.timing.firstFieldMs = firstFieldMs;
+        continue;
+      }
+      if (err.kind === "parse" && first) {
+        // 两次都坏：哪一次的译文闭合过就用哪一次，后一次优先
+        for (const raw of [err.raw?.text, first.raw?.text]) {
+          const result = raw ? salvageTranslation(raw, req.kind, req.text) : null;
+          if (result) return { result, usage: addUsage(addUsage({ inputTokens: 0, outputTokens: 0 }, err.usage), first.usage), timing: timingOf(err.timing ?? { totalMs: 0, firstTextMs: null, firstFieldMs, attempts: 1 }), recovered: { by: "salvage", error: first } };
+        }
+        err.usage = addUsage(addUsage({ inputTokens: 0, outputTokens: 0 }, err.usage), first.usage);
+      }
+      // 底下那层填不了这个数，只有这里知道译文什么时候推出去的
+      if (err.timing) err.timing = timingOf(err.timing);
+      throw err;
+    }
   }
 }
 

@@ -168,6 +168,38 @@ test("输出被截断时给出可操作的提示", async () => {
   );
 });
 
+// 诊断日志里的原样开头：outline 写成了一串不带方括号的字符串，中间还夹着没转义的引号——修不了
+const BARE_OUTLINE = '{"outline": "提出核心论点：默会知识值得关注，它引导人追问"那个高手是怎么做到的"这一关键问题。", "用骑自行车作例子论证语言解释的局限。", "questions": ["作者为什么认为讲述教不会？"]}';
+
+test("解析失败自动重发一次：第二次的材料照常返回，两次的 token 都算上，头一次的现场留着", async () => {
+  let calls = 0;
+  const out = await generateArticleReview({ title: "T", url: "u", text: "t", fullChars: 1 }, CFG, 0, {
+    fetch: (async () => okResponse(calls++ === 0 ? BARE_OUTLINE : GOOD)) as unknown as typeof fetch,
+  });
+  assert.equal(calls, 2);
+  assert.equal(out.review.outline.length, 3);
+  assert.deepEqual(out.usage, { inputTokens: 8_000, outputTokens: 840 });
+  assert.equal(out.timing.attempts, 2);
+  assert.equal(out.recovered?.by, "retry");
+  assert.equal(out.recovered!.error.raw?.text, BARE_OUTLINE);
+});
+
+test("重发了还是坏的照旧报错；被截断的不重发", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => generateArticleReview({ title: "T", url: "u", text: "t", fullChars: 1 }, CFG, 0, {
+      fetch: (async () => { calls++; return okResponse(BARE_OUTLINE); }) as unknown as typeof fetch,
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "parse" && e.timing?.attempts === 2 && e.usage?.outputTokens === 840,
+  );
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(() => generateArticleReview({ title: "T", url: "u", text: "t", fullChars: 1 }, CFG, 0, {
+    fetch: (async () => { calls++; return okResponse(`{"outline": ["一`, "max_tokens"); }) as unknown as typeof fetch,
+  }));
+  assert.equal(calls, 1);
+});
+
 test("缺 API key 报 config，让界面能引导去设置页", async () => {
   await assert.rejects(
     () =>
