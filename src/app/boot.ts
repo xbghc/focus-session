@@ -4,11 +4,11 @@ import { attachTranslatePort, boot as bootBackground, handle } from "../backgrou
 import { recordAppError } from "../background/appLog.ts";
 import { setUiPlatform } from "../background/uiUsage.ts";
 import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";
-import { installNative, native, captureVisible, recognizeNative } from "./native.ts";
+import { installNative, native, captureVisible, onHostVisibility, recognizeNative } from "./native.ts";
 import { setOcrBackend } from "../background/ocr.ts";
 import { cleanOcrLines } from "../lib/ocrText.ts";
 import { indexedDriver, installStorage } from "../sync/storage.ts";
-import { bootSync } from "../sync/engine.ts";
+import { bootSync, setHostVisible } from "../sync/engine.ts";
 
 /**
  * App 每个页面的第一件事：把 chrome.* 垫片和宿主桥装好。
@@ -70,6 +70,8 @@ setUiPlatform("app");
 installStorage(indexedDriver(() => chrome.storage.local.get(null)), data => chrome.storage.local.set(data), async()=>{
   const data=await chrome.storage.local.get(null);await chrome.storage.local.remove(Object.keys(data).filter(k=>k!=="settings"&&k!=="speed"));
 });
+// 关屏那一刻写下的最后一段不攒两秒，马上传（见 sync/engine.ts 的 mutationDelay）
+onHostVisibility(setHostVisible);
 bootSync();
 const bridge = native();
 if (bridge?.ocrStart) setOcrBackend({

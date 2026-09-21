@@ -1,4 +1,4 @@
-import type { Article, ArticleCard, FsrsState, ParagraphRecord, Session, StoredCard } from "../types.ts";
+import type { Article, ArticleCard, BgToPage, FsrsState, ParagraphRecord, Session, StoredCard } from "../types.ts";
 import { DEFAULT_SETTINGS } from "../types.ts";
 import { gradeFsrs } from "../lib/review.ts";
 import { summarizeSpeed } from "../lib/readingTime.ts";
@@ -312,12 +312,23 @@ export function projectRecords(state: SyncState): void {
     reviewEvents:events.map(({_stamp,...e})=>e),archives,deletedArticles:deleted,speed:summarizeSpeed(sessions,Date.now())});
 }
 
-export async function applyRemote(driver:StateDriver, records:SyncRecord[], cursor:number, expectedConfig?:SyncConfig):Promise<void> {
-  await withDataLock(()=>driver.update(state=>{
+/**
+ * 返回这批记录有没有让本机的数据变样。自己刚传上去的那几条会在收尾的下载里原样回来，
+ * 合并之后和本机已有的一模一样——这种不算，开着的页面用不着为它重画（见 notifyProjection）。
+ */
+export async function applyRemote(driver:StateDriver, records:SyncRecord[], cursor:number, expectedConfig?:SyncConfig):Promise<boolean> {
+  return withDataLock(()=>driver.update(state=>{
     if(expectedConfig && JSON.stringify(state.config)!==JSON.stringify(expectedConfig))throw new Error("同步配置已改变，本轮已停止");
-    for(const raw of records) {const r=validateRecord(raw);state.counter=Math.max(state.counter,r.stamp.counter); const key=recordKey(r);state.records[key]=mergeRecord(state.records[key],r);}
+    let altered=false;
+    for(const raw of records) {
+      const r=validateRecord(raw);state.counter=Math.max(state.counter,r.stamp.counter); const key=recordKey(r);
+      const merged=mergeRecord(state.records[key],r);
+      if(!altered&&JSON.stringify(merged)!==JSON.stringify(state.records[key]))altered=true;
+      state.records[key]=merged;
+    }
     // Records already contain local optimistic operations; merging never removes the outbox.
     projectRecords(state); state.cursor=Math.max(state.cursor,cursor);
+    return altered;
   }));
 }
 let installed: chrome.storage.StorageArea | undefined;
@@ -325,10 +336,23 @@ let driver:StateDriver | undefined;
 let changed:()=>void=()=>{};
 let mirrorProjection:((data:Record<string,unknown>)=>Promise<void>)|undefined;
 let clearLegacy:(()=>Promise<void>)|undefined;
-export async function notifyProjection():Promise<void> {
+/**
+ * 同步让本机数据变了样之后：把设置和速度镜像出去，再告诉开着的页面「该重新取一次了」。
+ *
+ * 页面在哪儿取决于宿主。App 里同步就跑在页面自己的上下文里，派一个 window 事件；扩展里同步跑在
+ * service worker，首页和弹窗在别的上下文，只能经 runtime 广播（`sync:updated`）——不通知的话，
+ * 手机上刚读的文章早就拉到本机了，开着的首页却还是打开那一刻的样子，得手动刷新才看得见。
+ *
+ * altered=false（这一页什么都没拉到，或拉到的只是自己刚传上去的）只镜像、不通知：
+ * 每分钟一轮的空转不该让页面每分钟重画一次。
+ */
+export async function notifyProjection(altered=true):Promise<void> {
   const s=await syncDriver().read();
   if(mirrorProjection)await mirrorProjection({settings:s.data.settings??DEFAULT_SETTINGS,speed:s.data.speed??null});
-  if(typeof window!=="undefined")window.dispatchEvent(new CustomEvent("focus-sync-updated"));
+  if(!altered)return;
+  if(typeof window!=="undefined") {window.dispatchEvent(new CustomEvent("focus-sync-updated"));return;}
+  // 没有页面开着时 sendMessage 会拒绝（Receiving end does not exist），正常
+  try {void (chrome.runtime.sendMessage({type:"sync:updated"} satisfies BgToPage) as Promise<unknown>|undefined)?.catch?.(()=>undefined);} catch { /* 不在扩展里（测试），或扩展正在重载 */ }
 }
 export const localStorage = ():chrome.storage.StorageArea => installed ?? chrome.storage.local;
 export const syncDriver = ():StateDriver => {if(!driver)throw new Error("本地同步数据库尚未就绪");return driver;};

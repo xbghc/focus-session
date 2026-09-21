@@ -118,6 +118,16 @@ export const hostHooks: Pick<HostCallbacks, "visibility" | "beforeBack"> = {
   beforeBack: () => false,
 };
 
+/**
+ * 页面之外也有要知道宿主可见性的（同步引擎：看不见之后写下的东西不攒着、马上传）。
+ * hostHooks.visibility 那一格归页面自己，会被阅读器整个换掉，所以另开一张单子。先于页面的那一格调：
+ * 阅读器听到「看不见了」当场结算，结算的写入落盘时引擎得已经知道。
+ */
+const visibilityListeners: Array<(visible: boolean) => void> = [];
+export function onHostVisibility(fn: (visible: boolean) => void): void {
+  visibilityListeners.push(fn);
+}
+
 interface Inflight {
   head(status: number, statusText: string, headers: Record<string, string>): void;
   chunk(bytes: Uint8Array): void;
@@ -405,7 +415,10 @@ export function installNative(): void {
   window.__fsCapture = imageCallbacks(captures);
   window.__fsOcr = imageCallbacks(recognitions);
   window.__fsHost = {
-    visibility: (v) => hostHooks.visibility(v),
+    visibility: (v) => {
+      for (const fn of visibilityListeners) fn(v);
+      hostHooks.visibility(v);
+    },
     beforeBack: () => hostHooks.beforeBack(),
     insets: applyInsets,
   };

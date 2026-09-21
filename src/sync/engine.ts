@@ -203,13 +203,13 @@ async function cycle():Promise<SyncStatus> {
         if(!Array.isArray(result.records)||typeof result.token!=="string"||!Number.isSafeInteger(result.head)||result.head<0||!Number.isSafeInteger(result.cursor)||result.cursor<0||typeof result.hasMore!=="boolean"
           || (progress&&(result.token!==progress.token||result.head!==progress.head||result.cursor<progress.cursor))
           || (result.hasMore&&result.cursor===(progress?.cursor??0)))throw new Error("无效的初始同步快照");
-        await check();await applyRemote(syncDriver(),result.records.map(validateRecord),0,config);
+        await check();const altered=await applyRemote(syncDriver(),result.records.map(validateRecord),0,config);
         await syncDriver().update(s=>{
           if(JSON.stringify(s.config)!==JSON.stringify(config))throw new Error("同步配置已改变，本轮已停止");
           if(result.hasMore)s.snapshot={token:result.token,head:result.head,cursor:result.cursor};
           else {s.cursor=result.head;s.initializedRemote=true;delete s.snapshot;}
         });
-        await notifyProjection();
+        await notifyProjection(altered);
         if(!result.hasMore)break;
       }
       if(!(await syncDriver().read()).initializedRemote)throw new Error("初始下载已保存进度，稍后继续");
@@ -220,8 +220,7 @@ async function cycle():Promise<SyncStatus> {
         const result=await (await request(config,`/v1/sync/pull?cursor=${before.cursor}&limit=200`)).json();
         if(!Array.isArray(result.records)||!Number.isSafeInteger(result.cursor)||result.cursor<before.cursor||typeof result.hasMore!=="boolean")throw new Error("无效的同步分页响应");
         if(result.hasMore && result.cursor===before.cursor)throw new Error("同步游标没有前进");
-        await check();await applyRemote(syncDriver(),result.records.map(validateRecord),result.cursor,config);
-        await notifyProjection();
+        await check();await notifyProjection(await applyRemote(syncDriver(),result.records.map(validateRecord),result.cursor,config));
         if(!result.hasMore)return;
       }
       throw new Error("本轮下载已达批次上限，稍后继续");
@@ -317,15 +316,55 @@ export async function syncBefore(maxWaitMs=2500,freshMs=10_000):Promise<void> {
     await Promise.race([runSync(),new Promise<void>(resolve=>{timeout=setTimeout(resolve,maxWaitMs);})]).finally(()=>clearTimeout(timeout));
   } catch { /* 同步出不出错都不该拦着人打开文章 */ }
 }
-export function scheduleSync(delay=2000):void {
-  if(timer)clearTimeout(timer);
-  timer=setTimeout(()=>{timer=undefined;void (async()=>{
-    if(!hasSyncStorage())return;const s=await syncDriver().read();
-    if(s.config.enabled&&s.retryAt<=Date.now())await runSync();
-  })().catch(()=>undefined);},delay);
+/**
+ * 到点之后真正去跑的那一步。
+ *
+ * 到点时上一轮还没跑完：runSync() 只会把那一轮原样递回来，而它多半已经读过队列了，这之后写下的东西它带不走，
+ * 也没有人再来催——要等下一个触发（一分钟后；关了屏的手机上是下次打开 App）。读着的时候每五秒一次心跳、
+ * 一轮同步一两秒，关屏那一刻撞上的机会不小，撞上了丢的恰好是最后一段。所以等它完，队列里还有货就补一轮；
+ * 没货说明它带走了，或者这次本来就只是想下载（定时、回到前台），那一轮已经够新，不多问服务器。
+ * 等着的只留一个：一次结算连着好几笔写入，各催一次，补的那一轮一轮就够。
+ */
+let waiting=false;
+async function kick():Promise<void> {
+  if(!hasSyncStorage())return;
+  const inFlight=running;
+  if(inFlight) {
+    if(waiting)return;
+    waiting=true;
+    try {await inFlight.catch(()=>undefined);} finally {waiting=false;}
+    const left=await syncDriver().read();
+    if(!left.outbox.length&&!Object.keys(object(left.data.archivePending)).length)return;
+  }
+  const s=await syncDriver().read();
+  if(s.config.enabled&&s.retryAt<=Date.now())await runSync();
 }
+/** delay 为 0 时不经定时器、当场就跑：看不见的页面里定时器被浏览器压成一秒一跳，setTimeout(0) 也得等（见 mutationDelay）。 */
+export function scheduleSync(delay=2000):void {
+  if(timer) {clearTimeout(timer);timer=undefined;}
+  if(delay<=0) {void kick().catch(()=>undefined);return;}
+  timer=setTimeout(()=>{timer=undefined;void kick().catch(()=>undefined);},delay);
+}
+/**
+ * 本机写了东西之后隔多久上传。平时攒 2 秒：一次结算是连着的好几笔写入，凑成一轮发。
+ *
+ * 页面已经看不见时不攒。手机上「关屏」就是读完的那一刻：最后一段专注和落点是 onPause 之后才写下的，
+ * 而人接下来要做的是走到电脑前找这篇文章。屏幕一黑，这个进程还能跑多久、网还能通多久都说不准，
+ * 早两秒发出去就少两秒悬着。看不见之后没有心跳，写入只剩结算这一串，几十毫秒内写完，
+ * 而一轮同步先问身份、再下载、然后才读队列，轮到读的时候它们都在了——不用攒也凑得齐；
+ * 真有漏在后面的，这一轮跑完之后会补一轮（见 kick）。是 0 而不是一个小数：看不见的页面里定时器被浏览器
+ * 压成一秒一跳，模拟器上实测 150 毫秒的定时器要等 0.6 秒以上才响。
+ *
+ * 「看不见」先认宿主明说的（setHostVisible），再看 `document.visibilityState`。App 里宿主先通知网页、再暂停 WebView，
+ * 两条消息走的不是一条路，先后没有保证（模拟器上实测 visibilitychange 晚到 2～22 毫秒）；结算就是被前一条触发的，
+ * 认它不用赌后一条赶不赶得上。service worker 里两样都没有，走平时那条。
+ */
+let hostHidden=false;
+/** App 的宿主切到后台 / 回到前台时调（app/boot.ts 接到 native.ts 的宿主回调上）。 */
+export function setHostVisible(visible:boolean):void {hostHidden=!visible;}
+export const mutationDelay=():number=>hostHidden||(typeof document!=="undefined"&&document.visibilityState==="hidden")?0:2000;
 export function bootSync():void {
-  onLocalMutation(()=>scheduleSync());scheduleSync(1000);
+  onLocalMutation(()=>scheduleSync(mutationDelay()));scheduleSync(1000);
   if(typeof window!=="undefined") {
     window.addEventListener("online",()=>scheduleSync(100));
     document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")scheduleSync(100);});
