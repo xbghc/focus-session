@@ -1,5 +1,5 @@
 import type { ArticleReview, LlmConfig } from "../types.ts";
-import { LlmError, type CallTiming, type LlmDeps, type RawUsage, callMessages, extractJson } from "./llm.ts";
+import { LlmError, type CallTiming, type LlmDeps, type RawUsage, type Recovery, callMessages, extractJson } from "./llm.ts";
 
 /**
  * 文章级回顾材料的生成。
@@ -96,7 +96,7 @@ export async function generateArticleReview(
   config: LlmConfig,
   now: number,
   deps?: LlmDeps,
-): Promise<{ review: Omit<ArticleReview, "articleId">; usage: RawUsage; timing: CallTiming }> {
+): Promise<{ review: Omit<ArticleReview, "articleId">; usage: RawUsage; timing: CallTiming; recovered?: Recovery }> {
   // 取大值而不是覆写：这两个常量是回顾材料的**下限**，
   // 不该把用户自己在设置里调宽的额度又收回去
   const cfg: LlmConfig = {
@@ -104,17 +104,36 @@ export async function generateArticleReview(
     maxTokens: Math.max(config.maxTokens, REVIEW_MAX_TOKENS),
     timeoutMs: Math.max(config.timeoutMs, REVIEW_TIMEOUT_MS),
   };
-  const res = await callMessages(cfg, REVIEW_SYSTEM, buildReviewPrompt(input), deps);
-  try {
-    if (res.truncated) throw new LlmError(`回顾材料被 max_tokens(${cfg.maxTokens}) 截断`, "parse");
-    const { outline, questions } = normalizeArticleReview(extractJson(res.text));
-    return { review: { outline, questions, generatedTs: now, model: cfg.model }, usage: res.usage, timing: res.timing };
-  } catch (err) {
-    // 和 llm.ts 的 finishTranslation 同一条规矩：解析阶段的失败把完整原文和耗时挂上，给诊断日志
-    if (err instanceof LlmError) {
-      err.raw = { text: res.text, stopReason: res.stopReason };
-      err.timing = res.timing;
+  /*
+   * 解析失败重发一次，和划词翻译同一条规矩（见 llm.ts 的 translateStream）。诊断日志里撞见过的那次，模型把
+   * outline 写成了一串不带方括号的字符串——修不了，只能重来，而重来的那次是好的。被截断的不重发：再来还是截断。
+   */
+  let first: LlmError | undefined;
+  const t0 = (deps?.now ?? (() => performance.now()))();
+  for (;;) {
+    const res = await callMessages(cfg, REVIEW_SYSTEM, buildReviewPrompt(input), deps);
+    const usage: RawUsage = first?.usage
+      ? { inputTokens: res.usage.inputTokens + first.usage.inputTokens, outputTokens: res.usage.outputTokens + first.usage.outputTokens }
+      : res.usage;
+    const timing: CallTiming = first
+      ? { ...res.timing, totalMs: (deps?.now ?? (() => performance.now()))() - t0, attempts: res.timing.attempts + (first.timing?.attempts ?? 1) }
+      : res.timing;
+    try {
+      if (res.truncated) throw new LlmError(`回顾材料被 max_tokens(${cfg.maxTokens}) 截断`, "parse");
+      const { outline, questions } = normalizeArticleReview(extractJson(res.text));
+      return { review: { outline, questions, generatedTs: now, model: cfg.model }, usage, timing, ...(first ? { recovered: { by: "retry" as const, error: first } } : {}) };
+    } catch (err) {
+      // 和 llm.ts 的 finishTranslation 同一条规矩：解析阶段的失败把完整原文、耗时和烧掉的 token 挂上，给诊断日志
+      if (err instanceof LlmError) {
+        err.raw = { text: res.text, stopReason: res.stopReason };
+        err.timing = timing;
+        err.usage = usage;
+        if (err.kind === "parse" && !res.truncated && !first) {
+          first = err;
+          continue;
+        }
+      }
+      throw err;
     }
-    throw err;
   }
 }

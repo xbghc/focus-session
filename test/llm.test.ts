@@ -131,6 +131,39 @@ test("值位置上裸着的音标补上引号", () => {
   assert.equal(o["usage"], "常与 with 连用，fraught with difficulty/problems 表示‘充满困难/问题’。");
 });
 
+/* 下面两条的原文来自 0.3.14 的诊断日志：值丢了**开头**的引号，收尾的那个照写了。 */
+
+test("值丢了开头的引号：译文那一格", () => {
+  const raw =
+    '{"translation":忠实地；尽可能贴近原貌地","phonetic":"/ˈfeɪθfəli/","pos":"adverb","lemma":"faithful",' +
+    '"context_note":"指新写的 Go 版本代码尽可能忠于原 TypeScript 代码库的逻辑与结构，以保证两个编译器结果兼容。",' +
+    '"usage":"常见搭配 faithfully reproduce/port，强调在改写时严格保留原貌。"}';
+  const o = extractJson(raw) as Record<string, unknown>;
+  assert.equal(o["translation"], "忠实地；尽可能贴近原貌地");
+  assert.equal(o["usage"], "常见搭配 faithfully reproduce/port，强调在改写时严格保留原貌。");
+});
+
+test("值丢了开头的引号：生词里的词性，noun 不被当成写了一半的 null", () => {
+  const raw =
+    '{"translation":"说清楚一下，他通常会先实现一个用完就丢的原型。","phonetic":null,"pos":null,"lemma":null,"context_note":"作者澄清同事的工作流程。",' +
+    '"vocab":[{"word":"throwaway prototype","phonetic":null,"pos":noun phrase","meaning":"用完即弃的原型","note":"throwaway 强调只为验证。"},' +
+    '{"word":"confirm the sketch","phonetic":null,"pos":verb phrase","meaning":"验证草图方案","note":"这里的 sketch 指初版设计草图，不是绘画。"},' +
+    '{"word":"pass on the design","phonetic":null,"pos":"verb phrase","meaning":"把设计移交出去","note":"pass on 在此表示「转交」。"}]}';
+  const o = extractJson(raw) as { phonetic: unknown; vocab: Array<{ pos: string; phonetic: unknown }> };
+  assert.deepEqual(o.vocab.map((v) => v.pos), ["noun phrase", "verb phrase", "verb phrase"]);
+  assert.equal(o.phonetic, null, "正经的 null 不动");
+  assert.equal(o.vocab[0]!.phonetic, null);
+});
+
+test("补开头引号只在认得准的时候：收尾引号也没有、或者隔着换行，照旧报错", () => {
+  // 后面第一个引号是下一个键的开头，不是这个值的收尾——补了会把后半段全吞进字符串
+  assert.throws(() => extractJson('{"pos":noun,"meaning":"名词"}'), (e: unknown) => e instanceof LlmError && e.kind === "parse");
+  assert.throws(() => extractJson('{"note":第一行\n第二行","meaning":"x"}'), (e: unknown) => e instanceof LlmError && e.kind === "parse");
+  // 数字、布尔、null、嵌套结构原样通过（走到修补这条路是因为别处坏了）
+  const o = extractJson('{"a":-1.5e3,"b":true,"c":null,"d":{"e":[1,2]},"f":"他说"好"了"}') as Record<string, unknown>;
+  assert.deepEqual([o["a"], o["b"], o["c"], o["f"]], [-1500, true, null, '他说"好"了']);
+});
+
 test("修补不碰模型已经转义好的引号——回顾材料那份原文里两种混在一起", () => {
   const raw =
     '{"outline":["先用一段引言把 Babel 定性为通用 JavaScript 编译器，引入"静态分析"概念，说明一切后续操作都围绕节点展开。",' +

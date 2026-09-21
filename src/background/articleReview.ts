@@ -11,8 +11,8 @@ import type {
 import { LlmError } from "../lib/llm.ts";
 import { MAX_REVIEW_CHARS, clipText, generateArticleReview } from "../lib/articleReview.ts";
 import { type GradeValue, dueCards, gradeFsrs, newFsrs, reviewStats } from "../lib/review.ts";
-import { addUsage, getLlmConfig } from "./vocab.ts";
-import { recordFailure, recordTiming } from "./llmLog.ts";
+import { getLlmConfig } from "./vocab.ts";
+import { later, recordCall, recordFailure } from "./llmLog.ts";
 import { getArticles, isArticleDeleted, serialize } from "./store.ts";
 
 /**
@@ -95,7 +95,7 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
       const article = (await getArticles())[articleId];
       const config = await getLlmConfig();
       try {
-        const { review, usage, timing } = await generateArticleReview(
+        const { review, usage, timing, recovered } = await generateArticleReview(
           {
             title: article?.title ?? "",
             url: article?.url ?? articleId,
@@ -105,8 +105,12 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
           config,
           Date.now(),
         );
-        await addUsage(usage.inputTokens, usage.outputTokens);
-        await recordTiming("articleReview", config, timing, usage);
+        later(() => recordCall("articleReview", config, timing, usage));
+        // 自动重发成了的，头一次的现场照样进日志（带 recovered 标记）
+        if (recovered) {
+          const request = { title: article?.title ?? "", url: article?.url ?? articleId, fullChars: text.fullChars };
+          later(() => recordFailure(recovered.error, config, { source: "articleReview", request, recovered: recovered.by }));
+        }
         const full: ArticleReview = { articleId, ...review };
         await serialize(async () => {
           if (await isArticleDeleted(articleId)) return;
@@ -114,14 +118,11 @@ export function ensureArticleReview(articleId: string, regenerate = false): Prom
         });
         return { ok: true, review: full };
       } catch (err) {
-        // 配置缺失不算一次失败的调用，别污染用量统计
-        if (!(err instanceof LlmError && err.kind === "config")) await addUsage(0, 0, true);
         const needsConfig = err instanceof LlmError && err.kind === "config";
-        // 只留标题、URL 和字数：正文几十 KB 一篇，且是可再抓取的输入，不该进日志
-        await recordFailure(err, config, {
-          source: "articleReview",
-          request: { title: article?.title ?? "", url: article?.url ?? articleId, fullChars: text.fullChars },
-        });
+        // 只留标题、URL 和字数：正文几十 KB 一篇，且是可再抓取的输入，不该进日志。
+        // 配置缺失不算一次失败的调用，recordFailure 里挡掉，不污染用量统计
+        const request = { title: article?.title ?? "", url: article?.url ?? articleId, fullChars: text.fullChars };
+        later(() => recordFailure(err, config, { source: "articleReview", request, countUsage: true }));
         return { ok: false, error: err instanceof Error ? err.message : String(err), needsConfig };
       }
     } finally {

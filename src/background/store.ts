@@ -54,6 +54,29 @@ export function serialize<T>(fn: () => Promise<T>): Promise<T> {
 
 const local = localStorage;
 
+/** 只存本机、从不进同步的键。`updateLocalOnly` 只认这几个——拿它改会同步的键，改动不进 outbox，别的设备永远看不到。 */
+const LOCAL_ONLY_KEYS: ReadonlySet<string> = new Set(["llmUsage", "llmTiming", "llmLog", "translationTraces", "uiUsage"]);
+
+/**
+ * 本机专用键的读改写：用量、耗时、失败现场、翻译轨迹、按钮计数。
+ *
+ * 不走 `localStorage().set`。那条路是给会同步的数据修的：每写一次都把整份数据克隆一遍、和旧的逐条比出变更、
+ * 重建全部投影，再排一轮同步（两个请求）——对这几个键全是白做。诊断日志里量得到代价：一次翻译在模型答完之后
+ * 还要记用量、记耗时、存划词三笔，前两笔各 170–290 毫秒，浮层的收尾就晚了这么久。这里直接改状态库里的键，
+ * 一次调用要动几个键就一笔写完。库的 update 本身是事务，不用再串一层。没有状态库（老路径、部分测试）时退回普通读写。
+ */
+export async function updateLocalOnly(keys: readonly string[], change: (values: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+  const stray = keys.find((k) => !LOCAL_ONLY_KEYS.has(k));
+  if (stray !== undefined) throw new Error(`${stray} 不是本机专用的键`);
+  if (hasSyncStorage()) {
+    await syncDriver().update((state) => {
+      Object.assign(state.data, change(Object.fromEntries(keys.map((k) => [k, state.data[k]]))));
+    });
+    return;
+  }
+  await serialize(async () => { await local().set(change(await local().get([...keys]))); });
+}
+
 export async function getSettings(): Promise<Settings> {
   const got = await local().get(KEY_SETTINGS);
   const stored = (got[KEY_SETTINGS] as Partial<Settings> & LegacySettings) ?? {};

@@ -1,5 +1,5 @@
 import { localStorage } from "../sync/storage.ts";
-import { serialize } from "./store.ts";
+import { updateLocalOnly } from "./store.ts";
 import { TRACE_MARKS, traceDurations, type PopupPosition, type TranslationBackendTiming, type TranslationTrace } from "../lib/translationDiagnostics.ts";
 
 export const KEY_TRANSLATION_TRACE = "translationTraces";
@@ -75,10 +75,12 @@ export async function recordTranslationTrace(raw: unknown): Promise<void> {
   try {
     const entry = sanitizeTranslationTrace(raw);
     if (!entry) return;
-    await serialize(async () => {
-      const log = (await getTranslationTraces()).filter(t => t.id !== entry.id);
+    // 每次翻译收尾都写一条；走本机专用的直写（store.ts 的 updateLocalOnly），不为一条轨迹重建投影、排一轮同步
+    await updateLocalOnly([KEY_TRANSLATION_TRACE], (v) => {
+      const stored = v[KEY_TRANSLATION_TRACE];
+      const log = (Array.isArray(stored) ? (stored as TranslationTrace[]) : []).filter(t => t.id !== entry.id);
       log.push(entry);
-      await localStorage().set({ [KEY_TRANSLATION_TRACE]: log.slice(-MAX_TRANSLATION_TRACES) });
+      return { [KEY_TRANSLATION_TRACE]: log.slice(-MAX_TRANSLATION_TRACES) };
     });
   } catch { /* 诊断写失败不能影响翻译 */ }
 }

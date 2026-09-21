@@ -1,6 +1,6 @@
-import { hasSyncStorage, localStorage, syncDriver } from "../sync/storage.ts";
+import { localStorage } from "../sync/storage.ts";
 import { bumpUiUsage, isUiEvent, normalizeUiUsage, settleUiUpload, type UiUsageLog } from "../lib/uiUsage.ts";
-import { serialize } from "./store.ts";
+import { updateLocalOnly } from "./store.ts";
 
 /**
  * 界面埋点的落盘和上传。记什么、为什么只记次数，见 lib/uiUsage.ts。
@@ -37,16 +37,11 @@ export async function getUiUsage(): Promise<UiUsageLog> {
 }
 
 /**
- * 读改写。有状态库时直接改库里的这个键，不走 localStorage().set：那条路每写一次都会排一轮同步
- * （info + pull + pull 三个请求），而这个键不进同步——点几下按钮不该换来几轮空转的请求。
- * 上传搭平时每分钟那一轮的车，不用谁来催。库的 update 本身是事务，不需要再串一层。
+ * 读改写。走本机专用的直写（store.ts 的 `updateLocalOnly`），不走 localStorage().set：那条路每写一次都会排一轮同步，
+ * 而这个键不进同步——点几下按钮不该换来几轮空转的请求。上传搭平时每分钟那一轮的车，不用谁来催。
  */
 async function mutate(change: (log: UiUsageLog) => UiUsageLog): Promise<void> {
-  if (hasSyncStorage()) {
-    await syncDriver().update((state) => { state.data[KEY_UI_USAGE] = change(normalizeUiUsage(state.data[KEY_UI_USAGE])); });
-    return;
-  }
-  await serialize(async () => { await local().set({ [KEY_UI_USAGE]: change(await getUiUsage()) }); });
+  await updateLocalOnly([KEY_UI_USAGE], (v) => ({ [KEY_UI_USAGE]: change(normalizeUiUsage(v[KEY_UI_USAGE])) }));
 }
 
 /** 落盘失败吞掉：埋点是附属品，不能反过来让页面上的按钮报错。 */
