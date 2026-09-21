@@ -995,7 +995,7 @@ scroll，一段阅读记两遍），以及**抽正文那几秒里可能再换页
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test，824 项
+npm test            # node --test
 npm run build       # esbuild → dist/
 npm run watch       # 增量构建
 npm run ocr-check   # 本机 Tesseract 英文识别与耗时检查，不调用 MiniMax
@@ -1071,7 +1071,7 @@ base64 -w0 focus-session.jks     # 这一串填进 ANDROID_KEYSTORE_BASE64
 
 ## 已验证 / 未验证
 
-**已验证（824 项自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
+**已验证（自动化测试）**：session 状态机的全部划分逻辑（idle / stall / 切走 / 失焦 /
 静默上限随视口文字量放宽、被 `maxQuiet` 封顶、关闭自适应后退回固定阈值、没什么字时固定阈值照旧 /
 两种走神各自的恢复条件 / 半小时晃鼠标只产生一个 session / 只在翻屏时才有信号时不丢失阅读时间 / 重启后的阈值重置 / 碎片丢弃 /
 阈值热更新）；混合语言字数统计；URL 归一化与域名排除；分位数计算；段落可见性公式；
