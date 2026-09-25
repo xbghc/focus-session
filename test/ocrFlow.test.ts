@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { DEFAULT_SETTINGS } from "../src/types.ts";
 import type { OcrReply, Settings, TranslateRequest } from "../src/types.ts";
 import { SelectionTranslator } from "../src/content/selection.ts";
-import { startTracking } from "../src/content/track.ts";
+import { translationPlugin, type TranslationFeature } from "../src/features/translation/page.ts";
 
 const dom = new JSDOM("<!doctype html><html><head><title>页面标题</title></head><body><p>hello</p></body></html>", { url: "https://app.example.com/inbox" });
 const g = globalThis as Record<string, unknown>;
@@ -37,7 +37,17 @@ let recognized: string[];
 let messages: Array<{ type: string }>;
 let changed: ((changes: Record<string, { newValue: Settings }>, area: string) => void) | null;
 let capture: () => Promise<unknown>;
-let controller: Awaited<ReturnType<typeof startTracking>> | null = null;
+let controller: TranslationFeature | null = null;
+/** 这一页的划词翻译插件，等它把设置读回来。 */
+async function startTranslation(): Promise<TranslationFeature> {
+  const f = translationPlugin().start({
+    url: location.href, signal: new AbortController().signal,
+    info: { title: () => document.title, setTitle: () => undefined },
+    changed: () => undefined,
+  });
+  await tick();
+  return f;
+}
 
 beforeEach(() => {
   settings = { ...DEFAULT_SETTINGS }; requests = []; recognized = []; messages = []; changed = null;
@@ -143,9 +153,9 @@ test("已 start 时 dismiss 保留两组监听，stop 才一起摘掉", async ()
   translator.stop(); assert.equal(count("mouseup"), 0); assert.equal(count("keydown"), 0);
 });
 
-test("非文章页总开关关闭仍能截图，预热不等回复，失败浮层可关闭且不启用划词", async () => {
+test("总开关关闭仍能截图，预热不等回复，失败浮层可关闭且不启用划词", async () => {
   settings.translateEnabled = false;
-  controller = await startTracking({ url: location.href, extract: () => null });
+  controller = await startTranslation();
   assert.equal(controller.state().screenshot, "available");
   controller.screenshot(); await tick();
   assert.deepEqual(messages.map((m) => m.type), ["ocr:warm", "page:capture"]);
@@ -155,19 +165,16 @@ test("非文章页总开关关闭仍能截图，预热不等回复，失败浮�
   assert.equal(root(), undefined); assert.equal(count("keydown"), 0);
 });
 
-test("非文章页运行中排除后截图无操作，也不再给截图字段", async () => {
-  controller = await startTracking({ url: location.href, extract: () => null });
+test("截图翻译不看白名单、也不看文章记录黑名单：每次都是用户亲手框的", async () => {
+  settings.articleExcludedUrls = ["example.com"];
+  controller = await startTranslation();
+  assert.equal(controller.state().screenshot, "available");
   controller.screenshot(); await tick(); assert.ok(root());
-  changed!({ settings: { newValue: { ...settings, translationExcludedUrls: ["example.com"] } } }, "local");
-  assert.equal(root(), undefined);
-  const n = messages.length; controller.screenshot(); await tick();
-  assert.equal(messages.length, n); assert.equal(controller.state().screenshot, undefined);
 });
 
-test("初始排除域名的 idle 控制器截图是空操作", async () => {
-  settings.articleExcludedUrls = ["example.com"];
-  settings.translationExcludedUrls = ["example.com"];
-  controller = await startTracking({ url: location.href, extract: () => null });
+test("收摊之后截图是空操作，也不再给截图字段", async () => {
+  controller = await startTranslation();
+  controller.stop();
   controller.screenshot(); await tick();
   assert.equal(messages.length, 0); assert.equal(controller.state().screenshot, undefined);
 });
@@ -175,7 +182,7 @@ test("初始排除域名的 idle 控制器截图是空操作", async () => {
 test("停止控制器会作废迟到的截图失败", async () => {
   let finish!: (value: unknown) => void;
   capture = () => new Promise((r) => { finish = r; });
-  controller = await startTracking({ url: location.href, extract: () => null });
+  controller = await startTranslation();
   controller.screenshot(); controller.stop();
   finish({ ok: false, error: "迟到" }); await tick(); assert.equal(root(), undefined);
 });
@@ -224,7 +231,7 @@ test("完整控制器路径：预热不等待、冻结帧裁剪、识别文本�
     postMessage: (m: { req: TranslateRequest }) => { requests.push(m.req); delivered({ type: "done", res: { ok: false, error: "测试收尾", needsConfig: false } }); },
   })) as unknown as typeof runtime.connect;
   try {
-    controller = await startTracking({ url: location.href, extract: () => null });
+    controller = await startTranslation();
     controller.screenshot(); await tick();
     const overlay = document.getElementById("focus-session-screenshot")!;
     assert.ok(overlay);

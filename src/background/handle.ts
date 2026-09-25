@@ -58,6 +58,7 @@ import {
   importBundle,
   markFinished,
   persistMigrations,
+  allowTranslationSite,
   savePosition,
   serialize,
   setFinished,
@@ -327,6 +328,8 @@ export async function handle(msg: AnyMessage, sender: Sender): Promise<unknown> 
       return await getSettings();
     case "settings:set":
       return await setSettings((msg as Extract<PopupToBg, { type: "settings:set" }>).settings);
+    case "translation:allow-site":
+      return await allowTranslationSite((msg as Extract<PopupToBg, { type: "translation:allow-site" }>).url);
 
     /* ---- 截图翻译 ---- */
     case "page:capture": {

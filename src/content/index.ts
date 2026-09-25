@@ -1,13 +1,14 @@
 import type { PageState } from "../types.ts";
-import { createPageHost } from "./host.ts";
-import { startTracking } from "./track.ts";
+import { createPageHost } from "../core/page/host.ts";
+import { readingPlugin } from "../features/reading/page.ts";
+import { translationPlugin } from "../features/translation/page.ts";
 import { captureCurrentArticle } from "../archive/capture.ts";
 
 /*
  * content script 的入口：只做扩展特有的三件事——只跟踪顶层的 HTML 文档、
- * 回答 popup 的「当前页状态」询问、把追踪本体（track.ts）挂到这个网页上。
+ * 回答 popup 的「当前页状态」询问、把各功能插件（专注记录、划词翻译）挂到这个网页上。
  *
- * 「挂上」这件事不止一次：页内换文章时后台会推来新地址，由 host.ts 收掉旧的一轮、
+ * 「挂上」这件事不止一次：页内换文章时后台会推来新地址，由 core/page/host.ts 收掉旧的一轮、
  * 按新地址再起一轮；从 bfcache 回来（后退/前进）时文档原样端回来、这个脚本不会再跑，
  * 也要请 host.ts 重起。这里只负责把两种通知转过去。
  */
@@ -19,7 +20,7 @@ import { captureCurrentArticle } from "../archive/capture.ts";
 let provideState: () => PageState = () => ({ tracked: false, reason: "初始化中" });
 /** 三个截图入口共用这条接线；只让顶层 HTML 文档响应。 */
 let screenshot: () => void = () => undefined;
-/** popup 的「本页启用划词翻译」。追踪器还没就绪时点到就是空操作——那时 popup 也拿不到按钮。 */
+/** popup 的「本页启用划词翻译」。插件还没挂上时点到就是空操作——那时 popup 也拿不到按钮。 */
 let translateHere: () => void = () => undefined;
 /** 后台通知的同文档导航。不在跟踪的文档（iframe、非 HTML）上什么都不做。 */
 let urlChanged: (url: string) => void = () => undefined;
@@ -54,14 +55,17 @@ function main(): void {
     provideState = () => ({ tracked: false, reason: "非 HTML 文档" });
     return;
   }
-  const host = createPageHost((url, signal, onPending) => startTracking({ url, focus: "window", signal, onPending }));
+  const host = createPageHost({
+    reading: readingPlugin({ focus: "window" }),
+    translation: translationPlugin(),
+  });
   provideState = () => host.state();
-  translateHere = () => host.translateHere();
-  screenshot = () => host.screenshot();
+  translateHere = () => host.get("translation")?.translateHere();
+  screenshot = () => host.get("translation")?.screenshot();
   urlChanged = (url) => host.urlChanged(url);
   host.start(location.href);
   /*
-   * 后退/前进回到这一页：pagehide 时那一轮已经收摊（见 track.ts 的 finish），
+   * 后退/前进回到这一页：pagehide 时专注记录那一轮已经收摊（见 track.ts 的 finish），
    * 而 bfcache 端回来的是同一个文档，content script 不会重新跑一遍——不在这里
    * 重起，这一页就再也不计时、划词也不翻译了。后台推来的 page:url-changed 救不了：
    * 地址压根没变，host.ts 会认成「还是这一篇」。

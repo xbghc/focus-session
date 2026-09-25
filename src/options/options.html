@@ -174,7 +174,7 @@
     <h1>Focus Session 设置</h1>
     <p class="muted small">
       阅读记录保存在本机；启用同步后，也会保存到你配置的服务器。<strong>划词翻译会把选中的文本及其所在段落发送给
-      MiniMax</strong>——不需要翻译的页面请加进下面的翻译黑名单，或直接关掉划词翻译。
+      MiniMax</strong>——只有下面翻译白名单里的站点自动开启，其余页面要从弹出面板手动开启。
     </p>
 
     <fieldset id="sync-settings" data-nav-group="连接">
@@ -395,10 +395,10 @@
       <p class="muted small">每行一个域名或完整网址。域名包含子域，网址包含该路径及子路径。不影响翻译。</p>
       <textarea id="excluded" spellcheck="false" placeholder="example.com&#10;https://example.org/search"></textarea>
     </fieldset>
-    <fieldset id="sec-translation-blacklist">
-      <legend>翻译黑名单</legend>
-      <p class="muted small">规则格式同上。禁用划词和截图翻译，不影响文章记录。非文章页面可以从弹出面板启用划词翻译。</p>
-      <textarea id="translationExcluded" spellcheck="false" placeholder="mail.google.com"></textarea>
+    <fieldset id="sec-translation-allowlist">
+      <legend>翻译白名单</legend>
+      <p class="muted small">规则格式同上。这些页面自动开启划词翻译；其余页面从弹出面板手动开启，只对本次加载有效，也可以在那里点「本站始终开启」加进来。不影响文章记录。只存在这台设备上，不参与同步。</p>
+      <textarea id="translationAllowed" spellcheck="false" placeholder="nytimes.com&#10;https://example.org/blog"></textarea>
     </fieldset>
 
     <div id="savebar" class="row savebar">

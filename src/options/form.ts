@@ -16,7 +16,7 @@ const fields = {
   readFraction: $<HTMLInputElement>("readFraction"),
   episodeGap: $<HTMLInputElement>("episodeGap"),
   excluded: $<HTMLTextAreaElement>("excluded"),
-  translationExcluded: $<HTMLTextAreaElement>("translationExcluded"),
+  translationAllowed: $<HTMLTextAreaElement>("translationAllowed"),
   translateEnabled: $<HTMLInputElement>("translateEnabled"),
   restorePositionEnabled: $<HTMLInputElement>("restorePositionEnabled"),
   articleReviewEnabled: $<HTMLInputElement>("articleReviewEnabled"),
@@ -45,7 +45,7 @@ function fill(s: Settings): void {
   fields.readFraction.value = String(Math.round(s.readFraction * 100));
   fields.episodeGap.value = String(Math.round(s.episodeGapMs / 60_000));
   fields.excluded.value = s.articleExcludedUrls.join("\n");
-  fields.translationExcluded.value = s.translationExcludedUrls.join("\n");
+  fields.translationAllowed.value = s.translationAllowedUrls.join("\n");
   fields.translateEnabled.checked = s.translateEnabled;
   fields.restorePositionEnabled.checked = s.restorePositionEnabled;
   fields.articleReviewEnabled.checked = s.articleReviewEnabled;
@@ -72,7 +72,7 @@ function collect(): Settings {
     readFraction: num(fields.readFraction, 50, 10, 100) / 100,
     episodeGapMs: num(fields.episodeGap, 5, 0, 120) * 60_000,
     excludedDomains: [],
-    translationExcludedUrls: fields.translationExcluded.value.split("\n").map(line => line.trim()).filter(Boolean),
+    translationAllowedUrls: fields.translationAllowed.value.split("\n").map(line => line.trim()).filter(Boolean),
     articleExcludedUrls: fields.excluded.value
       .split("\n")
       .map((line) => line.trim())
@@ -182,15 +182,15 @@ revertBtn.addEventListener("click", () => {
 });
 
 $("reset").addEventListener("click", () => {
-  // 黑名单是用户自己攒的数据，不是「参数」：恢复默认只动开关和阈值，不把两份名单清空
+  // 两份名单是用户自己攒的数据，不是「参数」：恢复默认只动开关和阈值，不把名单清空
   const kept = collect();
   fill({
     ...DEFAULT_SETTINGS,
     articleExcludedUrls: kept.articleExcludedUrls,
-    translationExcludedUrls: kept.translationExcludedUrls,
+    translationAllowedUrls: kept.translationAllowedUrls,
   });
   markThresholds("");
-  flash(changedCount() > 0 ? "已填回默认值（黑名单不动），点保存才生效" : "已经是默认值了");
+  flash(changedCount() > 0 ? "已填回默认值（名单不动），点保存才生效" : "已经是默认值了");
 });
 
 $("export").addEventListener("click", async () => {

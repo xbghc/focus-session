@@ -1,4 +1,4 @@
-import { normalizeUrl } from "../lib/url.ts";
+import { hostnameOf, isUrlExcluded, matchesUrlRule, matchesUrlRules, normalizeUrl } from "../lib/url.ts";
 import { localStorage, hasSyncStorage, resetLocal, syncDriver, withDataLock, projectRecords } from "../sync/storage.ts";
 import { mergeRecord, recordKey, validateRecord } from "../sync/protocol.ts";
 import type { SyncRecord } from "../sync/protocol.ts";
@@ -90,6 +90,8 @@ interface LegacySettings {
   maxAutoSelectionChars?: number;
   /** 一次性标记：自动翻译上限从旧默认值抬上来那次迁移已经跑过。 */
   autoWordsRaised?: boolean;
+  /** 翻译黑名单，已换成白名单（translationAllowedUrls），只在种白名单时用一次。 */
+  translationExcludedUrls?: string[];
 }
 
 /**
@@ -100,7 +102,6 @@ function migrate(stored: Stored): Stored {
   return {
     ...migrateSelectionLimit(stored), ...raiseAutoWords(stored),
     ...(stored.articleExcludedUrls === undefined ? { articleExcludedUrls: stored.excludedDomains ?? [] } : {}),
-    ...(stored.translationExcludedUrls === undefined ? { translationExcludedUrls: stored.excludedDomains ?? [] } : {}),
   };
 }
 
@@ -155,13 +156,48 @@ function raiseAutoWords(stored: Stored): Stored {
 export async function persistMigrations(): Promise<void> {
   const got = await local().get(KEY_SETTINGS);
   const stored = (got[KEY_SETTINGS] as Stored) ?? {};
-  if (Object.keys(migrate(stored)).length === 0) return;
-  await setSettings({});
+  const allowed = stored.translationAllowedUrls === undefined ? await seedTranslationAllowlist(stored) : null;
+  if (Object.keys(migrate(stored)).length === 0 && allowed === null) return;
+  await setSettings(allowed === null ? {} : { translationAllowedUrls: allowed });
+}
+
+/**
+ * 翻译从「文章页自动开、黑名单排除」换成「白名单自动开」时，第一份白名单从哪来。
+ *
+ * 换之前，被认成文章的页面都自动挂着划词翻译。拿记录里读过文章的那些站点种进去，
+ * 常读的站点上点词照旧不用先开一下；当年加进翻译黑名单的站点不种。
+ * 只看存量记录：往后新读的站点要用户自己在 popup 里点「本站始终开启」。
+ */
+async function seedTranslationAllowlist(stored: Stored): Promise<string[]> {
+  const excluded = stored.translationExcludedUrls ?? stored.excludedDomains ?? [];
+  const hosts = new Set<string>();
+  for (const a of Object.values(await getArticles())) {
+    const host = hostnameOf(a.url);
+    if (host && !isUrlExcluded(a.url, excluded)) hosts.add(host);
+  }
+  return [...hosts].sort();
 }
 
 export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
   return serialize(async () => {
     const merged = { ...(await getSettings()), ...patch };
+    await local().set({ [KEY_SETTINGS]: merged });
+    return merged;
+  });
+}
+
+/**
+ * 把这个页面所在的站点加进翻译白名单（popup 的「本站始终开启」）。已经命中就不重复加。
+ * 读和写要在同一段串行里：popup 里先读再 settings:set 的话，和设置页同时保存会互相覆盖。
+ */
+export async function allowTranslationSite(url: string): Promise<Settings> {
+  const host = hostnameOf(url);
+  // 不带点的主机名（localhost、内网机器名）写不成域名规则，退一步记整个源
+  const rule = host && matchesUrlRule(url, host) ? host : host ? new URL(url).origin : "";
+  return serialize(async () => {
+    const current = await getSettings();
+    if (!rule || matchesUrlRules(url, current.translationAllowedUrls)) return current;
+    const merged = { ...current, translationAllowedUrls: [...current.translationAllowedUrls, rule] };
     await local().set({ [KEY_SETTINGS]: merged });
     return merged;
   });

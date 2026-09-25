@@ -7,7 +7,9 @@ import { startFullscreen, type FullscreenReading } from "./fullscreen.ts";
 import { sanitizeArticle } from "./sanitize.ts";
 import { extractFromContainer } from "../content/paragraphs.ts";
 import { cancelRegion } from "../content/screenshot.ts";
-import { startTracking, type TrackController } from "../content/track.ts";
+import { createPageHost } from "../core/page/host.ts";
+import { readingPlugin } from "../features/reading/page.ts";
+import { translationPlugin } from "../features/translation/page.ts";
 import { formatEstimate } from "../lib/readingTime.ts";
 import { fillMeta } from "../lib/speak.ts";
 import { hostnameOf, normalizeUrl } from "../lib/url.ts";
@@ -144,7 +146,17 @@ function showStatus(text: string, retry?: () => void): void {
   }
 }
 
-let ctl: TrackController | null = null;
+/**
+ * 阅读器页面上的功能插件：专注记录和划词翻译，各判各的。
+ * 这里的内容都是用户自己挑来读的，翻译不看白名单（autoEnable）。
+ */
+function makePage(body: HTMLElement, title: string, approvedArticle: boolean, onChange: () => void) {
+  return createPageHost({
+    reading: readingPlugin({ focus: "assume", approvedArticle, extract: () => extractFromContainer(body, title) }),
+    translation: translationPlugin({ tapRoot: body, autoEnable: true }),
+  }, { title: () => title, onChange });
+}
+let page: ReturnType<typeof makePage> | null = null;
 let full: FullscreenReading | null = null;
 let leaving = false;
 
@@ -160,14 +172,14 @@ function onPhone(): boolean {
 
 // 后台发起的换页（读完角标的「回顾这篇」、浮层里的「去设置」）也要先结算最后一段
 navigation.beforeLeave = async () => {
-  ctl?.stop("unload");
+  page?.stop();
 };
 
 /** 返回键：把最后一段结算掉、等写入落盘，再让宿主回退，否则这一段阅读就丢了。 */
 async function leave(): Promise<void> {
   if (leaving) return;
   leaving = true;
-  ctl?.stop("unload");
+  page?.stop();
   // 系统栏不在这儿还：回退落到哪一页只有宿主知道（可能是书里的上一节，那就该接着全屏），
   // 所以放回系统栏统一由宿主的 onPageStarted 判断（见 MainActivity）
   await shim.flush();
@@ -181,18 +193,15 @@ async function leave(): Promise<void> {
 let sourceLabel = "";
 
 function renderMeta(url: string): void {
-  const st = ctl?.state();
-  const excluded = st?.translationExcluded === true;
+  const st = page?.state();
   const here = $<HTMLButtonElement>("translate-here");
-  // 正常追踪着的文章翻译本来就开着，没有「本页启用」这回事：那时这个键永远按不动，摆着只会让人以为坏了
+  // 阅读器里翻译本来就开着（autoEnable），没有「本页启用」这回事：总开关关着时也不给——摆着只会让人以为坏了
   here.hidden = !st?.translateHere;
   here.disabled = st?.translateHere !== "available";
   // 截和词要等追踪器起来才有东西可做；在那之前点了没反应，和坏了分不出来
-  $<HTMLButtonElement>("shot").disabled = !ctl || st?.screenshot !== "available";
-  $<HTMLButtonElement>("words").disabled = !ctl;
-  here.title = st?.translateHere === "on"
-    ? (excluded ? "本页已暂时开启划词翻译，下次打开回到黑名单" : "本页划词翻译已开启")
-    : excluded ? "本站在翻译黑名单里：暂时开启本页划词翻译" : "启用本页划词翻译";
+  $<HTMLButtonElement>("shot").disabled = !page || st?.screenshot !== "available";
+  $<HTMLButtonElement>("words").disabled = !page;
+  here.title = st?.translateHere === "on" ? "本页划词翻译已开启" : "启用本页划词翻译";
   const parts = [sourceLabel || hostnameOf(url)];
   if (st?.tracked) {
     const tracked = st.trackedWords ?? 0;
@@ -203,12 +212,9 @@ function renderMeta(url: string): void {
     if (est && est.words > 0) parts.push("还需" + formatEstimate(est.ms));
     else if (tracked > 0 && read >= tracked) parts.push("已读完");
     if (st.activeSince) parts.push("计时中");
-    // 文章页顶栏没有那行「为什么没追踪」，黑名单这件事得单独说，否则点词没反应像是坏了
-    if (excluded && st.translateHere !== "on") parts.push("命中翻译黑名单");
   } else if (st?.reason) {
     parts.push(st.reason);
   }
-  if (excluded && st?.translateHere === "on") parts.push("已暂时开启翻译");
   $("rmeta").textContent = parts.join(" · ");
 }
 
@@ -258,7 +264,7 @@ async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const url = params.get("u")?.trim() ?? "";
   $("back").addEventListener("click", () => void leave());
-  $("shot").addEventListener("click", () => ctl?.screenshot());
+  $("shot").addEventListener("click", () => page?.get("translation")?.screenshot());
   // 全屏先进：正文还在抓的时候系统栏就该让开，不必等正文回来才挪一次位置
   if (onPhone()) {
     full = startFullscreen({
@@ -268,7 +274,7 @@ async function main(): Promise<void> {
       systemBars: systemBars(),
     });
   }
-  $("translate-here").addEventListener("click", () => { ctl?.translateHere(); renderMeta(url); });
+  $("translate-here").addEventListener("click", () => { page?.get("translation")?.translateHere(); renderMeta(url); });
 
   /* 本文生词那张单子的开合。返回键要先问它，所以在 beforeBack 之前就备好。 */
   const sheet = $("sheet");
@@ -428,15 +434,9 @@ async function main(): Promise<void> {
   }
 
   const title = cached.title;
-  ctl = await startTracking({
-    tapRoot: body,
-    url: pageUrl,
-    approvedArticle: !!cached.archiveManifest || !!cached.book,
-    focus: "assume",
-    extract: () => extractFromContainer(body, title),
-    onPending: pending => { ctl = pending; renderMeta(pageUrl); },
-  });
-  hostHooks.visibility = (v) => ctl?.setVisible(v);
+  page = makePage(body, title, !!cached.archiveManifest || !!cached.book, () => renderMeta(pageUrl));
+  page.start(pageUrl);
+  hostHooks.visibility = (v) => page?.get("reading")?.setVisible(v);
   renderMeta(pageUrl);
   setInterval(() => renderMeta(pageUrl), 2_000);
 
@@ -465,7 +465,7 @@ async function main(): Promise<void> {
   $("refetch").hidden = !!chapter;
   $("refetch").addEventListener("click", () => {
     void (async () => {
-      ctl?.stop("unload");
+      page?.stop();
       await shim.flush();
       location.replace(readerUrl(url) + "&refresh=1");
     })();
