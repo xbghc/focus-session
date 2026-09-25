@@ -271,8 +271,8 @@ async function cycle():Promise<SyncStatus> {
   return syncStatus();
 }
 /**
- * 界面埋点的计数搭一轮成功的同步传上去（background/uiUsage.ts）。它不是同步记录，传不上去不算同步失败，
- * 服务器比客户端旧、没有这个接口也一样。
+ * 界面埋点的计数和诊断日志搭一轮成功的同步传上去（background/uiUsage.ts、background/logUpload.ts）。
+ * 它们不是同步记录，传不上去不算同步失败，服务器比客户端旧、没有这个接口也一样。
  *
  * **不在周期里面，也没有人等它。**放在里面的话 `running` 要等它结束才清：网络差的时候这一个 POST 能挂满
  * 25 秒的超时，这期间任何 runSync() 拿到的都是这个卡着的周期——包括打开文章前等的那一轮（syncBefore），
@@ -283,8 +283,11 @@ async function uploadCounts(config:SyncConfig,deviceId:string):Promise<void> {
   if(counting)return;
   counting=true;
   try {
+    const post=(path:string)=>(body:unknown)=>request(config,path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const {uploadUiUsage}=await import("../background/uiUsage.ts");
-    await uploadUiUsage(body=>request(config,"/v1/usage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),deviceId);
+    await uploadUiUsage(post("/v1/usage"),deviceId);
+    const {uploadLogs}=await import("../background/logUpload.ts");
+    await uploadLogs(post("/v1/logs"),deviceId);
   } catch { /* 见上：和同步的成败无关 */ }
   finally { counting=false; }
 }

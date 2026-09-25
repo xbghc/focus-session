@@ -11,6 +11,7 @@ import { Database } from '../src/database.ts';
 import { checkIntegrity, collectStats, showRecord } from '../src/diagnostics.ts';
 import { FileStore } from '../src/files.ts';
 import { usageReport, validateUsage } from '../src/usage.ts';
+import { logsReport, validateLogs } from '../src/clientLogs.ts';
 
 function record(name: string, counter = 1, deviceId = 'device-a'): SyncRecord {
   const id = `https://example.org/${name}`;
@@ -233,6 +234,42 @@ test('PostgreSQL atomic sync, user isolation, concurrency, restart and archive r
       assert.ok((await collectStats(database.pool)).users.find(user => user.id === other.user.id)!.devices.some(device => device.id === 'idle'));
       await database.pool.query('DELETE FROM users WHERE id=$1', [other.user.id]);
       assert.equal((await usageReport(database.pool)).users, 1);
+    });
+    await t.test('diagnostic logs upsert per device and entry, expire after 30 days, and the report leads with what went wrong', async () => {
+      const logger = await database.createUser('logger');
+      const other = await database.createUser('other logger');
+      const now = Date.now();
+      const send = (user: string, deviceId: string, platform: string, version: string, entries: unknown[]) =>
+        database.recordLogs(user, validateLogs({ deviceId, platform, version, entries }));
+      const failure = { kind: 'failure', entry: { ts: now - 60_000, source: 'translate', kind: 'parse', status: null, raw: '{"translation":' } };
+      const trace = (status: string) => ({ kind: 'translation', entry: { id: 't1', ts: now - 30_000, status, text: 'leaks' } });
+      assert.equal(await send(logger.user.id, 'laptop', 'extension', '0.3.15', [failure, trace('error'), { kind: 'timing', entry: { ts: now - 60_000, totalMs: 900 } }]), 3);
+      // A resend changes nothing; the rewritten trace replaces its first upload.
+      await send(logger.user.id, 'laptop', 'extension', '0.3.15', [failure, trace('success')]);
+      await send(logger.user.id, 'phone', 'app', '0.3.14', [{ kind: 'error', entry: { ts: now - 10_000, message: 'boom' } }]);
+      await send(other.user.id, 'laptop', 'extension', '0.3.15', [failure]);
+      const rows = await database.pool.query('SELECT device_id, kind, payload FROM client_logs WHERE user_id=$1 ORDER BY device_id, kind', [logger.user.id]);
+      assert.deepEqual(rows.rows.map(row => [row.device_id, row.kind]), [['laptop', 'failure'], ['laptop', 'timing'], ['laptop', 'translation'], ['phone', 'error']]);
+      assert.equal(rows.rows.find(row => row.kind === 'translation')!.payload.status, 'success');
+
+      const report = await logsReport(database.pool, { userId: logger.user.id, hours: 24, limit: 100, all: false });
+      assert.deepEqual(report.devices.map(device => [device.device_id, device.version, device.failures, device.errors, device.translations, device.timings]),
+        [['phone', '0.3.14', 0, 1, 0, 0], ['laptop', '0.3.15', 1, 0, 1, 1]]);
+      assert.deepEqual(report.failures.map(row => [row.source, row.kind, row.count]), [['translate', 'parse', 1]]);
+      // By default: failures and errors, newest first; the successful trace and the timing are only summarized.
+      assert.deepEqual(report.entries.map(entry => entry.kind), ['error', 'failure']);
+      assert.equal(report.entries[1].payload.raw, '{"translation":');
+      assert.deepEqual((await logsReport(database.pool, { userId: logger.user.id, hours: 24, limit: 100, kind: 'timing', all: false })).entries.map(entry => entry.kind), ['timing']);
+      assert.equal((await logsReport(database.pool, { userId: logger.user.id, hours: 24, limit: 100, all: true })).entries.length, 4);
+      assert.equal((await logsReport(database.pool, { hours: 24, limit: 100, all: false })).devices.length, 3, 'without a user: everyone');
+      await assert.rejects(logsReport(database.pool, { userId: randomUUID(), hours: 24, limit: 1, all: false }), /User does not exist/);
+
+      // Expiry runs on upload: a 31-day-old entry is gone after the next upload of that user.
+      await database.pool.query("UPDATE client_logs SET ts = now() - interval '31 days' WHERE user_id=$1 AND kind='timing'", [logger.user.id]);
+      await send(logger.user.id, 'laptop', 'extension', '0.3.15', []);
+      assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM client_logs WHERE user_id=$1 AND kind='timing'", [logger.user.id])).rows[0].n, 0);
+      await database.pool.query('DELETE FROM users WHERE id=$1', [logger.user.id]);
+      assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM client_logs WHERE user_id=$1', [logger.user.id])).rows[0].n, 0);
     });
   } finally {
     await database.close();

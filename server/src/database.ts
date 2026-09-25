@@ -10,6 +10,7 @@ import { validateManifest } from './manifest.ts';
 import type { ArchiveManifest } from './manifest.ts';
 import { migrate } from './schema.ts';
 import type { UsageUpload } from './usage.ts';
+import { RETENTION_DAYS, type LogUpload } from './clientLogs.ts';
 
 export interface User { id: string; name: string }
 export interface Operation { opId: string; record: SyncRecord }
@@ -185,6 +186,30 @@ export class Database {
       [userId, upload.deviceId, upload.platform, upload.rows.map(row => row.day), upload.rows.map(row => row.event), upload.rows.map(row => row.count)],
     );
     return upload.rows.length;
+  }
+
+  /**
+   * Upserts by (device, kind, key): a resend is harmless and a translation trace rewritten on the
+   * device replaces its earlier upload. Entries older than the retention window go on every upload,
+   * so the table stays bounded without a scheduled job.
+   */
+  async recordLogs(userId: string, upload: LogUpload): Promise<number> {
+    await this.pool.query('INSERT INTO devices(user_id,id) VALUES ($1,$2) ON CONFLICT(user_id,id) DO UPDATE SET last_seen_at=now()', [userId, upload.deviceId]);
+    await this.pool.query(`DELETE FROM client_logs WHERE user_id=$1 AND ts < now() - make_interval(days => $2::int)`, [userId, RETENTION_DAYS]);
+    if (!upload.entries.length) return 0;
+    const { entries } = upload;
+    await this.pool.query(
+      `INSERT INTO client_logs(user_id,device_id,platform,version,kind,key,ts,payload)
+       SELECT $1,$2,$3,$4,row.kind,row.key,to_timestamp(row.ms/1000.0),row.payload
+       FROM unnest($5::text[],$6::text[],$7::double precision[],$8::jsonb[]) AS row(kind,key,ms,payload)
+       WHERE row.ms/1000.0 > extract(epoch FROM now()) - $9::int * 86400
+       ON CONFLICT (user_id,device_id,kind,key) DO UPDATE SET payload=EXCLUDED.payload, ts=EXCLUDED.ts,
+         platform=EXCLUDED.platform, version=EXCLUDED.version, received_at=now()
+       WHERE client_logs.payload IS DISTINCT FROM EXCLUDED.payload`,
+      [userId, upload.deviceId, upload.platform, upload.version, entries.map(e => e.kind), entries.map(e => e.key),
+        entries.map(e => e.ts), entries.map(e => JSON.stringify(e.payload)), RETENTION_DAYS],
+    );
+    return entries.length;
   }
 
   async pull(userId: string, cursor: number, limit: number): Promise<PullResult> {

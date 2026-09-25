@@ -56,7 +56,7 @@ export function serialize<T>(fn: () => Promise<T>): Promise<T> {
 const local = localStorage;
 
 /** 只存本机、从不进同步的键。`updateLocalOnly` 只认这几个——拿它改会同步的键，改动不进 outbox，别的设备永远看不到。 */
-const LOCAL_ONLY_KEYS: ReadonlySet<string> = new Set(["llmUsage", "llmTiming", "llmLog", "translationTraces", "uiUsage"]);
+const LOCAL_ONLY_KEYS: ReadonlySet<string> = new Set(["llmUsage", "llmTiming", "llmLog", "translationTraces", "uiUsage", "logUpload"]);
 
 /**
  * 本机专用键的读改写：用量、耗时、失败现场、翻译轨迹、按钮计数。
