@@ -58,7 +58,7 @@ export function fixtures(empty = false) {
   return {
     articles, snippets,
     data: {
-      settings: { ...DEFAULT_SETTINGS, articleExcludedUrls: ['https://example.com/search'], translationExcludedUrls: ['mail.example.com'] },
+      settings: { ...DEFAULT_SETTINGS, articleExcludedUrls: ['https://example.com/search'], translationAllowedUrls: ['nytimes.com'] },
       llm: { ...DEFAULT_LLM, apiKey: '', model: 'storybook-preview' },
       articles: Object.fromEntries(activeArticles.concat(empty ? [] : [chapter]).map(a => [a.id, a])), sessions: empty ? [] : sessions,
       [BOOKS_KEY]: empty ? {} : { [book.id]: book },

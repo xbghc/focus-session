@@ -1,36 +1,27 @@
 import { samplePage } from "../lib/articleFilter.ts";
 import type {
   Article,
-  AskReply,
-  AskRequest,
-  ContentToBg,
   EndReason,
-  OcrReply,
   PageState,
   ParagraphRecord,
-  PartialTranslation,
   ReadingPosition,
   Settings,
   SpeedSummary,
-  TranslatePortIn,
-  TranslatePortOut,
-  TranslateRequest,
 } from "../types.ts";
-import { DEFAULT_SETTINGS, PORT_TRANSLATE } from "../types.ts";
-import { normalizeUrl, hostnameOf, isUrlExcluded } from "../lib/url.ts";
+import { DEFAULT_SETTINGS } from "../types.ts";
+import { normalizeUrl, isUrlExcluded } from "../lib/url.ts";
 import { isFinished } from "../lib/finish.ts";
-import { reasonOf } from "../lib/reason.ts";
+import { send } from "../core/page/send.ts";
 import { clampOffset, planRestore, type RestorePlan } from "../lib/position.ts";
 import { estimateReading, formatEstimate } from "../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, extractFromContainer, ParagraphTracker } from "./paragraphs.ts";
-import { selectRegion, cancelRegion } from "./screenshot.ts";
 import { FinishCard } from "./finishCard.ts";
 import { PositionCard } from "./positionCard.ts";
 import { SessionMachine } from "./session.ts";
-import { SelectionTranslator, paragraphContext, type TranslateResponse } from "./selection.ts";
 
 /**
- * 页内追踪的本体：抽正文、划 session、记段落停留、划词翻译、读完角标、跳回上次位置。
+ * 页内追踪的本体：判断是不是文章、抽正文、划 session、记段落停留、读完角标、跳回上次位置。
+ * 划词翻译是另一个插件（features/translation），这里不碰。
  *
  * 从 content/index.ts 里拆出来，是因为它有两个宿主：扩展的 content script 跑在
  * 别人的网页上（index.ts），安卓 App 的阅读器跑在自己渲染的正文上（src/app/read.ts）。
@@ -50,18 +41,7 @@ const EXTRACT_RETRY_MS = [0, 1_500, 4_000];
  */
 const RESTORE_RECHECK_MS = [250, 750, 1_500];
 
-const send = (msg: ContentToBg): void => {
-  // 后台可能正在重启；投递失败不该影响页面
-  try {
-    void chrome.runtime.sendMessage(msg)?.catch?.(() => undefined);
-  } catch {
-    /* 扩展已被卸载/重载 */
-  }
-};
-
 export interface TrackOptions {
-  /** App 正文的点词、双击整句翻译范围。 */
-  tapRoot?: HTMLElement;
   /** User-saved content has already been explicitly selected for reading; works offline. */
   approvedArticle?: boolean;
   /**
@@ -80,10 +60,12 @@ export interface TrackOptions {
    * App 的阅读器自己渲染正文，直接从那个容器里取（见 paragraphs.ts 的 extractFromContainer）。
    */
   extract?: () => ExtractResult | null;
-  /** 模型判断期间先提供独立的翻译入口。 */
-  onPending?: (controller: TrackController) => void;
+  /** 开始等 LLM 判断是不是文章了。宿主借此告诉用户这几秒在等什么。 */
+  onClassifying?: () => void;
+  /** 认出是文章、抽出标题之后告诉别人（见 core/page 的 PageInfo）。 */
+  onTitle?: (title: string) => void;
   /**
-   * 这一轮不作数了。页内换文章时宿主会作废手上这轮、按新地址另起一轮（见 content/host.ts），
+   * 这一轮不作数了。页内换文章时宿主会作废手上这轮、按新地址另起一轮（见 core/page/host.ts），
    * 而抽正文最长要重试到 4 秒：没有这个信号，作废的那轮会一路跑到底，还会替**旧**那篇
    * 发一遍 article:meta。每个 await 之后查一次，作废了就当没识别过这一页。
    */
@@ -97,25 +79,15 @@ export interface TrackController {
   setVisible(visible: boolean): void;
   /** 结束追踪：结算最后一段、判一次读完、拆掉所有监听。重复调用无害。 */
   stop(reason?: EndReason): void;
-  /**
-   * 临时挂起划词翻译，只对本次加载有效（popup 的「本页启用划词翻译」、App 顶栏的「译」）。
-   * 两种页面上有效：没识别为文章的页面（默认不挂），以及命中翻译黑名单的页面——文章页也一样——
-   * 这时是**暂时无视黑名单**，截图翻译跟着放开。追踪中且没被排除的文章页本来就挂着，调它没有效果；
-   * 总开关关着时调它也不挂。
-   */
-  translateHere(): void;
-  screenshot(): void;
 }
 
-/** chrome.storage.onChanged 的回调类型。具名注册才摘得掉，见 finish 与 translateOnly 的 stop。 */
+/** chrome.storage.onChanged 的回调类型。具名注册才摘得掉，见 finish。 */
 type SettingsListener = Parameters<typeof chrome.storage.onChanged.addListener>[0];
 
 const idle = (reason: string): TrackController => ({
   state: () => ({ tracked: false, reason }),
   setVisible: () => undefined,
   stop: () => undefined,
-  translateHere: () => undefined,
-  screenshot: () => undefined,
 });
 
 export async function startTracking(opts: TrackOptions): Promise<TrackController> {
@@ -169,19 +141,16 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   let settings: Settings = { ...DEFAULT_SETTINGS, ...((stored["settings"] as Partial<Settings>) ?? {}) };
 
-  const host = hostnameOf(pageUrl);
   settings.articleExcludedUrls = (stored["settings"] as Partial<Settings> | undefined)?.articleExcludedUrls ?? settings.excludedDomains;
-  settings.translationExcludedUrls = (stored["settings"] as Partial<Settings> | undefined)?.translationExcludedUrls ?? settings.excludedDomains;
   if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
     stopWatchingInput();
-    return translateOnly(pageUrl, host, settings, "命中文章记录黑名单", opts.tapRoot);
+    return idle("命中文章记录黑名单");
   }
 
   const supplied = opts.extract?.();
-  const pendingTranslation = opts.onPending ? translateOnly(pageUrl, host, settings, "LLM 正在判断是否为文章…", opts.tapRoot) : null;
-  if (pendingTranslation) opts.onPending?.(pendingTranslation);
+  if (!opts.approvedArticle) opts.onClassifying?.();
   let pageLeft = false;
-  const left = (): void => { pageLeft = true; pendingTranslation?.stop(); };
+  const left = (): void => { pageLeft = true; };
   window.addEventListener("pagehide", left, { once: true });
   let decision: { ok: boolean; isArticle?: boolean; reason: string };
   try {
@@ -190,27 +159,20 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       text: samplePage(supplied ? supplied.paragraphs.map(p => p.text).join("\n\n") : (document.body?.innerText || document.body?.textContent || "")),
     });
   } catch { decision = { ok: false, reason: "文章判断失败，请刷新重试" }; }
-  const wantedTranslation = pendingTranslation?.state().translateHere === "on";
-  pendingTranslation?.stop();
   window.removeEventListener("pagehide", left);
   if (pageLeft) { stopWatchingInput(); return idle("已离开页面"); }
   const cancelled = abandoned();
   if (cancelled) return cancelled;
-  // 判断期间设置可能已变化，再读取以保证两份黑名单独立生效。
+  // 判断期间设置可能已变化（比如刚把这一页加进了黑名单），再读一次。
   const fresh = await chrome.storage.local.get("settings");
   const saved = (fresh["settings"] as Partial<Settings>) ?? {};
-  settings = { ...DEFAULT_SETTINGS, ...saved,
-    articleExcludedUrls: saved.articleExcludedUrls ?? saved.excludedDomains ?? [],
-    translationExcludedUrls: saved.translationExcludedUrls ?? saved.excludedDomains ?? [],
-  };
+  settings = { ...DEFAULT_SETTINGS, ...saved, articleExcludedUrls: saved.articleExcludedUrls ?? saved.excludedDomains ?? [] };
   const changed = abandoned();
   if (changed) return changed;
   if (!decision?.ok || !decision.isArticle || isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
     stopWatchingInput();
-    const controller = translateOnly(pageUrl, host, settings, isUrlExcluded(pageUrl, settings.articleExcludedUrls)
-      ? "命中文章记录黑名单" : decision?.reason || "文章判断失败，请刷新重试", opts.tapRoot);
-    if (wantedTranslation) controller.translateHere();
-    return controller;
+    return idle(isUrlExcluded(pageUrl, settings.articleExcludedUrls)
+      ? "命中文章记录黑名单" : decision?.reason || "文章判断失败，请刷新重试");
   }
   // Readability 只负责正文定位，不再决定页面是否属于文章。
   const article = supplied || await extractWithRetry(opts.signal)
@@ -221,11 +183,12 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   if (gone) return gone;
   if (!article) {
     stopWatchingInput();
-    return translateOnly(pageUrl, host, settings, undefined, opts.tapRoot);
+    return idle("未识别为文章页");
   }
 
   const articleId = normalizeUrl(pageUrl);
   const title = article.title || document.title;
+  opts.onTitle?.(title);
 
   send({
     type: "article:meta",
@@ -488,15 +451,6 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       idleLimitMs: machine.quietLimits().idleMs,
       estimate: estimateNow(),
     };
-    // 命中翻译黑名单：截图翻译要等放行才给；「暂时开启」的入口照给——总开关关着除外，
-    // 它的语义是根本不挂选区监听，黑名单放行也不例外。
-    // "on" 看的是用户的选择而不是翻译器此刻挂没挂：pagehide 收摊后翻译器已经摘了，
-    // 但从 bfcache 回来还是同一次加载，host.ts 的 restored 要靠这个 "on" 替用户再点一次。
-    if (translationAllowed()) st.screenshot = "available";
-    if (translationExcluded) {
-      st.translationExcluded = true;
-      if (settings.translateEnabled) st.translateHere = translateOverride ? "on" : "available";
-    }
     return st;
   };
 
@@ -572,8 +526,6 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     machine.stop(reason); // 先停：onEnd 里还要结算最后一段、判一次读完
     torn = true;
     tracker.destroy();
-    screenshot.stop();
-    translator.stop();
     finishCard.hide();
     stopRestore();
     chrome.storage.onChanged.removeListener(onSettingsChanged);
@@ -594,43 +546,14 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       maxQuietMs: settings.maxQuietMs,
     });
     tracker.setThresholds({ dwellMs: settings.paragraphDwellMs, readFraction: settings.readFraction });
-    // 运行中被加进翻译黑名单：那是比「暂时开启」更新的一次选择，这次的开启作废，再点一次才回来
-    const wasExcluded = translationExcluded;
-    translationExcluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
-    if (translationExcluded && !wasExcluded) translateOverride = false;
-    syncTranslator();
-    if (!translationAllowed()) screenshot.stop();
     if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
       finish("unload")();
-      translatorOn = false;
       excludedNow = "命中文章记录黑名单";
-      translationFallback = translateOnly(pageUrl, host, settings, excludedNow, opts.tapRoot);
     }
   };
   chrome.storage.onChanged.addListener(onSettingsChanged);
   /** 运行中被加进排除列表：状态要能说明为什么不追踪了。 */
   let excludedNow: string | null = null;
-  let translationFallback: TrackController | null = null;
-
-  /* ---- 划词翻译 ----
-   * 文章页上跟着总开关走。非文章页在前面就 return 了，那边由 translateOnly 按需挂。
-   * 命中翻译黑名单的默认不挂，但用户能从 popup / App 顶栏暂时放行（translateHere）：
-   * 翻译器、截图翻译、popup 看到的状态都问同一个 translationAllowed，别让三处各判各的。 */
-  const translator = makeTranslator(articleId, pageUrl, title, () => settings, opts.tapRoot);
-  let translationExcluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
-  /** 命中黑名单时用户点过「本页暂时开启」，只对本次加载有效。 */
-  let translateOverride = false;
-  const translationAllowed = (): boolean => !translationExcluded || translateOverride;
-  const screenshot = screenshotAction(() => translator, () => !torn && translationAllowed());
-  let translatorOn = false;
-  const syncTranslator = (): void => {
-    const want = settings.translateEnabled && translationAllowed();
-    if (want === translatorOn) return;
-    translatorOn = want;
-    if (want) translator.start();
-    else translator.stop();
-  };
-  syncTranslator();
 
   /* ---- 跳回上次读到的位置 ----
    *
@@ -653,26 +576,14 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
 
   machine.bootstrap();
 
-  const controller: TrackController = {
-    state: () => translationFallback ? translationFallback.state() : state(),
+  return {
+    state: () => excludedNow ? { tracked: false, reason: excludedNow } : state(),
     setVisible: (v) => {
       // 宿主直接调的，不在 finish 摘掉的那组监听里：收摊之后再通知可见也不该重新计时
       if (!torn) machine.setVisible(v);
     },
-    stop: (reason = "unload") => { finish(reason)(); translationFallback?.stop(reason); },
-    screenshot: () => translationFallback ? translationFallback.screenshot() : screenshot.run(),
-    translateHere: () => {
-      if (translationFallback) { translationFallback.translateHere(); return; }
-      if (torn) return;
-      // 命中翻译黑名单的文章页：用户点的这一下是「暂时无视黑名单」，只对本次加载有效
-      translateOverride = true;
-      syncTranslator();
-    },
+    stop: (reason = "unload") => finish(reason)(),
   };
-  // 模型判断期间就点过「本页启用划词翻译」：判成文章也不能把这个选择丢掉。
-  // 没被排除的文章页本来就挂着，这一下只在命中黑名单时才真起作用。
-  if (wantedTranslation) controller.translateHere();
-  return controller;
 
   /** 滚到锚点段落，并把落点微调到离开时的那个偏移。 */
   function scrollToAnchor(el: Element, offset: number): void {
@@ -713,241 +624,6 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       restoreTimers.add(t);
     });
   }
-}
-
-/**
- * 走 port 发一次请求：把增量喂给调用方，拿到最终结果就收线。
- *
- * 走 port 而不是 sendMessage：一次请求要推多次增量（翻译是译文先到、语境解释后到，
- * 追问是答案一路往外冒），而 sendMessage 一个请求只允许一次应答。请求本身仍必须由
- * background 代发——MiniMax 端点没有 CORS 头，而且 API key 不能出现在与网页共享
- * 进程的 content script 里。
- *
- * 翻译和追问共用这一段：两者的差别只在发什么、怎么认增量、怎么认最终结果，
- * 而 port 的生命周期（取消、断线、重复 resolve）三处都一样，抄一遍就要错一遍。
- */
-function onPort<R>(
-  req: TranslatePortIn,
-  signal: AbortSignal,
-  /** 消化一条后台消息：是增量就自己处理并返回 null，是最终结果就把它返回。 */
-  read: (m: TranslatePortOut) => R | null,
-  /** 连不上、被取消、连接中断时给调用方的结果。 */
-  failed: (error: string) => R,
-): Promise<R> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve(failed("已取消"));
-      return;
-    }
-    let port: chrome.runtime.Port;
-    try {
-      port = chrome.runtime.connect({ name: PORT_TRANSLATE });
-    } catch (err) {
-      // 扩展刚被重载时连不上，不该把页面搞崩
-      resolve(failed(`后台未就绪：${reasonOf(err)}`));
-      return;
-    }
-
-    let settled = false;
-    const close = (): void => {
-      try {
-        port.disconnect();
-      } catch {
-        /* 已经断了 */
-      }
-    };
-    const onAbort = (): void => {
-      close(); // background 侧的 onDisconnect 会顺手中止请求
-      finish(failed("已取消"));
-    };
-    const finish = (res: R): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      resolve(res);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    port.onMessage.addListener((m: TranslatePortOut) => {
-      const res = read(m);
-      if (res === null) return;
-      finish(res);
-      close();
-    });
-    port.onDisconnect.addListener(() => {
-      // 正常收尾时 finish 已经落定，这里只兜住 SW 中途挂掉的情况
-      finish(failed("与后台的连接中断"));
-    });
-    port.postMessage(req);
-  });
-}
-
-/** 一次流式翻译。 */
-function streamTranslate(
-  req: TranslateRequest,
-  onPartial: (p: PartialTranslation) => void,
-  signal: AbortSignal,
-): Promise<TranslateResponse> {
-  return onPort<TranslateResponse>(
-    { type: "start", req },
-    signal,
-    (m) => {
-      if (m.type === "partial") onPartial(m.partial);
-      return m.type === "done" ? m.res : null;
-    },
-    (error) => ({ ok: false, error, needsConfig: false }),
-  );
-}
-
-/** 浮层里的一次追问。增量是**到目前为止的全部答案**，不是新增的那几个字。 */
-function streamAsk(req: AskRequest, onDelta: (text: string) => void, signal: AbortSignal): Promise<AskReply> {
-  return onPort<AskReply>(
-    { type: "ask", req },
-    signal,
-    (m) => {
-      if (m.type === "ask-partial") onDelta(m.text);
-      return m.type === "ask-done" ? m.res : null;
-    },
-    (error) => ({ ok: false, error, needsConfig: false }),
-  );
-}
-
-/** 划词翻译器的接线。文章页和临时开启的非文章页用同一份，别让两边的依赖悄悄分叉。 */
-function makeTranslator(articleId: string, url: string, title: string, settings: () => Settings, tapRoot?: HTMLElement): SelectionTranslator {
-  return new SelectionTranslator({
-    recordTrace: trace => send({ type: "translation:trace", trace }),
-    tapRoot,
-    articleId,
-    url,
-    articleTitle: title,
-    settings,
-    contextOf: paragraphContext,
-    recognize: async (png, signal): Promise<OcrReply> => {
-      if (signal.aborted) return { ok: false, error: "已取消" };
-      const reply = await chrome.runtime.sendMessage({ type: "ocr:recognize", png }) as OcrReply | undefined;
-      // Tesseract 不能中断；让后台那次跑完，前台只丢弃结果。
-      return signal.aborted ? { ok: false, error: "已取消" }
-        : reply ?? { ok: false, error: "识别失败：后台未就绪" };
-    },
-    translate: streamTranslate,
-    ask: streamAsk,
-    warm: () => send({ type: "sw:ping" }),
-    openOptions: () => void chrome.runtime.sendMessage({ type: "options:open" }),
-  });
-}
-
-/** OCR 每次都要用户动手，不看划词总开关；排除域名仍然禁止，不能绕过用户对站点的选择。 */
-function screenshotAction(getTranslator: () => SelectionTranslator, allowed: () => boolean) {
-  let seq = 0;
-  const stop = (): void => { seq++; cancelRegion(); };
-  return {
-    stop,
-    run: (): void => {
-      if (!allowed()) return;
-      stop();
-      const mine = seq;
-      const translator = getTranslator();
-      translator.dismiss();
-      send({ type: "ocr:warm" });
-      void (async () => {
-        try {
-          const reply = await chrome.runtime.sendMessage({ type: "page:capture" }) as
-            { ok: boolean; dataUrl?: string; error?: string } | undefined;
-          if (mine !== seq || !allowed()) return;
-          if (!reply?.ok || !reply.dataUrl) throw new Error(reply?.error ?? "截图失败：后台未就绪或此页面不支持截图");
-          const result = await selectRegion(reply.dataUrl);
-          if (mine !== seq || !allowed() || !result) return;
-          await translator.translateImage(result.png, result.rect);
-        } catch (err) {
-          if (mine === seq && allowed()) translator.showCaptureError(reasonOf(err));
-        }
-      })();
-    },
-  };
-}
-
-/**
- * 没识别为文章的页面：不追踪，但划词翻译可以从 popup 临时开起来。
- *
- * 翻译器本就不依赖正文抽取——文章 id 只是归一化的 URL，语境段落沿 DOM 往上找，
- * 后台落库也不看有没有这篇的阅读记录。所以这条路径上它照样能用，只是**默认不挂**：
- * 在邮件、聊天这类网页应用里选中一段文字，不该悄悄发给 MiniMax。
- * 用户在 popup 里点一下才挂，且只对本次加载有效，刷新即回到默认。
- *
- * 总开关照样管着它：关掉就摘监听；开关回来时，用户这次的选择还在。
- * 翻译黑名单命中时同样默认不挂，但那一下点的同时也是「暂时无视黑名单」：只对本次加载有效，
- * 运行中被加进黑名单则作废——那是更新的一次选择。
- */
-function translateOnly(pageUrl: string, host: string, initial: Settings, reason = "未识别为文章页", tapRoot?: HTMLElement): TrackController {
-  let settings = initial;
-  /** 用户点过「本页启用划词翻译」。 */
-  let wanted = false;
-  let excluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
-  /**
-   * 用户点的那一下同时也是「暂时无视翻译黑名单」：命中黑名单的页面照样能开，截图翻译跟着放开。
-   * 和 wanted 分开记，是因为运行中被加进黑名单要把它作废、而 wanted 还在——总开关那条路就是这么处理的。
-   */
-  let override = false;
-  const allowed = (): boolean => !excluded || override;
-  let translator: SelectionTranslator | null = null;
-  let on = false;
-  let stopped = false;
-  const screenshot = screenshotAction(() => {
-    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings, tapRoot);
-    return translator;
-  }, () => !stopped && allowed());
-
-  const sync = (): void => {
-    const want = wanted && settings.translateEnabled && allowed();
-    if (want === on) return;
-    on = want;
-    if (!want) {
-      translator?.stop();
-      return;
-    }
-    // 到开启这一刻才建：单页应用常常在加载之后才改标题，这时取到的才是当前这一页的
-    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, document.title, () => settings, tapRoot);
-    translator.start();
-  };
-
-  const onSettingsChanged: SettingsListener = (changes, area) => {
-    if (area !== "local" || !changes["settings"]) return;
-    settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
-    const wasExcluded = excluded;
-    excluded = isUrlExcluded(pageUrl, settings.translationExcludedUrls);
-    // 运行中被加进黑名单：那是比「暂时开启」更新的一次选择，这次的开启作废，再点一次才回来
-    if (excluded && !wasExcluded) override = false;
-    if (!allowed()) { screenshot.stop(); translator?.stop(); }
-    sync();
-  };
-  chrome.storage.onChanged.addListener(onSettingsChanged);
-
-  return {
-    state: () => {
-      const st: PageState = { tracked: false, reason: excluded ? "命中翻译黑名单；" + reason : reason };
-      if (excluded) st.translationExcluded = true;
-      if (allowed()) st.screenshot = "available";
-      // 总开关关着：不给字段，popup 就不会画一个点不动的按钮。命中黑名单照给——那是「暂时放行」的入口
-      if (settings.translateEnabled) st.translateHere = on ? "on" : "available";
-      return st;
-    },
-    setVisible: () => undefined,
-    stop: () => {
-      stopped = true;
-      screenshot.stop();
-      translator?.stop();
-      wanted = false;
-      override = false;
-      sync();
-      chrome.storage.onChanged.removeListener(onSettingsChanged);
-    },
-    screenshot: screenshot.run,
-    translateHere: () => {
-      wanted = true;
-      override = true;
-      sync();
-    },
-  };
 }
 
 async function extractWithRetry(signal?: AbortSignal): Promise<ReturnType<typeof extractArticle>> {

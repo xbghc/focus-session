@@ -20,8 +20,8 @@ import type { TranslationInputTiming, TranslationTrace } from "../lib/translatio
 /**
  * 划词翻译的触发与编排。
  *
- * 只在被识别为文章页、且未被域名排除的页面上挂载——这就是"检测当前页面是否
- * 是文章页"这条需求的落点：非文章页根本不会有这套监听。
+ * 挂不挂由划词翻译插件决定（features/translation：总开关、翻译白名单、用户在本页手动开），
+ * 这里只管挂上之后的事。
  */
 
 /**

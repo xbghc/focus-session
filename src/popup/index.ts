@@ -14,6 +14,7 @@ import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTi
 import { hostnameOf } from "../lib/url.ts";
 import { clear, el, empty } from "./dom.ts";
 import { onSyncUpdated } from "../lib/syncUpdated.ts";
+import { reasonOf } from "../lib/reason.ts";
 
 const REASON_LABEL: Record<EndReason, string> = {
   idle: "走神",
@@ -158,7 +159,7 @@ function renderCurrent(st: PageState | null): void {
   root.append(kv(rows));
   // 依据那句靠负外边距贴着「预计还需」的数字（popup.css 的 .basis），它和 kv 表之间不能插东西——插了就叠在一起
   if (est && est.words > 0) root.append(el("div", { class: "muted small basis" }, [describeBasis(est)]));
-  // 命中翻译黑名单的文章页：翻译器没挂，这里给「暂时开启」的入口；截图翻译要等放行之后才有
+  // 不在翻译白名单里的文章页：翻译器没挂，这里给「本页开启」的入口。记不记专注和翻不翻译各判各的
   const actions = [...(st.translateHere ? translateHereNodes(st, true) : []), ...(st.screenshot === "available" ? [screenshotNode()] : [])];
   if (actions.length > 0) root.append(el("div", { class: "actions" }, actions));
 
@@ -186,31 +187,61 @@ function screenshotNode(): HTMLElement {
 }
 
 /**
- * 划词翻译的临时入口。
+ * 划词翻译的手动入口。
  *
- * 两种页面上出现：没识别为文章的页面默认不挂选区监听（在网页应用里选中文本不该悄悄联网），
- * 这里点一下才挂；命中翻译黑名单的页面（文章页也一样）默认也不挂，这里点一下是**暂时无视黑名单**。
- * 都只对当前这次加载生效——刷新就回到默认。应答里带着更新后的状态，直接重画。
- * 文章页的布局里没有那行「为什么没追踪」，黑名单这件事得在这里自己说（explain）。
+ * 只在不在翻译白名单里的页面上出现：那些页面默认不挂选区监听（在网页应用里选中文本不该悄悄联网）。
+ * 「本页启用」只对当前这次加载生效，刷新就回到默认；「本站始终开启」把站点加进白名单，顺手把本页也开了。
+ * 文章页的布局里没有那行「为什么没追踪」，没自动开这件事得在这里自己说（explain）。
  */
 function translateHereNodes(st: PageState, explain = false): HTMLElement[] {
-  const excluded = st.translationExcluded === true;
-  if (st.translateHere === "on") {
-    return [el("div", { class: "small translate-on" }, [
-      excluded ? "划词翻译已在本页暂时开启（本站在翻译黑名单里），刷新后失效" : "划词翻译已在本页开启，刷新后失效",
-    ])];
-  }
   const nodes: HTMLElement[] = [];
-  if (excluded && explain) nodes.push(el("div", { class: "muted small" }, ["本站在翻译黑名单里，划词翻译没有挂上"]));
-  const btn = el("button", { type: "button", class: "btn" }, [excluded ? "本页暂时开启划词翻译" : "本页启用划词翻译"]);
+  if (st.translateHere === "on") {
+    nodes.push(el("div", { class: "small translate-on" }, ["划词翻译已在本页开启，刷新后失效"]));
+  } else {
+    if (explain) nodes.push(el("div", { class: "muted small" }, ["本站不在翻译白名单里，划词翻译没有自动开启"]));
+    const btn = el("button", { type: "button", class: "btn" }, ["本页启用划词翻译"]);
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      // 应答就是更新后的状态；拿不到（页面刚好跳走了）就再问一遍
+      void askPage<PageState>({ type: "page:translate-here" })
+        .then(async (next) => renderCurrent(next ?? (await fetchPageState())));
+    });
+    nodes.push(btn);
+  }
+  nodes.push(allowSiteNode());
+  return nodes;
+}
+
+/**
+ * 「本站始终开启」：加进翻译白名单。
+ *
+ * 不等页面那边的设置热更新再重画——storage.onChanged 送到页面要一小会儿，紧跟着问状态多半还是旧的。
+ * 直接把本页也开上，按钮换成一句结果。
+ */
+function allowSiteNode(): HTMLElement {
+  const btn = el("button", { type: "button", class: "btn" }, ["本站始终开启"]);
   btn.addEventListener("click", () => {
     btn.disabled = true;
-    // 应答就是更新后的状态；拿不到（页面刚好跳走了）就再问一遍
-    void askPage<PageState>({ type: "page:translate-here" })
-      .then(async (next) => renderCurrent(next ?? (await fetchPageState())));
+    void (async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const url = tab?.url ?? "";
+      const host = hostnameOf(url);
+      if (!host) {
+        btn.replaceWith(el("div", { class: "muted small" }, ["这个页面没有站点可加"]));
+        return;
+      }
+      try {
+        await chrome.runtime.sendMessage({ type: "translation:allow-site", url });
+      } catch (err) {
+        btn.disabled = false;
+        btn.after(el("div", { class: "muted small" }, [`没加上：${reasonOf(err)}`]));
+        return;
+      }
+      await askPage({ type: "page:translate-here" });
+      btn.replaceWith(el("div", { class: "small translate-on" }, [`已把 ${host} 加进翻译白名单，以后自动开启`]));
+    })();
   });
-  nodes.push(btn);
-  return nodes;
+  return btn;
 }
 
 /**

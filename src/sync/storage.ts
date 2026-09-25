@@ -186,7 +186,9 @@ function entries(data: Record<string, any>): Map<string, Entry> {
   }
   for (const [id,v] of Object.entries(object(data.archives))) add("archive",id,v,id);
   for (const [id,v] of Object.entries(object(data.settings))) {
-    if (id in DEFAULT_SETTINGS && id !== "excludedDomains") add("setting",id,v);
+    // 翻译白名单暂不同步：同步协议的设置项是白名单制，服务器和旧版客户端都认不得这一项——推上去整批 400，
+    // 旧客户端拉到了也会整轮失败。每台设备按自己的阅读记录种一份（见 store.ts 的 seedTranslationAllowlist）。
+    if (id in DEFAULT_SETTINGS && id !== "excludedDomains" && id !== "translationAllowedUrls") add("setting",id,v);
   }
   for (const [k,v] of Object.entries(data)) {
     if (k.startsWith("p:") && Array.isArray(v)) { if (syncable(k.slice(2))) for (const p of v) add("paragraph",JSON.stringify([k.slice(2),p.hash]),p,k.slice(2)); }

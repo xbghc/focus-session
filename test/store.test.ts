@@ -493,18 +493,41 @@ test("清空数据连速度摘要一起清掉", async () => {
 });
 
 
-test("旧黑名单迁移到两份列表，后续修改互不影响", async () => {
-  await area.set({ settings: { excludedDomains: ["example.com"] } });
+test("旧黑名单迁移成文章记录黑名单；翻译白名单用读过文章的站点种一次，不种旧翻译黑名单里的", async () => {
+  await area.set({
+    settings: { excludedDomains: ["example.com"], translationExcludedUrls: ["mail.example.org"] },
+    articles: {
+      a: { url: "https://www.nytimes.com/2026/a.html" },
+      b: { url: "https://www.nytimes.com/2026/b.html" },
+      c: { url: "https://mail.example.org/thread/1" },
+      d: { url: "https://blog.rust-lang.org/post" },
+    },
+  });
   await store.persistMigrations();
   const initial = await store.getSettings();
   assert.deepEqual(initial.articleExcludedUrls, ["example.com"]);
-  assert.deepEqual(initial.translationExcludedUrls, ["example.com"]);
-  await store.setSettings({ translationExcludedUrls: [] });
-  const next = await store.getSettings();
-  assert.deepEqual(next.articleExcludedUrls, ["example.com"]);
-  assert.deepEqual(next.translationExcludedUrls, []);
+  assert.deepEqual(initial.translationAllowedUrls, ["blog.rust-lang.org", "www.nytimes.com"]);
+
+  // 用户清空之后不再重种
+  await store.setSettings({ translationAllowedUrls: [] });
   await store.persistMigrations();
-  assert.deepEqual((await store.getSettings()).translationExcludedUrls, []);
+  assert.deepEqual((await store.getSettings()).translationAllowedUrls, []);
+  assert.deepEqual((await store.getSettings()).articleExcludedUrls, ["example.com"]);
+});
+
+test("「本站始终开启」加站点；已经命中的不重复加", async () => {
+  await area.set({ settings: { translationAllowedUrls: ["nytimes.com"] } });
+  await store.allowTranslationSite("https://www.nytimes.com/x");
+  assert.deepEqual((await store.getSettings()).translationAllowedUrls, ["nytimes.com"]);
+  await store.allowTranslationSite("https://news.ycombinator.com/item?id=1");
+  assert.deepEqual((await store.getSettings()).translationAllowedUrls, ["nytimes.com", "news.ycombinator.com"]);
+  await store.allowTranslationSite("not a url");
+  assert.equal((await store.getSettings()).translationAllowedUrls.length, 2);
+  // localhost 写不成域名规则：记整个源，之后同一个源下的页面都认
+  await store.allowTranslationSite("http://localhost:8080/notes/1");
+  assert.deepEqual((await store.getSettings()).translationAllowedUrls.at(-1), "http://localhost:8080");
+  await store.allowTranslationSite("http://localhost:8080/other");
+  assert.equal((await store.getSettings()).translationAllowedUrls.length, 3);
 });
 
 test("批量删除关联阅读数据并阻止迟到写入，保留生词", async () => {

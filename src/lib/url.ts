@@ -57,4 +57,6 @@ export function matchesUrlRule(rawUrl: string, rule: string): boolean {
   } catch { return false; }
 }
 
-export const isUrlExcluded = (url: string, rules: string[]): boolean => rules.some(rule => matchesUrlRule(url, rule));
+/** 命中其中任意一条规则。黑名单、白名单共用同一套写法（见 matchesUrlRule）。 */
+export const matchesUrlRules = (url: string, rules: string[]): boolean => rules.some(rule => matchesUrlRule(url, rule));
+export const isUrlExcluded = matchesUrlRules;

@@ -127,7 +127,11 @@ export interface Settings {
   /** 旧版共用黑名单，仅用于迁移。 */
   excludedDomains: string[];
   articleExcludedUrls: string[];
-  translationExcludedUrls: string[];
+  /**
+   * 翻译白名单：命中的页面自动挂划词翻译，其余页面要用户从 popup / App 顶栏手动开，只对本次加载有效。
+   * 和文章记录黑名单互不相干——一页记不记专注、翻不翻译各判各的。
+   */
+  translationAllowedUrls: string[];
   /** 划词翻译总开关。关掉后 content script 不再挂选区监听。 */
   translateEnabled: boolean;
   /** 短于此长度的选区不翻译（避免误点选到一两个字符）。 */
@@ -179,7 +183,7 @@ export const DEFAULT_SETTINGS: Settings = {
   episodeGapMs: 300_000,
   excludedDomains: [],
   articleExcludedUrls: [],
-  translationExcludedUrls: [],
+  translationAllowedUrls: [],
   translateEnabled: true,
   minSelectionChars: 2,
   maxAutoSelectionWords: 200, // ≈ 1100 字符（英文均值 5.5 字符/词），大致是三四段
@@ -231,16 +235,11 @@ export interface PageState {
   /**
    * 划词翻译的临时开关，只对本次加载有效。
    * "available"：可以从 popup（App 里是顶栏的「译」）为本页开启；"on"：已经开着。
-   * 两种页面给这个字段：没识别为文章的页面（默认不挂监听，点了才挂），
-   * 以及命中翻译黑名单的页面——文章页也一样——这时开启的意思是**暂时无视黑名单**，
-   * 由 translationExcluded 标出来，popup 才说得清「为什么有这个按钮」。
-   * 追踪中且没被排除的文章页本来就挂着监听、总开关关着时根本不挂：都不给这个字段，
-   * popup 不该画一个点不动的按钮。
+   * 只有不在翻译白名单里的页面给这个字段。白名单里的本来就挂着、总开关关着时根本不挂：
+   * 都不给，popup 不该画一个点不动的按钮。
    */
   translateHere?: "available" | "on";
-  /** 本页命中了翻译黑名单。此时 translateHere 是「暂时无视黑名单」的入口，刷新即回到黑名单。 */
-  translationExcluded?: true;
-  /** 截图翻译的入口。命中翻译黑名单时不给——不能绕过用户对站点的选择，除非是用户自己在本页暂时放行了翻译。 */
+  /** 截图翻译的入口。每次都是用户亲手框的，不看白名单。 */
   screenshot?: "available";
   articleId?: string;
   title?: string;
@@ -318,6 +317,8 @@ export type PopupToBg =
   | { type: "data:clear" }
   | { type: "settings:get" }
   | { type: "settings:set"; settings: Partial<Settings> }
+  /** 把这个页面的站点加进翻译白名单。应答是更新后的设置。 */
+  | { type: "translation:allow-site"; url: string }
   /* ---- 划词与复习 ---- */
   | { type: "snippets:list"; articleId?: string }
   | { type: "snippet:delete"; id: string }
