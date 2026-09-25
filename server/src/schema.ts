@@ -104,6 +104,21 @@ const migrations = [
      PRIMARY KEY (user_id, device_id, day, event)
    );
    CREATE INDEX ui_usage_day ON ui_usage (day);`,
+  // Diagnostic logs uploaded by clients, one row per device, kind and entry. Kept out of the sync log
+  // and expired after 30 days: see clientLogs.ts.
+  `CREATE TABLE client_logs (
+     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     device_id text NOT NULL,
+     kind text NOT NULL,
+     key text NOT NULL,
+     ts timestamptz NOT NULL,
+     platform text NOT NULL,
+     version text NOT NULL,
+     payload jsonb NOT NULL,
+     received_at timestamptz NOT NULL DEFAULT now(),
+     PRIMARY KEY (user_id, device_id, kind, key)
+   );
+   CREATE INDEX client_logs_user_ts ON client_logs (user_id, ts);`,
 ];
 
 export async function migrate(pool: Pool): Promise<void> {

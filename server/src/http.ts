@@ -9,8 +9,9 @@ import { HttpError, badRequest, boundedInteger } from './errors.ts';
 import type { FileStore } from './files.ts';
 import { contentHash, safeMime, validateManifest } from './manifest.ts';
 import { validateUsage } from './usage.ts';
+import { validateLogs } from './clientLogs.ts';
 
-type HttpDatabase = Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive' | 'recordUsage'>;
+type HttpDatabase = Pick<Database, 'serverId' | 'authenticate' | 'healthy' | 'push' | 'pull' | 'snapshot' | 'blob' | 'uploadBlob' | 'publishArchive' | 'recordUsage' | 'recordLogs'>;
 
 // One line per request. Only routing, sizes, timing and identifiers: never headers, bodies or tokens.
 export interface RequestLog {
@@ -19,7 +20,7 @@ export interface RequestLog {
   ops?: number; records?: number; head?: number; cursor?: number; hasMore?: boolean;
 }
 
-const ROUTES = ['/health', '/v1/info', '/v1/sync/push', '/v1/sync/pull', '/v1/sync/snapshot', '/v1/archives', '/v1/usage'];
+const ROUTES = ['/health', '/v1/info', '/v1/sync/push', '/v1/sync/pull', '/v1/sync/snapshot', '/v1/archives', '/v1/usage', '/v1/logs'];
 
 // Templates keep the log aggregatable and keep scanner paths and content hashes out of it.
 function routeOf(rawUrl: string | undefined): string {
@@ -162,6 +163,14 @@ export function createHttpServer(config: Config, database: HttpDatabase, files: 
         const upload = validateUsage(await readJson(request, config.maxJsonBytes));
         entry.device = upload.deviceId;
         const accepted = await database.recordUsage(user.id, upload);
+        entry.records = accepted;
+        json(response, 200, { accepted, ignored: upload.ignored });
+        return;
+      }
+      if (url.pathname === '/v1/logs' && request.method === 'POST') {
+        const upload = validateLogs(await readJson(request, config.maxJsonBytes));
+        entry.device = upload.deviceId;
+        const accepted = await database.recordLogs(user.id, upload);
         entry.records = accepted;
         json(response, 200, { accepted, ignored: upload.ignored });
         return;

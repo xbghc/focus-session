@@ -47,6 +47,7 @@ Android WebView 需允许 `https://appassets.androidplatform.net`。扩展发出
 | `GET` / `HEAD /v1/blobs/<sha256>` | 只访问当前用户资源，缺失返回 404 |
 | `POST /v1/archives` | 发布文章清单，返回 `{accepted,head,record}` |
 | `POST /v1/usage` | 界面埋点：`{deviceId,platform,days:{"2026-09-19":{"articles.detail":3}}}` → `{accepted,ignored}`，见下文「界面埋点」 |
+| `POST /v1/logs` | 诊断日志：`{deviceId,platform,version,entries:[{kind,entry}]}` → `{accepted,ignored}`，见下文「诊断日志」 |
 
 同步记录格式及合并规则共用 `src/sync/protocol.ts`。操作 ID 是幂等键，重复 ID 携带不同内容返回 `409 OPERATION_REUSED`，整批回滚。用户写入锁覆盖序号分配、当前状态、变更日志和操作回执的同一个事务。上传返回的 `head` **不能**直接覆盖下载游标。客户端只有完成本地落盘后才能推进下载游标。
 
@@ -91,6 +92,7 @@ Android WebView 需允许 `https://appassets.androidplatform.net`。扩展发出
 | `check [userId]` | 一致性自检，只读。`error`：存量记录过不了当前协议校验（`invalid-record`，客户端拉到会拒收）、行主键与记录内身份不符（`key-mismatch`）、变更日志不是连续的 `1..head`（`log-gap`）、记录与其序号处的日志条目不一致（`log-mismatch`）、序号超过 `head`（`sequence-ahead`）、文章记录指向没有清单的版本（`archive-version-missing`）、资源索引对应的文件缺失或大小不符（`blob-file-missing`）。`warning`：过期快照尚未清理（`expired-snapshots`）、磁盘上有未被索引的文件（`orphan-file`）、上传中断留下的临时文件（`upload-leftover`）。存在 `error` 时退出码为 1，可以放进定时任务；最多列出 1000 条，超出时 `truncated` 为 `true` |
 | `show-record <userId> <type> <id>` | 唯一会输出记录内容的命令：当前合并结果、最近 50 条变更历史、最近 50 条各设备上传的原始操作 |
 | `usage [userId]` | 各设备上传的首页按钮点击计数的汇总，按平台分开，零也列。字段见下文「界面埋点」 |
+| `logs [userId] [--hours=24] [--kind=…] [--all] [--limit=100]` | 各设备上传的诊断日志。**会输出内容**（模型原始输出、选中的文本）。字段见下文「诊断日志」 |
 
 `check` 需要和服务进程相同的 `DATA_DIR`。容器里直接调用 `node`，避免 npm 在输出前面加横幅：
 
@@ -118,6 +120,23 @@ docker compose exec -T server node dist/server/src/admin.js usage | jq '.platfor
 
 事件表和客户端是同一份源文件（`src/lib/uiUsage.ts`，和 `src/sync/protocol.ts` 一样在构建镜像时拷进来），所以报表里的中文标签跟着服务器版本走。
 
+
+## 诊断日志
+
+启用同步的客户端每轮同步成功后，把设置页「诊断日志」里新增和改写过的条目传上来（见根目录 README 的「诊断日志上传」），存在 `client_logs` 表：一行是一台设备、一种日志、一个条目，`payload` 是条目原样。和 `ui_usage` 一样不是同步记录，没有设备会把它拉回去。**和 `ui_usage` 不同，它带内容**：失败现场里有模型的原始输出、选中的文本和上下文，翻译轨迹里有选中文本的前 160 字。
+
+- `kind` 是 `failure`（模型调用失败的现场）、`timing`（调用耗时）、`translation`（翻译链路轨迹）、`fetch`（App 阅读器抓取）、`error`（客户端没接住的错误）之一；`platform` 是 `extension` 或 `app`；`version` 是客户端版本号。
+- 去重键：`translation` 用条目的 `id`（设备上会按 id 原地改写，后传的覆盖先传的）；其余几种用内容的 sha256，重发无害。所以这个接口也不需要操作 ID 和回执。
+- 一次至多 500 条，结构不对返回 400。单条超过 256 KB，或时间戳在「400 天前 ～ 后天」之外的，**丢掉并计入 `ignored`，不拒收**，理由同界面埋点。
+- 保留 30 天（按条目时间）：每次上传时顺手删掉这个用户过期的，不需要定时任务。用户删除时随账号一起删。
+- 上传会像 `push` 一样登记设备的 `last_seen_at`。请求日志里这一行带 `device` 和 `records`（收下的条数）。
+
+`logs [userId]` 输出 JSON：`devices`（窗口内每台设备的平台、版本、最后上传时间、各种日志的条数，`translations_not_ok` 是没成功的翻译）、`failures`（失败按来源 / 类型 / HTTP 状态 / 是否被自动补救归堆计数）、`translations`（翻译轨迹按状态计数）、`entries`（条目，新的在前）。默认窗口 24 小时，默认只列出事的那几种：`failure`、`error`，以及状态不是 `success` 的翻译轨迹；`--kind=timing` 之类列出一种的全部，`--all` 列出全部。
+
+```sh
+docker compose exec -T server node dist/server/src/admin.js logs --hours=48
+docker compose exec -T server node dist/server/src/admin.js logs --kind=translation --limit=20
+```
 ## 备份与恢复
 
 停止写入后备份数据库和 `DATA_DIR`，或使用经过验证的一致性备份方案。仅复制数据库不构成完整备份。第一版不自动回收资源，保留旧文章版本，避免误删离线设备需要的文件。事务失败或进程中止可能留下未引用的正式文件或 `.upload` 文件；不能按文件年龄盲删内容哈希文件。

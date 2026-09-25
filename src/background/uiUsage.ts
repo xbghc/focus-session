@@ -28,6 +28,7 @@ export type UiPlatform = "extension" | "app";
 let platform: UiPlatform = "extension";
 /** App 启动时说一声自己是谁（见 app/boot.ts）。两边的首页是同一份代码，但手指和鼠标的用法得分开看。 */
 export function setUiPlatform(value: UiPlatform): void { platform = value; }
+export const uiPlatform = (): UiPlatform => platform;
 
 const local = (): chrome.storage.StorageArea => localStorage();
 

@@ -5,6 +5,7 @@ import { Database } from './database.ts';
 import { checkIntegrity, collectStats, showRecord } from './diagnostics.ts';
 import { FileStore } from './files.ts';
 import { usageReport } from './usage.ts';
+import { LOG_KINDS, logsReport, type LogKind } from './clientLogs.ts';
 
 function uuid(value: string | undefined): string {
   if (!value || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) throw new Error('Expected a UUID');
@@ -13,10 +14,11 @@ function uuid(value: string | undefined): string {
 
 async function main(): Promise<void> {
   const [command, argument, label, recordId] = process.argv.slice(2);
-  const supported = ['create-user', 'issue-token', 'revoke-token', 'list-users', 'list-tokens', 'migrate', 'rotate-server-id', 'stats', 'check', 'show-record', 'usage'];
+  const supported = ['create-user', 'issue-token', 'revoke-token', 'list-users', 'list-tokens', 'migrate', 'rotate-server-id', 'stats', 'check', 'show-record', 'usage', 'logs'];
   if (!command || !supported.includes(command)) {
     console.log('Usage: npm run admin -- create-user <name> | issue-token <userId> [label] | revoke-token <tokenId> | list-users | list-tokens <userId> | migrate | rotate-server-id'
-      + ' | stats | check [userId] | show-record <userId> <type> <id> | usage [userId]');
+      + ' | stats | check [userId] | show-record <userId> <type> <id> | usage [userId]'
+      + ` | logs [userId] [--hours=24] [--kind=${LOG_KINDS.join('|')}] [--all] [--limit=100]`);
     process.exitCode = 1;
     return;
   }
@@ -51,6 +53,19 @@ async function main(): Promise<void> {
       if (!report.ok) process.exitCode = 1;
     } else if (command === 'usage') {
       console.log(JSON.stringify(await usageReport(database.pool, argument === undefined ? undefined : uuid(argument)), null, 2));
+    } else if (command === 'logs') {
+      const args = process.argv.slice(3);
+      const flag = (name: string) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+      const positional = args.find(a => !a.startsWith('--'));
+      const hours = Number(flag('hours') ?? 24);
+      const limit = Number(flag('limit') ?? 100);
+      const kind = flag('kind');
+      if (!Number.isSafeInteger(hours) || hours < 1 || hours > 24 * 90) throw new Error('--hours must be 1..2160');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5000) throw new Error('--limit must be 1..5000');
+      if (kind !== undefined && !(LOG_KINDS as readonly string[]).includes(kind)) throw new Error(`--kind must be one of ${LOG_KINDS.join(', ')}`);
+      console.log(JSON.stringify(await logsReport(database.pool, {
+        userId: positional === undefined ? undefined : uuid(positional), hours, limit, kind: kind as LogKind | undefined, all: args.includes('--all'),
+      }), null, 2));
     } else if (command === 'show-record') {
       if (!(RECORD_TYPES as readonly string[]).includes(label ?? '') || !recordId) throw new Error(`Expected a record type (${RECORD_TYPES.join(', ')}) and a record id`);
       console.log(JSON.stringify(await showRecord(database.pool, uuid(argument), label!, recordId), null, 2));

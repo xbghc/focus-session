@@ -59,10 +59,15 @@ test("real HTTP clients synchronize offline reading, reviews and archived bytes 
         context: "Every abstraction leaks.", createdTs: now, translation: "泄漏", contextNote: "暴露底层细节",
         pos: "verb", phonetic: null, lemma: "leak", usage: null, vocab: [], cardId: "saved-card" }],
       cards: [newCard("saved-card", "leak", ["saved-snippet"], now)],
+      llmLog: [{ ts: Date.now() - 1000, source: "translate", kind: "parse", status: null, message: "bad JSON", raw: '{"translation":' }],
     });
     await configureSync(baseUrl, first.token, true);
     assert.equal((await runSync()).error, null);
     assert.equal((await desktop.read()).outbox.length, 0);
+    // The diagnostic log rides along after a successful cycle as its own request, never as sync records.
+    for (let i = 0; i < 100 && !(await database.pool.query("SELECT 1 FROM client_logs")).rowCount; i++) await new Promise(r => setTimeout(r, 20));
+    const logged = (await database.pool.query("SELECT user_id, kind, payload FROM client_logs")).rows;
+    assert.deepEqual(logged.map(row => [row.user_id, row.kind, row.payload.raw]), [[first.user.id, "failure", '{"translation":']]);
 
     // Image and HTML bodies travel as binary requests through the production client.
     const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jh0kAAAAASUVORK5CYII=", "base64");
