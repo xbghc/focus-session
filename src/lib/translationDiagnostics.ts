@@ -62,7 +62,7 @@ export interface TranslationTrace {
 
 export const TRACE_MARKS = ["inputStart", "selectionEnd", "selectionResolved", "debounceEnd", "prepared", "confirmShown",
   "requestStart", "firstPartial", "firstTranslationDom", "firstTranslationVisible", "responseReceived", "finalDom",
-  "popupShown", "renderComplete", "ended", "ocrStart", "ocrEnd"] as const;
+  "popupShown", "typingDone", "renderComplete", "ended", "ocrStart", "ocrEnd"] as const;
 
 export const TRACE_SPANS: Record<string, [string, string]> = {
   interactionMs: ["inputStart", "selectionEnd"],
@@ -76,6 +76,8 @@ export const TRACE_SPANS: Record<string, [string, string]> = {
   translationDomMs: ["inputStart", "firstTranslationDom"],
   translationVisibleMs: ["inputStart", "firstTranslationVisible"],
   finalDomMs: ["responseReceived", "finalDom"],
+  /** 最终结果写进去之后，打字机还打了多久才把它打完（见 features/translation/typewriter.ts）。命中缓存、减少动画时为 0。 */
+  typingTailMs: ["finalDom", "typingDone"],
   renderSettleMs: ["finalDom", "renderComplete"],
   popupRenderMs: ["popupShown", "renderComplete"],
   totalMs: ["inputStart", "ended"],

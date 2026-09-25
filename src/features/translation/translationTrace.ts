@@ -40,6 +40,8 @@ export class TranslationTraceRecorder {
   private done = false;
   private finalStatus: "success" | "error" | null = null;
   private stable = 0;
+  /** 最终结果写进去时打字机还在打：打完之前不算画稳，见 typed。 */
+  private typing = false;
 
   constructor(input: TranslationInputTiming, text: string, kind: SnippetKind, save: (log: TranslationTrace) => void,
     now: () => number = () => performance.now()) {
@@ -123,7 +125,7 @@ export class TranslationTraceRecorder {
     }
     const same = prev && !moved && Math.abs(pos.width - prev.width) < 0.5 && Math.abs(pos.height - prev.height) < 0.5 && pos.scale === prev.scale;
     popup.final = pos;
-    if (!this.finalStatus) return;
+    if (!this.finalStatus || this.typing) return;
     this.stable = same ? this.stable + 1 : 0;
     // 字体完成后连续两帧稳定作为渲染完成边界；这是绘制机会观测，不声称测到 GPU 呈现。
     if (this.stable >= 2 && (!document.fonts || document.fonts.status === "loaded")) {
@@ -132,9 +134,14 @@ export class TranslationTraceRecorder {
     }
   }
 
-  complete(status: "success" | "error", reason: string | null = null): void {
+  /**
+   * typing：最终结果写进去时打字机还没打完。这时浮层还在长，只是还没长到换行——宽高一动不动、位置也不动，
+   * 光看连续两帧稳定会把「还在打最后一行」当成画稳，所以要等 typed 来了再开始数。
+   */
+  complete(status: "success" | "error", reason: string | null = null, typing = false): void {
     if (this.done) return;
     this.mark("finalDom");
+    this.typing = typing;
     this.log.reason = reason;
     this.finalStatus = status;
     this.stable = 0;
@@ -146,6 +153,12 @@ export class TranslationTraceRecorder {
     this.queueFrame();
   }
 
+  /** 打字机把最终结果打完了。从这一刻起再数连续两帧稳定。 */
+  typed(): void {
+    this.mark("typingDone");
+    this.typing = false;
+    this.stable = 0;
+  }
   finish(status: TranslationTrace["status"], reason?: string): void {
     if (this.done) return;
     // 最终内容已经更新、只是还没等到渲染稳定就被关掉：成功还是失败早定了，不能记成 cancelled；

@@ -1,6 +1,7 @@
 import type { PartialTranslation, Snippet, SnippetKind, VocabNote } from "../../types.ts";
 import { coarsePointer } from "../../lib/pointer.ts";
 import { fillMeta, stopSpeaking } from "../../lib/speak.ts";
+import { Typewriter, type TypewriterDeps } from "./typewriter.ts";
 
 /**
  * 选区旁的翻译浮层。
@@ -276,6 +277,8 @@ export interface PopoverActions {
    * updateAnswer 逐段覆盖，finishAnswer / failAnswer 收尾。
    */
   onAsk: (question: string) => void;
+  /** 最终结果已经写进去、打字机也把它打完了。诊断轨迹据此记「打完」那一刻。 */
+  onTypingDone?: () => void;
 }
 
 export class Popover {
@@ -313,7 +316,15 @@ export class Popover {
     more: HTMLElement;
     /** 已经画出来的生词条数。生词是**追加**的，不重画——重画会让读到一半的人跳行。 */
     drawn: number;
+    /** 真有字段流进来过。没有的话（命中缓存）最终结果直接整块显示，不演一遍打字。 */
+    streamed: boolean;
   } | null = null;
+  /** 流式内容的打字机，见 typewriter.ts。 */
+  private tw: Typewriter;
+  /** 最终结果写进去了、还在打：打完时摘掉「还在写」的尾灯、通知外面。 */
+  private finishing: { more: HTMLElement | null } | null = null;
+  /** 正在打的追问答案。打它的那几帧要贴底滚动，见 pinBottom。 */
+  private typingAnswer: HTMLElement | null = null;
   /**
    * 追问那一块。译文出来之后才挂（enableAsk），整块重建时跟着作废。
    *
@@ -335,8 +346,29 @@ export class Popover {
   private repositioning = false;
   private recognizing = false;
 
-  constructor(actions: PopoverActions) {
+  constructor(actions: PopoverActions, typewriter: TypewriterDeps = {}) {
     this.actions = actions;
+    this.tw = new Typewriter({
+      apply: (reveal) => (this.typingAnswer?.isConnected ? this.pinBottom(reveal) : reveal()),
+      // 每帧只看要不要出滚动条，不整个重新贴位：钉住的那条边流式期间本来就不动，逐帧量布局纯属白费
+      afterFrame: () => {
+        const box = this.box;
+        if (box) box.classList.toggle("scrolls", box.scrollHeight > box.clientHeight);
+      },
+      idle: () => this.typed(),
+    }, typewriter);
+  }
+
+  /** 打字机停了：该收尾的收尾，再按打完的内容贴一次位（内容比预留的高时往上让，见 position）。 */
+  private typed(): void {
+    this.typingAnswer = null;
+    const f = this.finishing;
+    if (f) {
+      this.finishing = null;
+      f.more?.remove();
+    }
+    this.position();
+    if (f) this.actions.onTypingDone?.();
   }
 
   /** 浮层自身的宿主元素——用来判断某次点击是不是发生在浮层内部。 */
@@ -523,6 +555,9 @@ export class Popover {
   private render(rect: DOMRect, html: string, wire?: (box: HTMLDivElement) => void, expected?: number): void {
     const box = this.ensure();
     this.recognizing = false;
+    this.tw.clear();
+    this.finishing = null;
+    this.typingAnswer = null;
     this.stream = null; // 整块重建，旧骨架的引用全作废
     this.ask = null;
     this.origin = null;
@@ -619,6 +654,7 @@ export class Popover {
           more: q(".more"),
           term,
           drawn: 0,
+          streamed: false,
         };
         // 和 showResult 用同一个长度：骨架是复用的，长度不一样会让词在收尾时抖一下
         this.fillTerm(nodes.termEl, term, 90);
@@ -637,24 +673,31 @@ export class Popover {
     if (!n) return; // 已经被 hide / 其他 render 顶掉了
     // 空的一批不覆盖已经到的：流式只会往上加字段，收到空多半是这一帧还没生成到
     if (p.phonetic || p.pos) fillMeta(n.meta, { phonetic: p.phonetic, pos: p.pos, word: n.term });
-    if (p.translation) setText(n.tr, p.translation);
-    if (p.contextNote) setText(n.note, p.contextNote);
-    if (p.usage) setText(n.usage, p.usage);
+    // 字交给打字机，按浮层里从上到下的顺序一个一个露出来；音标词性是短标签，直接显示
+    if (p.translation) this.tw.write(n.tr, p.translation);
+    if (p.contextNote) this.tw.write(n.note, p.contextNote);
+    if (p.usage) this.tw.write(n.usage, p.usage);
+    if (p.translation || p.contextNote || p.usage || p.vocab.length) n.streamed = true;
     this.growVocab(n, p.vocab);
     // 译文一到就点亮尾灯：后面还有用法和生词，别让人以为已经完事了
     if (p.translation) n.more.classList.add("on");
     this.position();
   }
 
-  /** 只追加还没画过的那几条。 */
-  private growVocab(n: NonNullable<Popover["stream"]>, list: VocabNote[]): void {
+  /** 只追加还没画过的那几条。instant：直接显示，不交给打字机。 */
+  private growVocab(n: NonNullable<Popover["stream"]>, list: VocabNote[], instant = false): void {
     // 最终结果的条数只会等于或少于流式见过的（两边同一套校验），
     // 真少了说明这批和画上去的不是一回事，那就整块重来
     if (list.length < n.drawn) {
       n.vocab.textContent = "";
       n.drawn = 0;
     }
-    for (let i = n.drawn; i < list.length; i++) n.vocab.append(vocabNode(list[i]!));
+    for (let i = n.drawn; i < list.length; i++) {
+      const node = vocabNode(list[i]!);
+      n.vocab.append(node);
+      // 词和意思一个字一个字打；音标词性、念的按钮原样显示
+      if (!instant) this.tw.adopt(node, (el) => el.classList.contains("vm") || el.tagName === "BUTTON");
+    }
     n.drawn = list.length;
   }
 
@@ -672,7 +715,8 @@ export class Popover {
     );
   }
 
-  showResult(rect: DOMRect, s: Snippet): void {
+  /** 返回打字机是不是还在打这个结果：还在打的话，打完时会调 onTypingDone。 */
+  showResult(rect: DOMRect, s: Snippet): boolean {
     const meta = { phonetic: s.phonetic, pos: s.pos, word: s.text };
 
     // 流式已经把骨架搭好了，就地补最终值——整块重建会让内容闪一下，
@@ -682,17 +726,26 @@ export class Popover {
       // 框和锚点照流式开始时定的：人可能已经滚过，这里换成外面传进来的矩形，两套坐标就混了
       this.fillTerm(n.termEl, s.text, 90);
       fillMeta(n.meta, meta);
-      setText(n.tr, s.translation);
-      setText(n.note, s.contextNote);
+      // 没流过字（命中缓存）就整块直接显示；流过的接着打，打到最终值为止
+      const instant = !n.streamed;
+      this.tw.write(n.tr, s.translation, instant);
+      this.tw.write(n.note, s.contextNote, instant);
       if (!s.contextNote) n.note.remove();
-      setText(n.usage, s.usage ?? "");
+      this.tw.write(n.usage, s.usage ?? "", instant);
       if (!s.usage) n.usage.remove();
-      this.growVocab(n, s.vocab);
+      this.growVocab(n, s.vocab, instant);
       if (s.vocab.length === 0) n.vocab.remove();
-      n.more.remove();
       this.stream = null;
+      if (this.tw.busy) {
+        // 还在打：尾灯留到打完再摘，打完时再按完整内容贴一次位（见 typed）
+        this.finishing = { more: n.more };
+        this.position();
+        return true;
+      }
+      n.more.remove();
       this.position();
-      return;
+      this.actions.onTypingDone?.();
+      return false;
     }
 
     this.render(
@@ -718,6 +771,8 @@ export class Popover {
         if (s.vocab.length === 0) vocab.remove();
       },
     );
+    this.actions.onTypingDone?.();
+    return false;
   }
 
   showError(rect: DOMRect, message: string, needsConfig: boolean): void {
@@ -847,16 +902,17 @@ export class Popover {
   updateAnswer(text: string): void {
     const slot = this.ask?.answer;
     if (!slot) return;
-    // 直接来自模型，只能当文本填，不能拼进 HTML
-    this.pinBottom(() => setText(slot, text));
+    // 直接来自模型，只能当文本填，不能拼进 HTML。字交给打字机，打的那几帧照样贴底
+    this.typingAnswer = slot;
+    this.pinBottom(() => this.tw.write(slot, text));
     this.reposition();
   }
 
   finishAnswer(text: string): void {
     const a = this.ask;
     if (!a?.answer) return;
-    // 一个字都没吐出来（被截断、被拦）时别留个空框加转圈在那儿转
-    setText(a.answer, text || "（这一问没有得到回答）");
+    // 一个字都没吐出来（被截断、被拦）时别留个空框加转圈在那儿转；那句占位话直接显示，不打
+    this.tw.write(a.answer, text || "（这一问没有得到回答）", !text);
     a.answer = null;
     this.setAskBusy(false);
     this.position();
@@ -956,6 +1012,9 @@ export class Popover {
 
   hide(): void {
     stopSpeaking();
+    this.tw.clear();
+    this.finishing = null;
+    this.typingAnswer = null;
     this.host?.remove();
     this.host = this.root = this.box = null;
     this.stream = null;
@@ -1022,23 +1081,6 @@ function spinner(): HTMLElement {
   const el = document.createElement("span");
   el.className = "spin";
   return el;
-}
-
-/**
- * 字真变了才写。流式每来一批都会把已经到的字段原样再带一遍，照写就是换一个新的文本节点，
- * 人在浮层里正选着的字跟着没了。越写越长的（追问的答案），只把新长出来的那截接上去。
- */
-function setText(el: Element, text: string): void {
-  const node = el.childNodes.length === 1 ? el.firstChild : null;
-  if (node?.nodeType === 3) {
-    const t = node as Text;
-    if (t.data === text) return;
-    if (text.startsWith(t.data)) {
-      t.appendData(text.slice(t.data.length));
-      return;
-    }
-  }
-  el.textContent = text;
 }
 
 function truncate(s: string, n: number): string {

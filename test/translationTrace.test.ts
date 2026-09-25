@@ -235,3 +235,40 @@ test("http 页面没有 randomUUID 也能生成 id；save 抛错不外溢", () =
   assert.ok(rec.log.id);
   assert.doesNotThrow(() => rec.finish("cancelled"));
 });
+
+test("最终结果写进去时打字机还在打：宽高一动不动也不算画稳，打完之后再数两帧；打完记 typingDone", () => {
+  reset();
+  const saved: TranslationTrace[] = [];
+  const rec = new TranslationTraceRecorder(input, "preemptive", "word", (log) => saved.push(log), now);
+  rec.positioned(box);
+  frame();
+  t = 2000;
+  rec.complete("success", null, true);
+  // 还在打最后一行：浮层大小不变，但不能因此收尾
+  for (let i = 0; i < 5; i++) { t += 16; frame(); }
+  assert.equal(saved.length, 0, "打字没完不算画稳");
+  t = 2300;
+  rec.typed();
+  t += 16; frame();
+  assert.equal(saved.length, 0, "打完之后重新数：一帧还不够");
+  t += 16; frame();
+  assert.equal(saved.length, 1, "连续两帧稳定收尾");
+  assert.equal(saved[0]!.status, "success");
+  assert.equal(saved[0]!.marks.typingDone, 1300);
+  assert.equal(saved[0]!.durations.typingTailMs, 300);
+  assert.ok(saved[0]!.marks.renderComplete! > saved[0]!.marks.typingDone!, "画稳在打完之后");
+});
+
+test("不用等打字（命中缓存、早就打完）：typed 先到、complete 后到，照常两帧收尾，打字尾巴记 0", () => {
+  reset();
+  const saved: TranslationTrace[] = [];
+  const rec = new TranslationTraceRecorder(input, "leaks", "word", (log) => saved.push(log), now);
+  rec.positioned(box);
+  frame();
+  t = 2000;
+  rec.typed();
+  rec.complete("success");
+  for (let i = 0; i < 3; i++) { t += 16; frame(); }
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]!.durations.typingTailMs, 0);
+});
