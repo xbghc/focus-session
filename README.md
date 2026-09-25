@@ -1063,7 +1063,11 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 截图、翻译与追问的后台调用、划词记录与生词卡（`vocab.ts`）、翻译轨迹。模型连接的配置与用量在 `core/background/llm.ts`，
 几个功能共用。
 
-还没按功能拆开的：`background/store.ts`（存储、导出导入、设置）、`sync/`、`lib/` 里的纯逻辑、首页和设置页，
+设置也按功能分了类型：`features/reading/settings.ts`（`ReadingSettings`）和 `features/translation/settings.ts`
+（`TranslationSettings`），各带自己的默认值；`types.ts` 的 `Settings` 由这两份拼成。存储格式没变，还是 `settings`
+键下扁平的一份（同步时逐项成记录），所以不涉及迁移。功能插件只拿自己那一份，读不到对方的阈值。
+
+还没按功能拆开的：`background/store.ts`（存储、导出导入、设置读写）、`sync/`、`lib/` 里的纯逻辑、首页和设置页，
 仍是共用的一份；`store.ts` 眼下还直接引用两个功能的存储键。
 
 ### 持续集成与发布

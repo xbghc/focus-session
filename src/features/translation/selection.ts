@@ -4,11 +4,11 @@ import type {
   AskTurn,
   OcrReply,
   PartialTranslation,
-  Settings,
   Snippet,
   TranslateReply,
   TranslateRequest,
 } from "../../types.ts";
+import type { TranslationSettings } from "./settings.ts";
 import { judgeSelection } from "../../lib/lang.ts";
 import { reasonOf } from "../../lib/reason.ts";
 import { coarsePointer } from "../../lib/pointer.ts";
@@ -65,7 +65,7 @@ export interface SelectionDeps {
   url: string;
   articleTitle: string;
   /** 取当前设置，用于长度阈值热更新。 */
-  settings: () => Settings;
+  settings: () => TranslationSettings;
   /** 选区所在段落的文本，给 LLM 做语境判断。 */
   contextOf: (range: Range, limit: number) => string;
   /** 识别与翻译共用取消信号，换选区后不再消费旧结果。 */

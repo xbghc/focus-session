@@ -5,12 +5,12 @@ import type {
   OcrReply,
   PageState,
   PartialTranslation,
-  Settings,
   TranslatePortIn,
   TranslatePortOut,
   TranslateRequest,
 } from "../../types.ts";
-import { DEFAULT_SETTINGS, PORT_TRANSLATE } from "../../types.ts";
+import { PORT_TRANSLATE } from "../../types.ts";
+import { DEFAULT_TRANSLATION_SETTINGS, type TranslationSettings } from "./settings.ts";
 import { matchesUrlRules, normalizeUrl } from "../../lib/url.ts";
 import { reasonOf } from "../../lib/reason.ts";
 import type { PageContext, PageFeature, PagePlugin } from "../../core/page/plugin.ts";
@@ -59,7 +59,7 @@ export function translationPlugin(opts: TranslationOptions = {}): PagePlugin<Tra
 function startTranslation(ctx: PageContext, opts: TranslationOptions, wantedInitially: boolean): TranslationFeature {
   const pageUrl = ctx.url;
   /** 设置还没读回来时是 null：那一小会儿什么都不挂，也不给入口。 */
-  let settings: Settings | null = null;
+  let settings: TranslationSettings | null = null;
   /** 用户点过「本页启用划词翻译」。 */
   let wanted = wantedInitially;
   let stopped = false;
@@ -67,7 +67,7 @@ function startTranslation(ctx: PageContext, opts: TranslationOptions, wantedInit
   let on = false;
 
   const getTranslator = (): SelectionTranslator => {
-    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, ctx.info.title, () => settings ?? DEFAULT_SETTINGS, opts.tapRoot);
+    translator ??= makeTranslator(normalizeUrl(pageUrl), pageUrl, ctx.info.title, () => settings ?? DEFAULT_TRANSLATION_SETTINGS, opts.tapRoot);
     return translator;
   };
   const screenshot = screenshotAction(getTranslator, () => !stopped);
@@ -81,7 +81,7 @@ function startTranslation(ctx: PageContext, opts: TranslationOptions, wantedInit
     else translator?.stop();
   };
 
-  const read = (raw: unknown): Settings => ({ ...DEFAULT_SETTINGS, ...((raw as Partial<Settings> | undefined) ?? {}) });
+  const read = (raw: unknown): TranslationSettings => ({ ...DEFAULT_TRANSLATION_SETTINGS, ...((raw as Partial<TranslationSettings> | undefined) ?? {}) });
   const onSettingsChanged: SettingsListener = (changes, area) => {
     if (area !== "local" || !changes["settings"]) return;
     settings = read(changes["settings"].newValue);
@@ -222,7 +222,7 @@ function streamAsk(req: AskRequest, onDelta: (text: string) => void, signal: Abo
 }
 
 /** 划词翻译器的接线。 */
-function makeTranslator(articleId: string, url: string, title: () => string, settings: () => Settings, tapRoot?: HTMLElement): SelectionTranslator {
+function makeTranslator(articleId: string, url: string, title: () => string, settings: () => TranslationSettings, tapRoot?: HTMLElement): SelectionTranslator {
   return new SelectionTranslator({
     recordTrace: trace => send({ type: "translation:trace", trace }),
     tapRoot,

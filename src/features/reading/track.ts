@@ -5,10 +5,9 @@ import type {
   PageState,
   ParagraphRecord,
   ReadingPosition,
-  Settings,
   SpeedSummary,
 } from "../../types.ts";
-import { DEFAULT_SETTINGS } from "../../types.ts";
+import { DEFAULT_READING_SETTINGS, type ReadingSettings } from "./settings.ts";
 import { normalizeUrl, isUrlExcluded } from "../../lib/url.ts";
 import { isFinished } from "../../lib/finish.ts";
 import { send } from "../../core/page/send.ts";
@@ -139,9 +138,9 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   const preempted = abandoned();
   if (preempted) return preempted;
 
-  let settings: Settings = { ...DEFAULT_SETTINGS, ...((stored["settings"] as Partial<Settings>) ?? {}) };
+  let settings: ReadingSettings = { ...DEFAULT_READING_SETTINGS, ...((stored["settings"] as Partial<ReadingSettings>) ?? {}) };
 
-  settings.articleExcludedUrls = (stored["settings"] as Partial<Settings> | undefined)?.articleExcludedUrls ?? settings.excludedDomains;
+  settings.articleExcludedUrls = (stored["settings"] as Partial<ReadingSettings> | undefined)?.articleExcludedUrls ?? settings.excludedDomains;
   if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
     stopWatchingInput();
     return idle("命中文章记录黑名单");
@@ -165,8 +164,8 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   if (cancelled) return cancelled;
   // 判断期间设置可能已变化（比如刚把这一页加进了黑名单），再读一次。
   const fresh = await chrome.storage.local.get("settings");
-  const saved = (fresh["settings"] as Partial<Settings>) ?? {};
-  settings = { ...DEFAULT_SETTINGS, ...saved, articleExcludedUrls: saved.articleExcludedUrls ?? saved.excludedDomains ?? [] };
+  const saved = (fresh["settings"] as Partial<ReadingSettings>) ?? {};
+  settings = { ...DEFAULT_READING_SETTINGS, ...saved, articleExcludedUrls: saved.articleExcludedUrls ?? saved.excludedDomains ?? [] };
   const changed = abandoned();
   if (changed) return changed;
   if (!decision?.ok || !decision.isArticle || isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
@@ -538,7 +537,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   /* ---- 设置热更新 ---- */
   const onSettingsChanged: SettingsListener = (changes, area) => {
     if (area !== "local" || !changes["settings"]) return;
-    settings = { ...DEFAULT_SETTINGS, ...(changes["settings"].newValue as Partial<Settings>) };
+    settings = { ...DEFAULT_READING_SETTINGS, ...(changes["settings"].newValue as Partial<ReadingSettings>) };
     machine.updateThresholds({
       idleTimeoutMs: settings.idleTimeoutMs,
       stallTimeoutMs: settings.stallTimeoutMs,
