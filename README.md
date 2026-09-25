@@ -1033,7 +1033,7 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 `options`（= 扩展的设置页）；每个入口的第一个 import 都是 `boot.ts`，装 chrome 垫片和宿主桥。
 设置页的表单本体在 `options/form.ts`，两端共用；`options/index.ts` 只是扩展那一端的入口，多挂一个
 左侧分区目录（`options/nav.ts`）——App 把分区折成一行一个，那份列表自己就是目录，用不着它。
-两边共用的本体：`background/handle.ts`（消息处理）、`core/page/host.ts` 加上各功能插件（页面上的那些事）。
+两边共用的本体：`background/handle.ts`（后台消息处理的组装）、`core/page/host.ts` 加上各功能插件（页面上的那些事）。
 扩展额外把后台推来的换页通知和 bfcache 的 `pageshow` 转给宿主；App 的阅读器自己渲染正文，没有这两件事。
 
 ### 功能插件
@@ -1049,9 +1049,17 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 让界面当场重画；宿主把各家的 `state()` 拼成一份 `PageState` 给 popup 和 App 顶栏。
 插件之间**互不引用**，要共享的东西走宿主给的 `PageInfo`（眼下只有标题：专注记录抽出正文标题后写进去，
 翻译落库时现取）。`test/boundaries.test.ts` 扫 import 守着这条：`core` 不引用任何功能，功能之间不互相引用。
-往后加功能就是在 `features/` 下再写一个插件，在扩展（`content/index.ts`）和 App（`app/read.ts`）的宿主里各登记一行。
+后台也一样按功能分：每个功能交一张「消息类型 → 处理函数」的表（`features/reading/background.ts`、
+`features/translation/background.ts`；同步、设置、数据导入导出、模型连接、诊断日志这些不属于任何功能的在
+`core/background/handlers.ts`），`background/handle.ts` 把它们交给 `core/background/router.ts` 分发。
+发往后台的每种消息都得有人认领——漏了的话 `createRouter` 那一行编译不过，错误里的 `missing` 列出是哪几种；
+同一种消息两家都认则启动时当场报错。
 
-后台、存储、同步、设置、首页这几层还没按功能拆开，仍是共用的一份——这是下一步。
+往后加功能就是在 `features/` 下再写一个插件：页面那一半在扩展（`content/index.ts`）和 App（`app/read.ts`）的宿主里
+各登记一行，后台那一半在 `background/handle.ts` 登记一行。
+
+还没按功能拆开的：功能自己的后台模块（`background/vocab.ts`、`articleReview.ts` 这些）仍放在 `background/` 下；
+存储、同步、设置、首页仍是共用的一份。
 
 ### 持续集成与发布
 

@@ -1,6 +1,7 @@
 import type { AnyMessage } from "../types.ts";
 import { PORT_TRANSLATE } from "../types.ts";
-import { attachTranslatePort, boot as bootBackground, handle } from "../background/handle.ts";
+import { boot as bootBackground, handle } from "../background/handle.ts";
+import { attachTranslatePort } from "../features/translation/background.ts";
 import { recordAppError } from "../background/appLog.ts";
 import { setUiPlatform } from "../background/uiUsage.ts";
 import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";

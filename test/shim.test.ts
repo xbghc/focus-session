@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { PortLike } from "../src/background/handle.ts";
+import type { PortLike } from "../src/features/translation/background.ts";
 import { installChromeShim, memoryBackend } from "../src/app/shim.ts";
 
 /*

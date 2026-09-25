@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { freshState, installStorage, memoryDriver, trackChanges } from "../src/sync/storage.ts";
-import { handle, recoverOpen } from "../src/background/handle.ts";
+import { handle } from "../src/background/handle.ts";
+import { recoverOpen } from "../src/features/reading/background.ts";
 
 test("session recovery retains its checkpoint on a failed durable write and real-end retries reuse identity", async()=>{
   const id="https://example.com/recovery";

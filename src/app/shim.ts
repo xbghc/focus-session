@@ -1,4 +1,5 @@
-import type { PortLike, Sender } from "../background/handle.ts";
+import type { Sender } from "../background/handle.ts";
+import type { PortLike } from "../features/translation/background.ts";
 
 /**
  * `chrome.*` 的垫片，让扩展的代码原样跑在安卓 App 的 WebView 里。
