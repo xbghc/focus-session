@@ -1,4 +1,4 @@
-import { sourceRect, outputScale, meanLuminance, shouldInvert, invertInPlace } from "../lib/crop.ts";
+import { sourceRect, outputScale, meanLuminance, shouldInvert, invertInPlace } from "../../lib/crop.ts";
 
 type Size = { width: number; height: number };
 export type CropFn = (frame: ImageBitmap, rect: DOMRect, viewport: Size) => Promise<string>;

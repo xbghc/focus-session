@@ -6,12 +6,13 @@ import type {
   Snippet,
   TranslateReply,
   TranslateRequest,
-} from "../types.ts";
-import { LlmError, askStream, assist, translate, translateStream } from "../lib/llm.ts";
-import type { AssistMode } from "../types.ts";
-import { addSnippet, getLlmConfig } from "./vocab.ts";
-import { type FailureContext, later, recordCall, recordFailure, recordTiming } from "./llmLog.ts";
-import type { TranslationBackendTiming } from "../lib/translationDiagnostics.ts";
+} from "../../types.ts";
+import { LlmError, askStream, assist, translate, translateStream } from "../../lib/llm.ts";
+import type { AssistMode } from "../../types.ts";
+import { addSnippet } from "./vocab.ts";
+import { getLlmConfig } from "../../core/background/llm.ts";
+import { type FailureContext, later, recordCall, recordFailure, recordTiming } from "../../background/llmLog.ts";
+import type { TranslationBackendTiming } from "../../lib/translationDiagnostics.ts";
 
 /**
  * 翻译请求的门面：缓存、并发去重、用量记账都在这里，

@@ -1,4 +1,4 @@
-import type { OcrReply } from "../types.ts";
+import type { OcrReply } from "../../types.ts";
 
 /**
  * 扩展与 App 的识别器不同，不能从共用后台直接 import 某一宿主的实现。

@@ -23,7 +23,7 @@ const frame = (): void => {
   for (const cb of frames.splice(0)) cb();
 };
 
-const { TranslationTraceRecorder, traceId } = await import("../src/content/translationTrace.ts");
+const { TranslationTraceRecorder, traceId } = await import("../src/features/translation/translationTrace.ts");
 
 /** 浮层盒子：位置由测试摆，getBoundingClientRect 照着报。 */
 let rect = { left: 10, top: 20, width: 100, height: 40 };

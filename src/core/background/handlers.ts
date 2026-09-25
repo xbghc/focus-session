@@ -1,9 +1,8 @@
 import { configureSync, disconnectSync, materialSync, runSync, syncStatus, testSync } from "../../sync/engine.ts";
 import { clearArchiveCache } from "../../archive/cache.ts";
-import { testConnection } from "../../background/translate.ts";
 import { clearLlmLog, llmLogBundle } from "../../background/llmLog.ts";
 import { recordUiUsage } from "../../background/uiUsage.ts";
-import { getLlmConfig, getUsage, setLlmConfig } from "../../background/vocab.ts";
+import { getLlmConfig, getUsage, setLlmConfig } from "./llm.ts";
 import { clearData, exportAll, getSettings, importBundle, persistMigrations, setSettings } from "../../background/store.ts";
 import type { HandlerMap } from "./router.ts";
 
@@ -38,7 +37,7 @@ export const coreHandlers = {
   "settings:get": () => getSettings(),
   "settings:set": (m) => setSettings(m.settings),
 
-  /* ---- 模型连接：文章判别、文章回顾、划词翻译共用一份 ---- */
+  /* ---- 模型连接：文章判别、文章回顾、划词翻译共用一份。「测试连接」在划词翻译那边，见那里的说明 ---- */
   "llm:get": async () => {
     const cfg = await getLlmConfig();
     // 密钥只回传"设没设过"，不回显——popup/options 都没有必要拿到明文
@@ -48,7 +47,6 @@ export const coreHandlers = {
     await setLlmConfig(m.config);
     return { ok: true };
   },
-  "llm:test": () => testConnection(),
   "llm:usage": () => getUsage(),
 
   /* ---- 诊断日志与埋点 ---- */

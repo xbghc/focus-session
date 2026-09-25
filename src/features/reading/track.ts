@@ -1,4 +1,4 @@
-import { samplePage } from "../lib/articleFilter.ts";
+import { samplePage } from "../../lib/articleFilter.ts";
 import type {
   Article,
   EndReason,
@@ -7,13 +7,13 @@ import type {
   ReadingPosition,
   Settings,
   SpeedSummary,
-} from "../types.ts";
-import { DEFAULT_SETTINGS } from "../types.ts";
-import { normalizeUrl, isUrlExcluded } from "../lib/url.ts";
-import { isFinished } from "../lib/finish.ts";
-import { send } from "../core/page/send.ts";
-import { clampOffset, planRestore, type RestorePlan } from "../lib/position.ts";
-import { estimateReading, formatEstimate } from "../lib/readingTime.ts";
+} from "../../types.ts";
+import { DEFAULT_SETTINGS } from "../../types.ts";
+import { normalizeUrl, isUrlExcluded } from "../../lib/url.ts";
+import { isFinished } from "../../lib/finish.ts";
+import { send } from "../../core/page/send.ts";
+import { clampOffset, planRestore, type RestorePlan } from "../../lib/position.ts";
+import { estimateReading, formatEstimate } from "../../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, extractFromContainer, ParagraphTracker } from "./paragraphs.ts";
 import { FinishCard } from "./finishCard.ts";
 import { PositionCard } from "./positionCard.ts";

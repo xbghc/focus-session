@@ -1,12 +1,12 @@
-import { localStorage } from "../sync/storage.ts";
-import { decodeWith, pickCharset } from "../lib/charset.ts";
-import { ARTICLE_SYSTEM, parseDecision, parseSuggestions, samplePage } from "../lib/articleFilter.ts";
-import { callMessages, extractJson } from "../lib/llm.ts";
-import { getLlmConfig } from "./vocab.ts";
-import { later, recordCall, recordFailure } from "./llmLog.ts";
-import { getArticles, getSettings } from "./store.ts";
-import { isUrlExcluded } from "../lib/url.ts";
-import type { HistoryArticleDecision } from "../lib/articleFilter.ts";
+import { localStorage } from "../../sync/storage.ts";
+import { decodeWith, pickCharset } from "../../lib/charset.ts";
+import { ARTICLE_SYSTEM, parseDecision, parseSuggestions, samplePage } from "../../lib/articleFilter.ts";
+import { callMessages, extractJson } from "../../lib/llm.ts";
+import { getLlmConfig } from "../../core/background/llm.ts";
+import { later, recordCall, recordFailure } from "../../background/llmLog.ts";
+import { getArticles, getSettings } from "../../background/store.ts";
+import { isUrlExcluded } from "../../lib/url.ts";
+import type { HistoryArticleDecision } from "../../lib/articleFilter.ts";
 
 async function query(system: string, input: unknown, source: "articleFilter" | "blacklistSuggestion"): Promise<unknown> {
   const saved = await getLlmConfig();

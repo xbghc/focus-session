@@ -496,7 +496,7 @@ Tesseract 对花体、极小字、非英文有局限，1x 屏补到 2x 就是为
 
 - **译文出来之后才有这个入口**。没有译文可倚，追问问的是空气；出错的浮层上也没有。
 - **不入库**。追问的答案不进生词本、不进复习队列、不进导出文件——和复习卡上的
-  「再给个例句 / 换个说法讲 / 考我一下」是同一个决定（见 `background/translate.ts` 的 `handleAssist`）。
+  「再给个例句 / 换个说法讲 / 考我一下」是同一个决定（见 `features/translation/translate.ts` 的 `handleAssist`）。
   想留下来的东西是划下的那个词本身，不是当时随口问的那一句。
 - **译文和语境解释随请求一起带给模型**，让它别把用户已经看见的再复述一遍——这是追问最容易变废话的一种方式。
 - **只带最近三轮历史，且每轮的答案只带前 200 字**。追问是「就着这个词再聊两句」，不是完整对话：
@@ -747,7 +747,7 @@ App 让宿主把 HTML 抓回来，跑 `@mozilla/readability` 抽正文，再按*
 排成一栏正文。正文只抓一次，存在 `rh:<articleId>` 下，再打开秒开、断网也能看；
 「本文生词」的单子里有「重新抓取正文」。头部没说编码时看 `<meta charset>`，GBK 的站点不会解成问号。
 
-阅读追踪跑的是 `src/content/track.ts`——和网页上一模一样的 session 划分、段落停留、读完角标、
+阅读追踪跑的是 `src/features/reading/track.ts`——和网页上一模一样的 session 划分、段落停留、读完角标、
 跳回上次位置、预计还需多久。三处不同都收在 `startTracking` 的参数里：文章的 id 按**跟完重定向的
 原文地址**归一化（分享出来的链接常带一跳；电脑上的扩展看到的是落地之后的地址，两边用同一个
 才会合到同一条记录。`m.` 子域这类同文异址仍然合不到一起）；焦点按"App 在前台就有焦点"处理（WebView 不发
@@ -1041,7 +1041,7 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 页面上的功能各是一个插件，挂在同一个页面宿主上（`src/core/page/`）：
 
 - `features/reading`：专注记录。判断这一页是不是文章（问 LLM），是的话划 session、记段落、跳回上次位置。
-  本体仍在 `content/track.ts`，插件只把它那个要等好几秒的起步包成宿主要的样子。
+  本体是同目录的 `track.ts`，`page.ts` 只把它那个要等好几秒的起步包成宿主要的样子。
 - `features/translation`：划词翻译和截图翻译。挂不挂只看翻译自己的总开关和白名单。
 
 一页上记不记、翻不翻各判各的，谁关掉、谁出错都不牵连另一个。插件同步交出实例（`PagePlugin.start`），
@@ -1058,8 +1058,13 @@ App 的窗口底色在安卓的 `res/values/colors.xml`，改配色要一并改�
 往后加功能就是在 `features/` 下再写一个插件：页面那一半在扩展（`content/index.ts`）和 App（`app/read.ts`）的宿主里
 各登记一行，后台那一半在 `background/handle.ts` 登记一行。
 
-还没按功能拆开的：功能自己的后台模块（`background/vocab.ts`、`articleReview.ts` 这些）仍放在 `background/` 下；
-存储、同步、设置、首页仍是共用的一份。
+每个功能自己的代码都在它的目录里：`features/reading/` 放追踪本体（`track.ts`、`paragraphs.ts`、`session.ts`、
+读完与续读两个角标）、文章判别和文章回顾；`features/translation/` 放划词与浮层（`selection.ts`、`popover.ts`…）、
+截图、翻译与追问的后台调用、划词记录与生词卡（`vocab.ts`）、翻译轨迹。模型连接的配置与用量在 `core/background/llm.ts`，
+几个功能共用。
+
+还没按功能拆开的：`background/store.ts`（存储、导出导入、设置）、`sync/`、`lib/` 里的纯逻辑、首页和设置页，
+仍是共用的一份；`store.ts` 眼下还直接引用两个功能的存储键。
 
 ### 持续集成与发布
 

@@ -15,8 +15,8 @@ import { matchesUrlRules, normalizeUrl } from "../../lib/url.ts";
 import { reasonOf } from "../../lib/reason.ts";
 import type { PageContext, PageFeature, PagePlugin } from "../../core/page/plugin.ts";
 import { send } from "../../core/page/send.ts";
-import { selectRegion, cancelRegion } from "../../content/screenshot.ts";
-import { SelectionTranslator, paragraphContext, type TranslateResponse } from "../../content/selection.ts";
+import { selectRegion, cancelRegion } from "./screenshot.ts";
+import { SelectionTranslator, paragraphContext, type TranslateResponse } from "./selection.ts";
 
 /*
  * 划词翻译插件：在一个页面上挂不挂选区监听，只由翻译自己的设置决定，和这一页记不记专注无关。

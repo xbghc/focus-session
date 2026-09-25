@@ -2,9 +2,9 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import type { TranslateRequest } from "../src/types.ts";
 import { bookkeepingSettled, getLlmLog, getLlmTimings } from "../src/background/llmLog.ts";
-import { getUsage, setLlmConfig } from "../src/background/vocab.ts";
+import { getUsage, setLlmConfig } from "../src/core/background/llm.ts";
 import { updateLocalOnly } from "../src/background/store.ts";
-import { streamTranslate } from "../src/background/translate.ts";
+import { streamTranslate } from "../src/features/translation/translate.ts";
 import { freshState, installStorage, memoryDriver, onLocalMutation } from "../src/sync/storage.ts";
 
 /*

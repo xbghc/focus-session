@@ -236,7 +236,7 @@ test("describeBasis 按依据措辞，并写明用的是近 30 天还是全部�
 /* ---------- ParagraphTracker.remainingTarget ---------- */
 
 test("remainingTarget 合计还没读的段落的字数与预计时长", async () => {
-  const { ParagraphTracker } = await import("../src/content/paragraphs.ts");
+  const { ParagraphTracker } = await import("../src/features/reading/paragraphs.ts");
   const p = (index: number, words: number, expectedMs: number) => ({
     index,
     hash: "h" + index,

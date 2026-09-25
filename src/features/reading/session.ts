@@ -1,5 +1,5 @@
-import type { EndReason } from "../types.ts";
-import { quietLimitMs } from "../lib/reading.ts";
+import type { EndReason } from "../../types.ts";
+import { quietLimitMs } from "../../lib/reading.ts";
 
 export interface SessionThresholds {
   idleTimeoutMs: number;

@@ -1,5 +1,5 @@
-import type { PartialTranslation, SnippetKind } from "../types.ts";
-import { traceDurations, type PopupPosition, type TranslationInputTiming, type TranslationTrace } from "../lib/translationDiagnostics.ts";
+import type { PartialTranslation, SnippetKind } from "../../types.ts";
+import { traceDurations, type PopupPosition, type TranslationInputTiming, type TranslationTrace } from "../../lib/translationDiagnostics.ts";
 
 const MAX_MOVES = 100;
 const MAX_PARTIALS = 100;

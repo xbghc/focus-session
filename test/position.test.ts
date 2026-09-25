@@ -150,7 +150,7 @@ const setVisibility = (v: DocumentVisibilityState): void => {
   document.dispatchEvent(new dom.window.Event("visibilitychange"));
 };
 
-const { PositionCard } = await import("../src/content/positionCard.ts");
+const { PositionCard } = await import("../src/features/reading/positionCard.ts");
 
 let tops = 0;
 let card: InstanceType<typeof PositionCard>;

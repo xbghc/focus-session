@@ -2,9 +2,9 @@ import { localStorage } from "../sync/storage.ts";
 import type { LlmConfig, LlmFailure, LlmLogBundle, LlmTiming } from "../types.ts";
 import { type CallTiming, LlmError, type RawUsage } from "../lib/llm.ts";
 import { KEY_APP_ERROR, KEY_READER_FETCH, getAppErrors, getFetchLog } from "./appLog.ts";
-import { KEY_USAGE, bumpUsage, getLlmConfig } from "./vocab.ts";
+import { KEY_USAGE, bumpUsage, getLlmConfig } from "../core/background/llm.ts";
 import { serialize, updateLocalOnly } from "./store.ts";
-import { getTranslationTraces, KEY_TRANSLATION_TRACE } from "./translationLog.ts";
+import { getTranslationTraces, KEY_TRANSLATION_TRACE } from "../features/translation/translationLog.ts";
 import { getUiUsage } from "./uiUsage.ts";
 
 /**

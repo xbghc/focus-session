@@ -6,7 +6,7 @@ import { recordAppError } from "../background/appLog.ts";
 import { setUiPlatform } from "../background/uiUsage.ts";
 import { idbBackend, installChromeShim, type ChromeShim } from "./shim.ts";
 import { installNative, native, captureVisible, onHostVisibility, recognizeNative } from "./native.ts";
-import { setOcrBackend } from "../background/ocr.ts";
+import { setOcrBackend } from "../features/translation/ocr.ts";
 import { cleanOcrLines } from "../lib/ocrText.ts";
 import { indexedDriver, installStorage } from "../sync/storage.ts";
 import { bootSync, setHostVisible } from "../sync/engine.ts";

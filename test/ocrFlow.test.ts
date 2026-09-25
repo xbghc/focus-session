@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { DEFAULT_SETTINGS } from "../src/types.ts";
 import type { OcrReply, Settings, TranslateRequest } from "../src/types.ts";
-import { SelectionTranslator } from "../src/content/selection.ts";
+import { SelectionTranslator } from "../src/features/translation/selection.ts";
 import { translationPlugin, type TranslationFeature } from "../src/features/translation/page.ts";
 
 const dom = new JSDOM("<!doctype html><html><head><title>页面标题</title></head><body><p>hello</p></body></html>", { url: "https://app.example.com/inbox" });
@@ -188,7 +188,7 @@ test("停止控制器会作废迟到的截图失败", async () => {
 });
 
 test("截图失败锚在视口顶部中央的 200×0 矩形；滚一下不关，Esc 才关", async () => {
-  const { Popover } = await import("../src/content/popover.ts");
+  const { Popover } = await import("../src/features/translation/popover.ts");
   const original = Popover.prototype.showError;
   let anchor: DOMRect | undefined;
   Popover.prototype.showError = function(r, error, config) { anchor = r; original.call(this, r, error, config); };
@@ -256,7 +256,7 @@ test("完整控制器路径：预热不等待、冻结帧裁剪、识别文本�
 });
 
 test("浮层里正选着字时，页面上松手引起的选区判定不关浮层", async () => {
-  const { Popover } = await import("../src/content/popover.ts");
+  const { Popover } = await import("../src/features/translation/popover.ts");
   const original = Popover.prototype.holdsSelection;
   let holding = true;
   Popover.prototype.holdsSelection = function() { return holding; };
@@ -280,7 +280,7 @@ test("浮层里正选着字时，页面上松手引起的选区判定不关浮�
 });
 
 test("滚动、resize 时浮层看不见了才关；追问中、浮层里选着字时不关", async () => {
-  const { Popover } = await import("../src/content/popover.ts");
+  const { Popover } = await import("../src/features/translation/popover.ts");
   const follow = Popover.prototype.followAnchor;
   const asking = Object.getOwnPropertyDescriptor(Popover.prototype, "asking")!;
   const holds = Popover.prototype.holdsSelection;

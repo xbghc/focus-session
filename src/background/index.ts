@@ -4,7 +4,7 @@ import { normalizeUrl } from "../lib/url.ts";
 import { boot, handle } from "./handle.ts";
 import { getOpen, recoverOpen } from "../features/reading/background.ts";
 import { attachTranslatePort } from "../features/translation/background.ts";
-import { setOcrBackend } from "./ocr.ts";
+import { setOcrBackend } from "../features/translation/ocr.ts";
 import { indexedDriver, installStorage } from "../sync/storage.ts";
 import { bootSync, scheduleSync } from "../sync/engine.ts";
 

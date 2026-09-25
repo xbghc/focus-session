@@ -1,11 +1,11 @@
 import type { EndReason, PageState } from "../../types.ts";
 import { reasonOf } from "../../lib/reason.ts";
 import type { PagePlugin, PageFeature } from "../../core/page/plugin.ts";
-import { startTracking, type TrackController, type TrackOptions } from "../../content/track.ts";
+import { startTracking, type TrackController, type TrackOptions } from "./track.ts";
 
 /*
  * 专注记录插件：判断这一页是不是文章，是的话划 session、记段落、跳回上次位置。
- * 本体在 content/track.ts；这里只把它那个要等好几秒的起步（LLM 判断、抽正文重试）
+ * 本体在同目录的 track.ts；这里只把它那个要等好几秒的起步（LLM 判断、抽正文重试）
  * 包成宿主要的「同步交出实例」，等的期间由 state() 说明在等什么。
  */
 

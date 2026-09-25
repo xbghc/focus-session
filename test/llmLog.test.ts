@@ -17,9 +17,9 @@ import {
   recordLlmFailure,
   recordTiming,
 } from "../src/background/llmLog.ts";
-import { getTranslationTraces, recordTranslationTrace } from "../src/background/translationLog.ts";
+import { getTranslationTraces, recordTranslationTrace } from "../src/features/translation/translationLog.ts";
 import { getAppErrors, getFetchLog, recordAppError, recordFetch } from "../src/background/appLog.ts";
-import { setLlmConfig } from "../src/background/vocab.ts";
+import { setLlmConfig } from "../src/core/background/llm.ts";
 import { clearData } from "../src/background/store.ts";
 
 /** 与 vocab.test.ts 同款内存 storage：深拷贝，暴露"改了没写回"这类错误。 */

@@ -1,4 +1,4 @@
-import type { TranslationInputTiming } from "../lib/translationDiagnostics.ts";
+import type { TranslationInputTiming } from "../../lib/translationDiagnostics.ts";
 
 /** App 正文的点词 / 双击整句；扩展仍使用原生划词。 */
 const DOUBLE_TAP_MS = 150;

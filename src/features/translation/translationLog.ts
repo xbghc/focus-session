@@ -1,6 +1,6 @@
-import { localStorage } from "../sync/storage.ts";
-import { updateLocalOnly } from "./store.ts";
-import { TRACE_MARKS, traceDurations, type PopupPosition, type TranslationBackendTiming, type TranslationTrace } from "../lib/translationDiagnostics.ts";
+import { localStorage } from "../../sync/storage.ts";
+import { updateLocalOnly } from "../../background/store.ts";
+import { TRACE_MARKS, traceDurations, type PopupPosition, type TranslationBackendTiming, type TranslationTrace } from "../../lib/translationDiagnostics.ts";
 
 export const KEY_TRANSLATION_TRACE = "translationTraces";
 export const MAX_TRANSLATION_TRACES = 100;

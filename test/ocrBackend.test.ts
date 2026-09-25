@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { handle } from "../src/background/handle.ts";
-import { setOcrBackend } from "../src/background/ocr.ts";
+import { setOcrBackend } from "../src/features/translation/ocr.ts";
 import { installChromeShim, memoryBackend } from "../src/app/shim.ts";
 import type { ShimOptions } from "../src/app/shim.ts";
 import { build } from "esbuild";

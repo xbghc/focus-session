@@ -36,7 +36,7 @@ dom.window.Element.prototype.attachShadow = function attachShadow(init: ShadowRo
   return realAttach.call(this, { ...init, mode: "open" });
 };
 
-const { FinishCard } = await import("../src/content/finishCard.ts");
+const { FinishCard } = await import("../src/features/reading/finishCard.ts");
 
 let opened = 0;
 let dismissed = 0;

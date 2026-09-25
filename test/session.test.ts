@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionMachine, type SessionEndEvent } from "../src/content/session.ts";
+import { SessionMachine, type SessionEndEvent } from "../src/features/reading/session.ts";
 
 const THRESHOLDS = { idleTimeoutMs: 30_000, stallTimeoutMs: 90_000, minSessionMs: 3_000, maxQuietMs: 300_000 };
 

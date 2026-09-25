@@ -20,7 +20,7 @@ g["IntersectionObserver"] = class {
   disconnect(): void {}
 };
 
-const { ParagraphTracker } = await import("../src/content/paragraphs.ts");
+const { ParagraphTracker } = await import("../src/features/reading/paragraphs.ts");
 
 let clock = 1_000_000;
 /** setActive(true) 会起真实的 setInterval，不收掉进程就不会退出。 */

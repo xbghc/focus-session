@@ -34,7 +34,8 @@ Object.defineProperty(globalThis.crypto, "randomUUID", {
 });
 
 const store = await import("../src/background/store.ts");
-const vocab = await import("../src/background/vocab.ts");
+const vocab = await import("../src/features/translation/vocab.ts");
+const llm = await import("../src/core/background/llm.ts");
 
 beforeEach(() => {
   area = fakeArea();
@@ -186,22 +187,22 @@ test("给不存在的卡评分返回 null 而不是抛错", async () => {
 /* ==================== LLM 配置与用量 ==================== */
 
 test("LLM 配置与 Settings 分开存放", async () => {
-  await vocab.setLlmConfig({ apiKey: "secret" });
+  await llm.setLlmConfig({ apiKey: "secret" });
   const settings = await store.getSettings();
   assert.equal(JSON.stringify(settings).includes("secret"), false, "密钥绝不能出现在 content script 会读的 settings 里");
-  assert.equal((await vocab.getLlmConfig()).apiKey, "secret");
+  assert.equal((await llm.getLlmConfig()).apiKey, "secret");
 });
 
 test("LLM 配置合并默认值", async () => {
-  await vocab.setLlmConfig({ apiKey: "k" });
-  const cfg = await vocab.getLlmConfig();
+  await llm.setLlmConfig({ apiKey: "k" });
+  const cfg = await llm.getLlmConfig();
   assert.equal(cfg.baseUrl, "https://api.minimaxi.com/anthropic");
   assert.equal(cfg.model, "MiniMax-M3-highspeed");
 });
 
 test("停在旧默认值上的输出上限与超时被抬上来", async () => {
   await area.set({ llm: { apiKey: "k", maxTokens: 1024, timeoutMs: 30_000 } });
-  const cfg = await vocab.getLlmConfig();
+  const cfg = await llm.getLlmConfig();
   assert.equal(cfg.maxTokens, 4096);
   assert.equal(cfg.timeoutMs, 60_000);
   assert.equal(cfg.apiKey, "k", "抬额度不该碰密钥");
@@ -209,21 +210,21 @@ test("停在旧默认值上的输出上限与超时被抬上来", async () => {
 
 test("抬过一次落标记，之后手填 1024 不会再被抬走", async () => {
   await area.set({ llm: { apiKey: "k", maxTokens: 1024 } });
-  await vocab.setLlmConfig({ maxTokens: 1024 });
-  assert.equal((await vocab.getLlmConfig()).maxTokens, 1024);
+  await llm.setLlmConfig({ maxTokens: 1024 });
+  assert.equal((await llm.getLlmConfig()).maxTokens, 1024);
 });
 
 test("自己调过的额度不受抬升影响", async () => {
   await area.set({ llm: { apiKey: "k", maxTokens: 2048, timeoutMs: 45_000 } });
-  const cfg = await vocab.getLlmConfig();
+  const cfg = await llm.getLlmConfig();
   assert.equal(cfg.maxTokens, 2048);
   assert.equal(cfg.timeoutMs, 45_000);
 });
 
 test("用量累加，失败单独计数", async () => {
-  await vocab.addUsage(10, 20);
-  await vocab.addUsage(5, 0, true);
-  const u = await vocab.getUsage();
+  await llm.addUsage(10, 20);
+  await llm.addUsage(5, 0, true);
+  const u = await llm.getUsage();
   assert.equal(u.requests, 2);
   assert.equal(u.inputTokens, 15);
   assert.equal(u.outputTokens, 20);
@@ -337,7 +338,7 @@ test("对不存在的文章标记读完返回 null", async () => {
 
 test("导出包含划词与卡片，且不含 API key", async () => {
   await seed(1000);
-  await vocab.setLlmConfig({ apiKey: "super-secret" });
+  await llm.setLlmConfig({ apiKey: "super-secret" });
   await add();
   const bundle = await store.exportAll();
   assert.equal(bundle.schema, 4);
@@ -350,13 +351,13 @@ test("导出包含划词与卡片，且不含 API key", async () => {
 test("清空数据保留设置与 LLM 配置", async () => {
   await seed(1000);
   await add();
-  await vocab.setLlmConfig({ apiKey: "keep-me" });
+  await llm.setLlmConfig({ apiKey: "keep-me" });
   await store.setSettings({ finishRatio: 0.5 });
   await store.clearData();
   assert.equal((await vocab.getSnippets()).length, 0);
   assert.equal((await vocab.getCards()).length, 0);
   assert.equal(Object.keys(await store.getArticles()).length, 0);
-  assert.equal((await vocab.getLlmConfig()).apiKey, "keep-me", "重填密钥很烦，不该被清掉");
+  assert.equal((await llm.getLlmConfig()).apiKey, "keep-me", "重填密钥很烦，不该被清掉");
   assert.equal((await store.getSettings()).finishRatio, 0.5);
 });
 

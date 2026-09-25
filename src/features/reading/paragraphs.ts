@@ -1,8 +1,8 @@
 import { Readability, isProbablyReaderable } from "@mozilla/readability";
-import { countWords, normalizeText } from "../lib/wordcount.ts";
-import { expectedReadMs, readThresholdMs } from "../lib/reading.ts";
-import { hashText } from "../lib/hash.ts";
-import type { ParagraphSnapshot, ReadingTarget } from "../types.ts";
+import { countWords, normalizeText } from "../../lib/wordcount.ts";
+import { expectedReadMs, readThresholdMs } from "../../lib/reading.ts";
+import { hashText } from "../../lib/hash.ts";
+import type { ParagraphSnapshot, ReadingTarget } from "../../types.ts";
 
 /** 段落级候选块。刻意不含 div —— div 太容易套住整篇文章。 */
 const BLOCK_SELECTOR = "p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, td, dd, figcaption";

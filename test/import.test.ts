@@ -32,7 +32,8 @@ Object.defineProperty(globalThis.crypto, "randomUUID", {
 });
 
 const store = await import("../src/background/store.ts");
-const vocab = await import("../src/background/vocab.ts");
+const vocab = await import("../src/features/translation/vocab.ts");
+const llm = await import("../src/core/background/llm.ts");
 
 beforeEach(() => {
   area = fakeArea();
@@ -160,10 +161,10 @@ test("导入不碰设置与 LLM 配置", async () => {
   const bundle = await phoneExport();
   area = fakeArea();
   await store.setSettings({ idleTimeoutMs: 45_000 });
-  await vocab.setLlmConfig({ apiKey: "sk-local" });
+  await llm.setLlmConfig({ apiKey: "sk-local" });
   await store.importBundle({ ...bundle, settings: { ...bundle.settings, idleTimeoutMs: 99_000 } });
   assert.equal((await store.getSettings()).idleTimeoutMs, 45_000);
-  assert.equal((await vocab.getLlmConfig()).apiKey, "sk-local");
+  assert.equal((await llm.getLlmConfig()).apiKey, "sk-local");
 });
 
 test("不是导出文件就拒收，且不写任何东西", async () => {

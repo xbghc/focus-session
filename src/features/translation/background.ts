@@ -1,8 +1,8 @@
 import type { TranslatePortIn, TranslatePortOut } from "../../types.ts";
-import { recognize, warm } from "../../background/ocr.ts";
+import { recognize, warm } from "./ocr.ts";
 import { dueCards, reviewStats } from "../../lib/review.ts";
-import { handleAssist, streamAsk, streamTranslate } from "../../background/translate.ts";
-import { recordTranslationTrace } from "../../background/translationLog.ts";
+import { handleAssist, streamAsk, streamTranslate, testConnection } from "./translate.ts";
+import { recordTranslationTrace } from "./translationLog.ts";
 import {
   attachSnippets,
   deleteSnippet,
@@ -10,7 +10,7 @@ import {
   getCards,
   getSnippets,
   gradeStoredCard,
-} from "../../background/vocab.ts";
+} from "./vocab.ts";
 import { allowTranslationSite } from "../../background/store.ts";
 import type { HandlerMap } from "../../core/background/router.ts";
 
@@ -20,6 +20,11 @@ import type { HandlerMap } from "../../core/background/router.ts";
 
 export const translationHandlers = {
   "translation:allow-site": (m) => allowTranslationSite(m.url),
+  /*
+   * 设置页的「测试连接」。连的是 core 那份模型配置，测法却是发一句最短的翻译——
+   * 顺带验证了翻译那套提示词和解析在这个模型上走得通。所以归这边。
+   */
+  "llm:test": () => testConnection(),
   "translation:trace": async (m) => {
     await recordTranslationTrace(m.trace);
     return { ok: true };
