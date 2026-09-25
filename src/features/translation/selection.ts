@@ -128,6 +128,7 @@ export class SelectionTranslator {
       onOpenOptions: () => this.deps.openOptions(),
       onAsk: (question) => void this.runAsk(question),
       onPositioned: box => this.trace?.positioned(box, () => this.popover.scrollShift()),
+      onTypingDone: () => this.trace?.typed(),
     });
   }
 
@@ -473,11 +474,11 @@ export class SelectionTranslator {
     if (this.inflight === ctrl) this.inflight = null;
     if (res.ok) {
       this.answered = { snippet: res.snippet, context: req.context };
-      this.popover.showResult(this.anchorRect() ?? rect, res.snippet);
+      const typing = this.popover.showResult(this.anchorRect() ?? rect, res.snippet);
       trace?.mark("firstTranslationDom");
       // 翻出来了才给追问入口：没有译文可倚，追问问的是空气
       this.popover.enableAsk();
-      trace?.complete("success");
+      trace?.complete("success", null, typing);
     } else {
       // 流式期间人可能又滚过：报错是整块重建、重新贴位，照原文此刻的位置
       this.popover.showError(this.anchorRect() ?? rect, res.error, res.needsConfig);

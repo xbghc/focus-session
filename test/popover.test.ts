@@ -1074,3 +1074,89 @@ test("答案越写越长只接上新长出来的那截，已经写出的字不�
   assert.equal(root().querySelector(".aa")!.firstChild, node);
   assert.equal(txt(".aa"), "主语是 abstraction");
 });
+
+/* ---- 打字机：流式的字一个一个露出来（见 typewriter.ts）。这里手动推动画帧 ---- */
+
+function typing() {
+  let queue: Array<(t: number) => void> = [];
+  let t = 0;
+  let done = 0;
+  pop = new Popover(
+    { onConfirm: () => {}, onOpenOptions: () => {}, onAsk: (q) => void asked.push(q), onTypingDone: () => void done++ },
+    { frame: (cb) => { queue.push(cb); return queue.length; }, cancel: () => { queue = []; }, reducedMotion: () => false },
+  );
+  return {
+    tick(n = 1) {
+      for (let i = 0; i < n; i++) { t += 1000 / 60; const run = queue; queue = []; for (const cb of run) cb(t); }
+    },
+    get done() { return done; },
+  };
+}
+const NONE = { phonetic: null, pos: null, contextNote: null, usage: null, vocab: [] };
+
+test("打字机：流式到的译文一个字一个字露出来，语境解释排在它后面", () => {
+  const f = typing();
+  pop.showStreaming(RECT, "leaks");
+  pop.updateStream({ ...NONE, translation: "泄漏了" });
+  assert.equal(txt(".tr"), "", "写进来的只是目标");
+  assert.ok(root().querySelector(".more.on"), "尾灯照样点亮");
+  f.tick();
+  assert.equal(txt(".tr"), "泄");
+  pop.updateStream({ ...NONE, translation: "泄漏了", contextNote: "指底层细节" });
+  f.tick();
+  assert.equal(txt(".tr"), "泄漏");
+  assert.equal(txt(".note"), "", "上面的译文还没打完，下面的等着");
+  f.tick(10);
+  assert.equal(txt(".tr") + "|" + txt(".note"), "泄漏了|指底层细节");
+});
+
+test("打字机：最终结果接着打，打完才摘尾灯、才告诉外面「打完了」", () => {
+  const f = typing();
+  pop.showStreaming(RECT, "leaks");
+  pop.updateStream({ ...NONE, translation: "泄漏" });
+  f.tick();
+  pop.showResult(RECT, SNIPPET);
+  assert.equal(txt(".tr"), "泄", "最终结果不一下子盖上去");
+  assert.ok(root().querySelector(".more"), "还在打，尾灯留着");
+  assert.equal(f.done, 0);
+  f.tick(40);
+  assert.equal(txt(".tr"), "泄漏");
+  assert.equal(txt(".note"), SNIPPET.contextNote);
+  assert.equal(root().querySelector(".more"), null);
+  assert.equal(f.done, 1);
+});
+
+test("打字机：命中缓存（没流过字）的结果直接整块显示，不演一遍打字", () => {
+  const f = typing();
+  pop.showStreaming(RECT, "leaks");
+  pop.showResult(RECT, SNIPPET);
+  assert.equal(txt(".tr"), "泄漏");
+  assert.equal(txt(".note"), SNIPPET.contextNote);
+  assert.equal(root().querySelector(".more"), null);
+  assert.equal(f.done, 1, "直接显示也算打完");
+});
+
+test("打字机：生词一条一条接管，词和意思打出来，音标词性原样显示", () => {
+  const f = typing();
+  pop.showStreaming(RECT, "abstraction leaks");
+  pop.updateStream({ ...NONE, translation: "抽象泄漏", vocab: [{ word: "leaks", phonetic: "/liːks/", pos: "v.", meaning: "泄漏", note: null }] });
+  assert.equal(txt(".v .vw"), "");
+  assert.match(txt(".v .vm"), /liːks/);
+  f.tick(20);
+  assert.equal(txt(".v .vw"), "leaks");
+  assert.equal(txt(".v .vd"), "泄漏");
+});
+
+test("打字机：追问的答案边打边贴底；整块失败提示盖上去之后不再往里打", () => {
+  const f = typing();
+  const input = openAsk();
+  f.tick(40);
+  ask(input, "为什么是泄漏？");
+  pop.updateAnswer("因为");
+  f.tick();
+  assert.equal(txt(".qa .aa"), "因");
+  pop.updateAnswer("因为抽象挡不住细节");
+  pop.failAnswer("连接中断", false);
+  f.tick(20);
+  assert.match(root().querySelector(".err")!.textContent!, /连接中断/);
+});
