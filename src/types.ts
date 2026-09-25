@@ -291,7 +291,6 @@ export type ContentToBg =
       position?: ReadingPosition;
     }
   | { type: "settings:get" }
-  | { type: "article:read-state"; articleId: string }
   | { type: "sw:ping" }
   | { type: "article:text"; articleId: string; text: string; fullChars: number }
   /** 页内判定读完。后台当场落盘并建回顾卡，不等 session 结算。 */

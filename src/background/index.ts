@@ -1,7 +1,9 @@
 import type { AnyMessage, BgToContent, OcrReply, PopupToContent } from "../types.ts";
 import { PORT_TRANSLATE } from "../types.ts";
 import { normalizeUrl } from "../lib/url.ts";
-import { attachTranslatePort, boot, getOpen, handle, recoverOpen } from "./handle.ts";
+import { boot, handle } from "./handle.ts";
+import { getOpen, recoverOpen } from "../features/reading/background.ts";
+import { attachTranslatePort } from "../features/translation/background.ts";
 import { setOcrBackend } from "./ocr.ts";
 import { indexedDriver, installStorage } from "../sync/storage.ts";
 import { bootSync, scheduleSync } from "../sync/engine.ts";
