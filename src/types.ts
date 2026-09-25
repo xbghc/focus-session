@@ -850,7 +850,7 @@ export interface AskTurn {
  *
  * 译文和语境解释已经在用户眼前了，随请求带上是为了让模型别把说过的再说一遍；
  * 它们**不必**再算一次，直接取自刚刚那条 Snippet。追问不入库（同复习助手，
- * 见 background/translate.ts 的 handleAssist），所以这里没有 articleId。
+ * 见 features/translation/translate.ts 的 handleAssist），所以这里没有 articleId。
  */
 export interface AskRequest {
   /** 选中的原文。 */

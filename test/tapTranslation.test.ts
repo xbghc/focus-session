@@ -1,8 +1,8 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { textRangeAtPoint } from "../src/content/tapTranslation.ts";
-import { SelectionTranslator, paragraphContext } from "../src/content/selection.ts";
+import { textRangeAtPoint } from "../src/features/translation/tapTranslation.ts";
+import { SelectionTranslator, paragraphContext } from "../src/features/translation/selection.ts";
 import { DEFAULT_SETTINGS, type TranslateRequest } from "../src/types.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>", { url: "https://example.com" });

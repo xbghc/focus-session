@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { extractArticle, extractFromContainer } from "../src/content/paragraphs.ts";
+import { extractArticle, extractFromContainer } from "../src/features/reading/paragraphs.ts";
 
 /*
  * App 的阅读器从自己渲染的容器里抽段落。这里盯的是它和网页上那条路径的**一致性**：

@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { extractArticle, isInReadingView } from "../src/content/paragraphs.ts";
+import { extractArticle, isInReadingView } from "../src/features/reading/paragraphs.ts";
 
 const VH = 900;
 const rect = (top: number, height: number) => ({ top, height, bottom: top + height });

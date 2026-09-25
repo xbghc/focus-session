@@ -8,14 +8,14 @@ import type {
   Snippet,
   TranslateReply,
   TranslateRequest,
-} from "../types.ts";
-import { judgeSelection } from "../lib/lang.ts";
-import { reasonOf } from "../lib/reason.ts";
-import { coarsePointer } from "../lib/pointer.ts";
+} from "../../types.ts";
+import { judgeSelection } from "../../lib/lang.ts";
+import { reasonOf } from "../../lib/reason.ts";
+import { coarsePointer } from "../../lib/pointer.ts";
 import { Popover } from "./popover.ts";
 import { bindTapTranslation, type TapKind } from "./tapTranslation.ts";
 import { TranslationTraceRecorder } from "./translationTrace.ts";
-import type { TranslationInputTiming, TranslationTrace } from "../lib/translationDiagnostics.ts";
+import type { TranslationInputTiming, TranslationTrace } from "../../lib/translationDiagnostics.ts";
 
 /**
  * 划词翻译的触发与编排。

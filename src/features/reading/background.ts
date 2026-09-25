@@ -1,4 +1,4 @@
-import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "../../background/articleFilter.ts";
+import { classifyPage, classifyHistoryArticle, suggestBlacklist } from "./articleFilter.ts";
 import { localStorage } from "../../sync/storage.ts";
 import { syncBefore } from "../../sync/engine.ts";
 import { saveArchive } from "../../archive/background.ts";
@@ -15,7 +15,7 @@ import {
   ensureArticleReview,
   gradeArticleCard,
   saveArticleText,
-} from "../../background/articleReview.ts";
+} from "./articleReview.ts";
 import {
   deleteArticles,
   commitSession,

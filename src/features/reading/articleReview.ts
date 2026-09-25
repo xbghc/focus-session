@@ -1,4 +1,4 @@
-import { localStorage } from "../sync/storage.ts";
+import { localStorage } from "../../sync/storage.ts";
 import type {
   ArticleCard,
   ArticleReview,
@@ -7,13 +7,13 @@ import type {
   ArticleReviewView,
   ArticleText,
   ReviewStats,
-} from "../types.ts";
-import { LlmError } from "../lib/llm.ts";
-import { MAX_REVIEW_CHARS, clipText, generateArticleReview } from "../lib/articleReview.ts";
-import { type GradeValue, dueCards, gradeFsrs, newFsrs, reviewStats } from "../lib/review.ts";
-import { getLlmConfig } from "./vocab.ts";
-import { later, recordCall, recordFailure } from "./llmLog.ts";
-import { getArticles, isArticleDeleted, serialize } from "./store.ts";
+} from "../../types.ts";
+import { LlmError } from "../../lib/llm.ts";
+import { MAX_REVIEW_CHARS, clipText, generateArticleReview } from "../../lib/articleReview.ts";
+import { type GradeValue, dueCards, gradeFsrs, newFsrs, reviewStats } from "../../lib/review.ts";
+import { getLlmConfig } from "../../core/background/llm.ts";
+import { later, recordCall, recordFailure } from "../../background/llmLog.ts";
+import { getArticles, isArticleDeleted, serialize } from "../../background/store.ts";
 
 /**
  * 文章级回顾的存储与生成编排。

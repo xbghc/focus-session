@@ -107,9 +107,9 @@ g["chrome"] = {
   },
 };
 
-const { startTracking } = await import("../src/content/track.ts");
+const { startTracking } = await import("../src/features/reading/track.ts");
 const { readingPlugin } = await import("../src/features/reading/page.ts");
-const { extractFromContainer } = await import("../src/content/paragraphs.ts");
+const { extractFromContainer } = await import("../src/features/reading/paragraphs.ts");
 
 /** 让所有定时器跑够 ms，再把 sendMessage 的应答（微任务）也放行。 */
 async function run(ms: number): Promise<void> {

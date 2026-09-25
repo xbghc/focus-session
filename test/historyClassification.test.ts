@@ -2,7 +2,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { memoryBackend } from '../src/app/shim.ts';
 import { DEFAULT_LLM, DEFAULT_SETTINGS } from '../src/types.ts';
-import { classifyHistoryArticle } from '../src/background/articleFilter.ts';
+import { classifyHistoryArticle } from '../src/features/reading/articleFilter.ts';
 
 const id = 'https://example.com/article';
 let area = memoryBackend();

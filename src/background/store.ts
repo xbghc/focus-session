@@ -20,8 +20,9 @@ import { isFinished } from "../lib/finish.ts";
 import { type DataSet, type MergeReport, describeReport, emptyDataSet, mergeData, parseBundle } from "../lib/merge.ts";
 import { summarizeSpeed } from "../lib/readingTime.ts";
 import { mergeEpisodes } from "../lib/stats.ts";
-import { KEY_CARDS, KEY_LLM, KEY_SNIPPETS, MAX_SNIPPETS, getLlmConfig } from "./vocab.ts";
-import { KEY_ARTICLE_CARDS, REVIEW_PREFIX, articleCardWrites, reviewKey, textKey } from "./articleReview.ts";
+import { KEY_CARDS, KEY_SNIPPETS, MAX_SNIPPETS } from "../features/translation/vocab.ts";
+import { KEY_LLM, getLlmConfig } from "../core/background/llm.ts";
+import { KEY_ARTICLE_CARDS, REVIEW_PREFIX, articleCardWrites, reviewKey, textKey } from "../features/reading/articleReview.ts";
 
 export const KEY_SETTINGS = "settings";
 export const KEY_ARTICLES = "articles";

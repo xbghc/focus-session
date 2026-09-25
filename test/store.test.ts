@@ -545,7 +545,7 @@ test("批量删除关联阅读数据并阻止迟到写入，保留生词", async
   assert.equal((area.data.get("cards") as unknown[]).length, 1);
   await store.commitSession(session({ id: "late" }), []);
   await store.savePosition({ articleId: ARTICLE, hash: "x", index: 0, offset: 0, paragraphCount: 3, savedTs: 100 });
-  const { saveArticleText } = await import("../src/background/articleReview.ts");
+  const { saveArticleText } = await import("../src/features/reading/articleReview.ts");
   assert.equal(await saveArticleText(ARTICLE, "迟到正文", 4), false);
   assert.deepEqual(await store.getSessions(), []);
   assert.equal(area.data.has("pos:" + ARTICLE), false);

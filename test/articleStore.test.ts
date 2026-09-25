@@ -27,7 +27,7 @@ let area = fakeArea();
 (globalThis as Record<string, unknown>)["chrome"] = { storage: { get local() { return area; } } };
 
 const store = await import("../src/background/store.ts");
-const ar = await import("../src/background/articleReview.ts");
+const ar = await import("../src/features/reading/articleReview.ts");
 
 beforeEach(() => {
   area = fakeArea();

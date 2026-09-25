@@ -9,7 +9,7 @@ import { applyRemote, freshState, installStorage, localStorage, memoryDriver, tr
 import type { StateDriver } from "../src/sync/storage.ts";
 import { configureSync, disconnectSync, normalizeServerUrl, syncStatus } from "../src/sync/engine.ts";
 import { commitSession, exportAll, importBundle, serialize } from "../src/background/store.ts";
-import { addSnippet, deleteSnippet, gradeStoredCard } from "../src/background/vocab.ts";
+import { addSnippet, deleteSnippet, gradeStoredCard } from "../src/features/translation/vocab.ts";
 
 const URL_A = "https://example.com/reading";
 const NOW = Date.UTC(2026, 8, 12, 9);

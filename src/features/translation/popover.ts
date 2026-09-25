@@ -1,6 +1,6 @@
-import type { PartialTranslation, Snippet, SnippetKind, VocabNote } from "../types.ts";
-import { coarsePointer } from "../lib/pointer.ts";
-import { fillMeta, stopSpeaking } from "../lib/speak.ts";
+import type { PartialTranslation, Snippet, SnippetKind, VocabNote } from "../../types.ts";
+import { coarsePointer } from "../../lib/pointer.ts";
+import { fillMeta, stopSpeaking } from "../../lib/speak.ts";
 
 /**
  * 选区旁的翻译浮层。

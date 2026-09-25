@@ -37,7 +37,7 @@ g["speechSynthesis"] = {
 };
 const heard = (): string => spoken[spoken.length - 1]?.text ?? "";
 
-const { Popover } = await import("../src/content/popover.ts");
+const { Popover } = await import("../src/features/translation/popover.ts");
 type PopoverT = InstanceType<typeof Popover>;
 const RECT = {
   top: 100, bottom: 120, left: 50, right: 90,

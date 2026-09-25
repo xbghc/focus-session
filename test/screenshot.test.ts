@@ -1,8 +1,8 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { selectRegion, cancelRegion } from "../src/content/screenshot.ts";
-import type { CropFn } from "../src/content/screenshot.ts";
+import { selectRegion, cancelRegion } from "../src/features/translation/screenshot.ts";
+import type { CropFn } from "../src/features/translation/screenshot.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 const g = globalThis as Record<string, unknown>;

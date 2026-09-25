@@ -10,7 +10,7 @@ import { FileStore } from "../src/files.ts";
 import { createHttpServer } from "../src/http.ts";
 import { readConfig } from "../src/config.ts";
 import { newCard } from "../../src/lib/review.ts";
-import { gradeStoredCard } from "../../src/background/vocab.ts";
+import { gradeStoredCard } from "../../src/features/translation/vocab.ts";
 import { memoryDriver, installStorage, localStorage } from "../../src/sync/storage.ts";
 import { configureSync, disconnectSync, runSync, syncRequest } from "../../src/sync/engine.ts";
 

@@ -7,8 +7,8 @@ import {
   getTranslationTraces,
   recordTranslationTrace,
   sanitizeTranslationTrace,
-} from "../src/background/translationLog.ts";
-import { TranslationTraceRecorder } from "../src/content/translationTrace.ts";
+} from "../src/features/translation/translationLog.ts";
+import { TranslationTraceRecorder } from "../src/features/translation/translationTrace.ts";
 
 /*
  * 翻译链路轨迹的后台这一半：内容脚本送来的东西只认已知字段、截尾限量，落盘同 id 覆盖、最多 100 条，
