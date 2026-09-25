@@ -3,7 +3,8 @@ import { localStorage } from "../../sync/storage.ts";
 import { syncBefore } from "../../sync/engine.ts";
 import { saveArchive } from "../../archive/background.ts";
 import { normalizeUrl } from "../../lib/url.ts";
-import type { Overview, ReadingPosition, Session, Settings } from "../../types.ts";
+import type { Overview, ReadingPosition, Session } from "../../types.ts";
+import type { ReadingSettings } from "./settings.ts";
 import { buildOverview } from "../../lib/stats.ts";
 import { samePosition } from "../../lib/position.ts";
 import {
@@ -83,7 +84,7 @@ async function mutateOpen(fn: (open: Record<string, OpenSession>) => void): Prom
  * 触发时机：标签页被关、导航离开、或同一标签页又开了新 session 而旧的没收到结束消息。
  * 结束时刻取最后一次心跳——之后发生了什么无从得知，不该凭空计入。
  */
-export async function recoverOpen(tabId: number, settings?: Settings): Promise<void> {
+export async function recoverOpen(tabId: number, settings?: ReadingSettings): Promise<void> {
   const open = await getOpen();
   const o = open[String(tabId)];
   if (!o) return;

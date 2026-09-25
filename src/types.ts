@@ -1,3 +1,8 @@
+import type { ReadingSettings } from "./features/reading/settings.ts";
+import type { TranslationSettings } from "./features/translation/settings.ts";
+import { DEFAULT_READING_SETTINGS } from "./features/reading/settings.ts";
+import { DEFAULT_TRANSLATION_SETTINGS, MAX_AUTO_WORDS } from "./features/translation/settings.ts";
+export type { ReadingSettings, TranslationSettings };
 import type { TranslationBackendTiming, TranslationTrace } from "./lib/translationDiagnostics.ts";
 
 /** 一个 session 结束的原因，用于事后分析走神模式。 */
@@ -102,105 +107,15 @@ export interface Article {
   finishedTs: number | null;
 }
 
-export interface Settings {
-  idleTimeoutMs: number;
-  stallTimeoutMs: number;
-  /** 短于此长度的 session 直接丢弃（alt-tab 抖动会产生大量碎片）。 */
-  minSessionMs: number;
-  /**
-   * 走神阈值的自适应上限（毫秒）。
-   *
-   * 实际的静默上限 = max(idle/stall 阈值, 视口文字预计阅读时间 × READ_GRACE)，再夹到这个数以下。
-   * 阅读本身不产生输入，一屏 400 词要读 100 秒；不自适应的话每读一屏就被切一刀。
-   * 代价是真离开时最多高估这么长，有界。0 关闭自适应，退回固定阈值。
-   */
-  maxQuietMs: number;
-  /** 段落在视口内至少停留多久才可能算"已读"——已读阈值的下限。 */
-  paragraphDwellMs: number;
-  /**
-   * 段落已读阈值：停留达到「按正常速度读完这段所需时间」的这个比例即记为已读。
-   * 正常阅读的停留 ≥ 0.8 倍、跳读（~650 wpm）只有 ~0.37 倍，0.5 落在两者之间。
-   */
-  readFraction: number;
-  /** 同一篇文章内间隔不超过这个值（毫秒）的片段合成一个「回合」。 */
-  episodeGapMs: number;
-  /** 旧版共用黑名单，仅用于迁移。 */
-  excludedDomains: string[];
-  articleExcludedUrls: string[];
-  /**
-   * 翻译白名单：命中的页面自动挂划词翻译，其余页面要用户从 popup / App 顶栏手动开，只对本次加载有效。
-   * 和文章记录黑名单互不相干——一页记不记专注、翻不翻译各判各的。
-   */
-  translationAllowedUrls: string[];
-  /** 划词翻译总开关。关掉后 content script 不再挂选区监听。 */
-  translateEnabled: boolean;
-  /** 短于此长度的选区不翻译（避免误点选到一两个字符）。 */
-  minSelectionChars: number;
-  /**
-   * 超过此词数不自动翻译，改为在浮层里给一个"翻译"按钮。
-   *
-   * 这道闸只拦**离谱的量**（顺手整段整节地选中），不拦"有点长"。
-   * 实测一段 130 词的选区连讲解一起也才 400 多个输出 token、十秒内出完，
-   * 为这种量级弹一次确认，等于把"选中即翻译"改成"选中再点一下才翻译"。
-   *
-   * 按词而不是按字符：读英文时"这段有多长"是按词感知的，
-   * `unconstitutional` 一个词能顶三个短词的字符数，字符阈值会把它误判成长选区。
-   */
-  maxAutoSelectionWords: number;
-  /** 发给 LLM 的上下文段落最多截取多少字符。 */
-  contextChars: number;
-  /**
-   * 「英语老师模式」：除了翻译，再讲一句用法，并把多词选区里的生词逐个讲开。
-   *
-   * 关掉能省掉一半左右的输出 token，也让浮层早一两秒定住。
-   * 只想要个译文的时候，这两样都是噪音。
-   */
-  explainVocab: boolean;
-  /** 已读比例达到多少算读完（与触底是且的关系）。 */
-  finishRatio: number;
-  /**
-   * 重新打开一篇读过的文章时，跳回上次读到的位置。
-   *
-   * 只在**网页自己没有定位过**时才跳：URL 带锚点、或浏览器已经恢复了滚动位置，
-   * 都说明这一页已经有人安排好了落点，插件不该再抢。
-   */
-  restorePositionEnabled: boolean;
-  /**
-   * 文章回顾总开关。
-   * 关掉后不再保存正文、也不再自动生成回顾材料——这是唯一一处**无需用户动作
-   * 就会花 token** 的地方，得给个能关的闸。已生成的材料不受影响。
-   */
-  articleReviewEnabled: boolean;
-}
-
-export const DEFAULT_SETTINGS: Settings = {
-  idleTimeoutMs: 30_000,
-  stallTimeoutMs: 90_000,
-  minSessionMs: 3_000,
-  maxQuietMs: 300_000, // ActivityWatch 的 AFK 默认是 180s、RescueTime 是 5 分钟；一屏文字读满也就这个量级
-  paragraphDwellMs: 1_000,
-  readFraction: 0.5,
-  episodeGapMs: 300_000,
-  excludedDomains: [],
-  articleExcludedUrls: [],
-  translationAllowedUrls: [],
-  translateEnabled: true,
-  minSelectionChars: 2,
-  maxAutoSelectionWords: 200, // ≈ 1100 字符（英文均值 5.5 字符/词），大致是三四段
-  contextChars: 600,
-  explainVocab: true,
-  finishRatio: 0.8,
-  restorePositionEnabled: true,
-  articleReviewEnabled: true,
-};
-
 /**
- * 自动翻译上限能填到的最大值（设置页的区间上界，迁移换算也夹到这里）。
- *
- * 按英文均值 5.5 字符/词，360 词 ≈ 1980 字符，刚好压在 HARD_MAX_CHARS 之下——
- * 再往上填是空档：那些选区根本到不了这道闸，会先被硬上限拦掉。
+ * 全部设置。存储里是扁平的一份（`settings` 键，同步时逐项成记录），类型上由各功能的那一份拼成：
+ * 功能插件只该拿自己那一份（ReadingSettings / TranslationSettings），只有设置页和存储层看全部。
  */
-export const MAX_AUTO_WORDS = 360;
+export interface Settings extends ReadingSettings, TranslationSettings {}
+
+export const DEFAULT_SETTINGS: Settings = { ...DEFAULT_READING_SETTINGS, ...DEFAULT_TRANSLATION_SETTINGS };
+
+export { MAX_AUTO_WORDS };
 
 /**
  * content script 在 session 结束时上报的段落快照。
