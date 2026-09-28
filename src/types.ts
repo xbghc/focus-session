@@ -600,7 +600,7 @@ export interface LlmFailure {
   ts: number;
   /** 哪条路径出的错 */
   source: "translate" | "test" | "assist" | "articleReview" | "ask" | "articleFilter" | "blacklistSuggestion";
-  /** LlmError 的 kind（config / http / network / timeout / parse / abort）；不是 LlmError 的记 unknown */
+  /** LlmError 的 kind（http / network / timeout / parse / refused…，见 LlmErrorKind）；不是 LlmError 的记 unknown */
   kind: string;
   /** HTTP 状态码，只有 http 类失败才有 */
   status: number | null;

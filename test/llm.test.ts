@@ -471,6 +471,54 @@ test("HTTP 200 但 base_resp 报错也算失败", async () => {
   );
 });
 
+/* ---------- 内容审核拒答 ---------- */
+
+/** MiniMax 的 Anthropic 兼容接口拒答时回的原样：HTTP 500，消息里是 new_sensitive 和错误码。 */
+const REFUSAL_BODY = JSON.stringify({ type: "error", error: { type: "api_error", message: "input new_sensitive (1026)" }, request_id: "07082cac014ea837f9911b22f84985cc" });
+
+test("内容审核拒答认成 refused，不是一条看着像服务端故障的 HTTP 500；也不重发", async () => {
+  let calls = 0;
+  await assert.rejects(
+    callMessages(CFG, "s", "u", {
+      retryDelayMs: 0,
+      fetch: (async () => {
+        calls++;
+        return new Response(REFUSAL_BODY, { status: 500 });
+      }) as unknown as typeof fetch,
+    }),
+    (e: unknown) =>
+      e instanceof LlmError && e.kind === "refused" && e.status === 500
+      && e.message === "模型服务商的内容审核拒绝了这段内容（input new_sensitive (1026)）",
+  );
+  assert.equal(calls, 1);
+});
+
+test("base_resp 里的 1026 / 1027 也是审核拒答；别的业务错误照旧是 http", async () => {
+  for (const code of [1026, 1027]) {
+    await assert.rejects(
+      callMessages(CFG, "s", "u", {
+        fetch: (async () => okResponse("x", { base_resp: { status_code: code, status_msg: "sensitive" } })) as unknown as typeof fetch,
+      }),
+      (e: unknown) => e instanceof LlmError && e.kind === "refused" && e.message.includes(String(code)),
+    );
+  }
+  await assert.rejects(
+    callMessages(CFG, "s", "u", {
+      fetch: (async () => okResponse("x", { base_resp: { status_code: 1008, status_msg: "insufficient balance" } })) as unknown as typeof fetch,
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "http",
+  );
+});
+
+test("普通的 HTTP 500 还是 http，错误体原样带出", async () => {
+  await assert.rejects(
+    callMessages(CFG, "s", "u", {
+      fetch: (async () => new Response('{"error":{"message":"internal error"}}', { status: 500 })) as unknown as typeof fetch,
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "http" && e.message === 'HTTP 500：{"error":{"message":"internal error"}}',
+  );
+});
+
 test("base_resp.status_code 为 0 是正常响应", async () => {
   const r = await callMessages(CFG, "s", "u", {
     fetch: (async () => okResponse("ok", { base_resp: { status_code: 0, status_msg: "" } })) as unknown as typeof fetch,

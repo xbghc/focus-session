@@ -47,8 +47,11 @@ export interface CallTiming {
   attempts: number;
 }
 
-/** `abort` 是用户主动取消（关掉浮层、又选了别的），不该计入失败统计。 */
-export type LlmErrorKind = "config" | "http" | "network" | "timeout" | "parse" | "abort" | "token_limit" | "stream_interrupted";
+/**
+ * `abort` 是用户主动取消（关掉浮层、又选了别的），不该计入失败统计。
+ * `refused` 是服务商的内容审核按内容拒答：看的是这段文字本身，隔多久重发都一样。
+ */
+export type LlmErrorKind = "config" | "http" | "network" | "timeout" | "parse" | "abort" | "token_limit" | "stream_interrupted" | "refused";
 
 /**
  * 字段用显式声明而不是构造器参数属性——测试跑在 `node --experimental-strip-types`
@@ -83,6 +86,41 @@ export class LlmError extends Error {
     this.raw = undefined;
     this.timing = undefined;
   }
+}
+
+/**
+ * MiniMax 内容审核的拒答。Anthropic 兼容接口回 HTTP 500，错误消息是 `input new_sensitive (1026)`
+ * （输入）或 `output new_sensitive (1027)`（输出）；原生接口的 base_resp 给同样的 1026 / 1027。
+ * 不认出来的话它就是一条普通的 HTTP 500，看着像服务端故障，人会去刷新重试。
+ */
+const REFUSAL_MESSAGE = /sensitive|\(102[67]\)/i;
+const REFUSAL_CODES = new Set([1026, 1027]);
+
+const refused = (detail: string, status?: number): LlmError =>
+  new LlmError(`模型服务商的内容审核拒绝了这段内容（${detail}）`, "refused", status);
+
+/** 错误体里那句话：JSON 的 `error.message`，不是 JSON（网关的 HTML 页）就截原文。 */
+function errorDetail(body: string): string {
+  try {
+    const message = (JSON.parse(body) as { error?: { message?: unknown } } | null)?.error?.message;
+    if (typeof message === "string" && message) return message;
+  } catch {
+    /* 不是 JSON */
+  }
+  return body.slice(0, 300);
+}
+
+function httpError(status: number, body: string): LlmError {
+  const detail = errorDetail(body);
+  if (REFUSAL_MESSAGE.test(detail)) return refused(detail, status);
+  // 错误体通常是 JSON，但 401/网关错误可能是 HTML，截断后原样带出更好排查
+  return new LlmError(`HTTP ${status}：${body.slice(0, 300)}`, "http", status);
+}
+
+/** MiniMax 在 HTTP 200 里用 base_resp 报的业务错误（余额不足、鉴权失败、内容审核）。 */
+function baseRespError(code: number, message: string | undefined): LlmError {
+  const detail = `MiniMax 错误 ${code}：${message ?? ""}`;
+  return REFUSAL_CODES.has(code) ? refused(detail) : new LlmError(detail, "http");
 }
 
 export interface RawUsage {
@@ -210,20 +248,13 @@ export async function callMessages(
       clearTimeout(timer);
     }
 
-    if (!res.ok) {
-      // 错误体通常是 JSON，但 401/网关错误可能是 HTML，截断后原样带出更好排查
-      const body = await res.text().catch(() => "");
-      throw new LlmError(`HTTP ${res.status}：${body.slice(0, 300)}`, "http", res.status);
-    }
+    if (!res.ok) throw httpError(res.status, await res.text().catch(() => ""));
 
     const data = (await res.json().catch(() => null)) as AnthropicResponse | null;
     if (!data) throw new LlmError("响应不是合法 JSON", "parse");
 
-    // MiniMax 会在 HTTP 200 里用 base_resp 报业务错误（余额不足、鉴权失败等）
     const br = data.base_resp;
-    if (br && typeof br.status_code === "number" && br.status_code !== 0) {
-      throw new LlmError(`MiniMax 错误 ${br.status_code}：${br.status_msg ?? ""}`, "http");
-    }
+    if (br && typeof br.status_code === "number" && br.status_code !== 0) throw baseRespError(br.status_code, br.status_msg);
 
     const text = (data.content ?? [])
       .filter((b): b is { type: "text"; text: string } => b?.type === "text" && typeof b.text === "string")
@@ -380,10 +411,7 @@ export async function callMessagesStream(
       throw wrap(err);
     }
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new LlmError(`HTTP ${res.status}：${body.slice(0, 300)}`, "http", res.status);
-    }
+    if (!res.ok) throw httpError(res.status, await res.text().catch(() => ""));
     if (!res.body) throw new LlmError("响应没有可读流", "parse");
 
     let inputTokens = 0;
@@ -399,9 +427,7 @@ export async function callMessagesStream(
             const m = ev["message"] as { usage?: { input_tokens?: number }; base_resp?: BaseResp } | undefined;
             // MiniMax 会在 HTTP 200 的流里用 base_resp 报业务错误（余额不足、鉴权失败）
             const br = m?.base_resp;
-            if (br && typeof br.status_code === "number" && br.status_code !== 0) {
-              throw new LlmError(`MiniMax 错误 ${br.status_code}：${br.status_msg ?? ""}`, "http");
-            }
+            if (br && typeof br.status_code === "number" && br.status_code !== 0) throw baseRespError(br.status_code, br.status_msg);
             inputTokens = m?.usage?.input_tokens ?? 0;
             break;
           }
@@ -427,6 +453,8 @@ export async function callMessagesStream(
           }
           case "error": {
             const e = ev["error"] as { message?: string; type?: string } | undefined;
+            // 流已经开了才报的审核拒答（比如输出审核）同样认出来
+            if (e?.message && REFUSAL_MESSAGE.test(e.message)) throw refused(e.message);
             throw new LlmError(`模型返回错误：${e?.message ?? e?.type ?? "未知"}`, "http");
           }
           default:
