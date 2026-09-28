@@ -70,6 +70,28 @@ function fetchOf(chunks: string[], status = 200): typeof fetch {
     })) as unknown as typeof fetch;
 }
 
+/* ---------- 内容审核拒答 ---------- */
+
+test("流式：HTTP 500 的审核拒答、流里报的审核错误都认成 refused", async () => {
+  const body = JSON.stringify({ type: "error", error: { type: "api_error", message: "input new_sensitive (1026)" } });
+  await assert.rejects(
+    callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, { fetch: (async () => new Response(body, { status: 500 })) as unknown as typeof fetch }),
+    (e: unknown) => e instanceof LlmError && e.kind === "refused" && e.status === 500,
+  );
+  await assert.rejects(
+    callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, {
+      fetch: fetchOf([evt({ type: "message_start", message: {} }), evt({ type: "error", error: { type: "api_error", message: "output new_sensitive (1027)" } })]),
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "refused" && e.message.includes("1027"),
+  );
+  await assert.rejects(
+    callMessagesStream(CFG, "s", "u", { onDelta: () => {} }, {
+      fetch: fetchOf([evt({ type: "message_start", message: {} }), evt({ type: "error", error: { type: "overloaded_error", message: "busy" } })]),
+    }),
+    (e: unknown) => e instanceof LlmError && e.kind === "http",
+  );
+});
+
 /* ---------- SSE 拆包 ---------- */
 
 test("sseEvents 只取 data 行，跳过 event 行和空行", async () => {
