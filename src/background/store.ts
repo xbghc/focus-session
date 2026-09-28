@@ -188,6 +188,19 @@ export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
 }
 
 /**
+ * 按当前设置算出要改的那几项再写回去，读和写在同一段串行里（理由同下面的 allowTranslationSite）。
+ * 名单对话的「确认」走这里：它要在最新的名单上加减，不能拿界面上那份可能已经旧了的整张名单去覆盖。
+ */
+export async function updateSettings(change: (current: Settings) => Partial<Settings>): Promise<Settings> {
+  return serialize(async () => {
+    const current = await getSettings();
+    const merged = { ...current, ...change(current) };
+    await local().set({ [KEY_SETTINGS]: merged });
+    return merged;
+  });
+}
+
+/**
  * 把这个页面所在的站点加进翻译白名单（popup 的「本站始终开启」）。已经命中就不重复加。
  * 读和写要在同一段串行里：popup 里先读再 settings:set 的话，和设置页同时保存会互相覆盖。
  */

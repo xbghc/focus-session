@@ -4,6 +4,8 @@ import { DEFAULT_LLM, DEFAULT_SETTINGS, MAX_AUTO_WORDS } from "../types.ts";
 import { saveTextFile } from "../lib/download.ts";
 import { SOURCE_LABEL, appLogLine, timingLine } from "../lib/llmStats.ts";
 import { summarizeUiUsage } from "../lib/uiUsage.ts";
+import { followStoredList } from "../lib/ruleChat.ts";
+import { ruleChatBox } from "../popup/ruleChat.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -176,6 +178,26 @@ $("save").addEventListener("click", async () => {
   load(next);
   flash("已保存，对已打开的页面立即生效");
 });
+
+/*
+ * 「用一句话改名单」。确认之后写进去的是存储里的名单；这里的两个名单框和「上次保存的值」跟着改。
+ * 框里有没保存的手改，就在手改上套同样的改动——不冲掉，也不替人按保存。
+ */
+const lines = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter(Boolean);
+$("rule-chat").append(ruleChatBox({
+  placeholder: "比如：知乎和微博以后别记了；GitHub 上自动开翻译",
+  onApplied: async (applied) => {
+    const stored = (await chrome.runtime.sendMessage({ type: "settings:get" })) as Settings;
+    const boxes = [["articleExcludedUrls", fields.excluded], ["translationAllowedUrls", fields.translationAllowed]] as const;
+    for (const [key, box] of boxes) {
+      const mine = applied.filter((c) => c.list === key);
+      if (mine.length === 0) continue;
+      box.value = followStoredList(lines(box.value), baseline?.[key], stored[key], mine).join("\n");
+      if (baseline) baseline = { ...baseline, [key]: stored[key] };
+    }
+    renderStatus();
+  },
+}));
 
 revertBtn.addEventListener("click", () => {
   if (!baseline) return;

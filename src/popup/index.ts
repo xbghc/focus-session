@@ -13,6 +13,7 @@ import { formatDuration, overviewInsights, wordsPerMinute } from "../lib/stats.t
 import { describeBasis, estimateArticle, formatEstimate } from "../lib/readingTime.ts";
 import { hostnameOf } from "../lib/url.ts";
 import { clear, el, empty } from "./dom.ts";
+import { ruleChatBox } from "./ruleChat.ts";
 import { onSyncUpdated } from "../lib/syncUpdated.ts";
 import { reasonOf } from "../lib/reason.ts";
 
@@ -527,6 +528,23 @@ async function refreshCurrent(): Promise<void> {
 }
 
 void refreshCurrent();
+
+/*
+ * 底部那个「用一句话改黑名单、白名单」。「这个站」「这一页」指当前标签页。
+ * 写完之后隔一会儿再问页面状态：页面那边的设置热更新要一小会儿才到（同 allowSiteNode 的说明），
+ * 紧跟着问多半还是旧的——比如刚把这站拉黑，追踪要等热更新到了才收摊。
+ */
+const ruleChat = document.getElementById("rule-chat") as HTMLDetailsElement;
+const chatBox = ruleChatBox({
+  pageUrl: async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.url,
+  onApplied: () => {
+    setTimeout(() => void refreshCurrent(), 400);
+  },
+});
+ruleChat.append(chatBox);
+ruleChat.addEventListener("toggle", () => {
+  if (ruleChat.open) chatBox.querySelector("input")?.focus();
+});
 /*
  * 本地每秒只是插值，session 可能在 popup 打开期间结束，定期回源校正。
  *

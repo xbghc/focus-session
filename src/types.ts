@@ -214,6 +214,37 @@ export type ContentToBg =
   | { type: "review:open"; articleId: string }
   | { type: "options:open" };
 
+/** 名单对话里的一句。assistant 那一句是模型的回话，确认写入之后再补一句「已写入…」，下一轮模型知道改没改成。 */
+export interface RuleChatTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+/** 一条名单改动。list 是名单在设置里的键，label 是给人看的名字。 */
+export interface RuleChange {
+  list: string;
+  label: string;
+  op: "add" | "remove";
+  rule: string;
+  reason: string;
+  /** 加进去的规则命中了多少篇已有的阅读记录：范围宽不宽，一眼看得出。只有 add 有。 */
+  hits?: number;
+}
+
+/** 模型提的、没过规矩的那几条，连同为什么。 */
+export interface RuleRejected {
+  rule: string;
+  why: string;
+}
+
+export type RuleChatReply =
+  | { ok: true; reply: string; changes: RuleChange[]; rejected: RuleRejected[] }
+  | { ok: false; error: string };
+
+export type RuleApplyReply =
+  | { ok: true; applied: RuleChange[]; rejected: RuleRejected[] }
+  | { ok: false; error: string };
+
 export type PopupToBg =
   | { type: "sync:get" }
   /** 单篇阅读材料的同步处境，文章详情用。 */
@@ -233,6 +264,13 @@ export type PopupToBg =
   | { type: "settings:set"; settings: Partial<Settings> }
   /** 把这个页面的站点加进翻译白名单。应答是更新后的设置。 */
   | { type: "translation:allow-site"; url: string }
+  /**
+   * 用一句话改网址名单：模型把话转成改动清单，**不写**，应答是 RuleChatReply。pageUrl 是弹出面板所在的那一页，
+   * 「这个站」「这一页」指它；设置页没有。
+   */
+  | { type: "rules:chat"; turns: RuleChatTurn[]; pageUrl?: string }
+  /** 人点了确认：把勾上的改动写进去。后台照同样的规矩再核一遍，应答是 RuleApplyReply。 */
+  | { type: "rules:apply"; changes: RuleChange[] }
   /* ---- 划词与复习 ---- */
   | { type: "snippets:list"; articleId?: string }
   | { type: "snippet:delete"; id: string }
@@ -599,7 +637,7 @@ export interface LlmStreamTrace {
 export interface LlmFailure {
   ts: number;
   /** 哪条路径出的错 */
-  source: "translate" | "test" | "assist" | "articleReview" | "ask" | "articleFilter" | "blacklistSuggestion";
+  source: "translate" | "test" | "assist" | "articleReview" | "ask" | "articleFilter" | "blacklistSuggestion" | "ruleChat";
   /** LlmError 的 kind（http / network / timeout / parse / refused…，见 LlmErrorKind）；不是 LlmError 的记 unknown */
   kind: string;
   /** HTTP 状态码，只有 http 类失败才有 */

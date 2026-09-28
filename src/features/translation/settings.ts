@@ -1,3 +1,5 @@
+import type { UrlRuleList } from "../../lib/ruleChat.ts";
+
 /*
  * 划词翻译自己的设置。和专注记录的设置存在同一个 `settings` 键下（存储格式是扁平的一份），
  * 但类型上分开：翻译插件只拿得到这一份，读不到、也改不着专注记录的阈值。
@@ -51,3 +53,10 @@ export const DEFAULT_TRANSLATION_SETTINGS: TranslationSettings = {
  * 再往上填是空档：那些选区根本到不了这道闸，会先被硬上限拦掉。
  */
 export const MAX_AUTO_WORDS = 360;
+
+/** 这个功能的网址名单，交给名单对话（core/background/ruleChat.ts）。meaning 是写给模型看的。 */
+export const TRANSLATION_URL_LISTS: readonly UrlRuleList[] = [{
+  key: "translationAllowedUrls" satisfies keyof TranslationSettings,
+  label: "翻译白名单",
+  meaning: "命中的页面自动开启划词翻译；不在名单里的页面默认不翻译，要在弹出面板里手动开。不影响专注记录。",
+}];
