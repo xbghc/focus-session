@@ -179,3 +179,33 @@ table.sessions td:first-child { text-align: left; color: var(--muted); }
 .review-line a { color: var(--accent); text-decoration: none; margin-left: auto; }
 .review-line .hint-right { margin-left: auto; }
 @media (hover: hover) { .review-line a:hover { text-decoration: underline; } }
+
+/*
+ * 名单对话（popup/ruleChat.ts）：弹出面板底部一个能展开的框，设置页里一整块。
+ * 对话记录是一问一答的两种行，改动清单每条一个勾，没过规矩的另起一行灰字。
+ */
+.rulechat-wrap { border-top: 1px solid var(--line); padding: 7px 12px; font-family: var(--sans); font-size: 12px; }
+.rulechat-wrap > summary { cursor: pointer; color: var(--accent); font-size: 11.5px; list-style-position: inside; }
+.rulechat-wrap[open] > summary { margin-bottom: 6px; }
+.rulechat { font-family: var(--sans); font-size: 12px; line-height: 1.5; }
+.rc-log { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.rc-log:empty { display: none; }
+.rc-turn { padding: 4px 8px; border-radius: 4px; max-width: 92%; overflow-wrap: anywhere; }
+.rc-user { align-self: flex-end; background: var(--line-soft); color: var(--fg); }
+.rc-assistant { align-self: flex-start; color: var(--fg-soft); padding-left: 0; }
+.rc-done { color: var(--ok); }
+.rc-error { color: var(--danger); }
+.rc-plan:not(:empty) { margin-top: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }
+.rc-change { display: flex; gap: 6px; align-items: flex-start; padding: 3px 0; cursor: pointer; }
+.rc-change input { margin: 3px 0 0; flex: none; }
+.rc-change code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; overflow-wrap: anywhere; }
+.rc-remove .rc-what { color: var(--danger); }
+.rc-why { display: block; }
+.rc-rejected { padding: 2px 0; overflow-wrap: anywhere; }
+.rc-actions { display: flex; gap: 8px; margin-top: 6px; }
+.rc-ask { display: flex; gap: 6px; margin-top: 6px; }
+.rc-input {
+  flex: 1; min-width: 0; padding: 5px 8px; font: inherit;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--fg);
+}
+.rc-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }

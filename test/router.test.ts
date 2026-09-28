@@ -4,15 +4,16 @@ import { createRouter, type HandlerMap } from "../src/core/background/router.ts"
 import { coreHandlers } from "../src/core/background/handlers.ts";
 import { readingHandlers } from "../src/features/reading/background.ts";
 import { translationHandlers } from "../src/features/translation/background.ts";
+import { ruleChatHandlers } from "../src/core/background/ruleChat.ts";
 
 /*
  * 后台消息分发：每种消息只归一个功能管。漏认领的由编译期挡（见 router.ts 的 missing），
  * 这里盯运行时那两条：重复登记当场报错说清是谁和谁，没人认的消息回 unknown message 而不是抛。
  */
 
-const all = { core: coreHandlers, reading: readingHandlers, translation: translationHandlers };
+const all = { core: coreHandlers, reading: readingHandlers, translation: translationHandlers, rules: ruleChatHandlers([]) };
 
-test("三张表没有重复登记", () => {
+test("几张表没有重复登记", () => {
   assert.doesNotThrow(() => createRouter(all));
 });
 

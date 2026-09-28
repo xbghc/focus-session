@@ -1,3 +1,5 @@
+import type { UrlRuleList } from "../../lib/ruleChat.ts";
+
 /*
  * 专注记录自己的设置：走神阈值、段落已读判定、读完判定、续读、文章回顾、文章记录黑名单。
  * 和划词翻译的设置存在同一个 `settings` 键下，类型上分开（见 features/translation/settings.ts）。
@@ -65,3 +67,10 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   articleReviewEnabled: true,
   focusBarEnabled: true,
 };
+
+/** 这个功能的网址名单，交给名单对话（core/background/ruleChat.ts）。meaning 是写给模型看的。 */
+export const READING_URL_LISTS: readonly UrlRuleList[] = [{
+  key: "articleExcludedUrls" satisfies keyof ReadingSettings,
+  label: "文章记录黑名单",
+  meaning: "命中的页面不做文章判别、不记录专注时间。只管以后，已有的阅读记录不会删；不影响划词翻译。",
+}];
