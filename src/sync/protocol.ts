@@ -2,6 +2,12 @@
 export const PROTOCOL_VERSION = 1;
 export const RECORD_TYPES = ["article", "session", "paragraph", "position", "snippet", "card", "reviewEvent", "articleReview", "articleCard", "setting", "articleText", "archive"] as const;
 export type RecordType = typeof RECORD_TYPES[number];
+/**
+ * Settings that travel between devices. A whitelist: the server rejects a whole push batch over one id it does not
+ * know, so a client only sends ids from this list and a new setting stays on the device until it is added here
+ * and the server is upgraded first.
+ */
+export const SYNCED_SETTINGS = ["idleTimeoutMs","stallTimeoutMs","minSessionMs","maxQuietMs","paragraphDwellMs","readFraction","episodeGapMs","articleExcludedUrls","translationExcludedUrls","translateEnabled","minSelectionChars","maxAutoSelectionWords","contextChars","explainVocab","finishRatio","restorePositionEnabled","articleReviewEnabled"] as const;
 export interface Stamp { counter: number; deviceId: string }
 export interface SyncRecord {
   type: RecordType;
@@ -80,7 +86,7 @@ export function validateRecord(input: unknown): SyncRecord {
   if (!RECORD_TYPES.includes(r.type) || !validText(r.id) || !validText(r.generation,128) || !validText(s.deviceId,128)
       || !Number.isSafeInteger(s.counter) || s.counter < 0 || typeof r.deleted !== "boolean"
       || (r.articleId !== undefined && !validText(r.articleId))) throw new Error("Invalid sync record");
-  if (r.type === "setting" && !["idleTimeoutMs","stallTimeoutMs","minSessionMs","maxQuietMs","paragraphDwellMs","readFraction","episodeGapMs","articleExcludedUrls","translationExcludedUrls","translateEnabled","minSelectionChars","maxAutoSelectionWords","contextChars","explainVocab","finishRatio","restorePositionEnabled","articleReviewEnabled"].includes(r.id)) throw new Error("Unsupported synchronized setting");
+  if (r.type === "setting" && !(SYNCED_SETTINGS as readonly string[]).includes(r.id)) throw new Error("Unsupported synchronized setting");
   if (JSON.stringify(input).length > 512_000) throw new Error("Sync record too large");
   if (!r.deleted) {
     const v = object(r.value);

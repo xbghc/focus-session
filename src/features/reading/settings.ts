@@ -43,6 +43,11 @@ export interface ReadingSettings {
    * 就会花 token** 的地方，得给个能关的闸。已生成的材料不受影响。
    */
   articleReviewEnabled: boolean;
+  /**
+   * 页面顶上的阅读情况条（见 focusBar.ts）。
+   * 不进同步：看不看得惯这条是各台设备各自的事，手机屏幕窄、电脑上页面自己的导航栏也各不一样。
+   */
+  focusBarEnabled: boolean;
 }
 
 export const DEFAULT_READING_SETTINGS: ReadingSettings = {
@@ -58,4 +63,5 @@ export const DEFAULT_READING_SETTINGS: ReadingSettings = {
   finishRatio: 0.8,
   restorePositionEnabled: true,
   articleReviewEnabled: true,
+  focusBarEnabled: true,
 };

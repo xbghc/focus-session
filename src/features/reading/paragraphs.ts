@@ -3,6 +3,7 @@ import { countWords, normalizeText } from "../../lib/wordcount.ts";
 import { expectedReadMs, readThresholdMs } from "../../lib/reading.ts";
 import { hashText } from "../../lib/hash.ts";
 import type { ParagraphSnapshot, ReadingTarget } from "../../types.ts";
+import type { FocusMark, FocusSpan } from "./focusBar.ts";
 
 /** 段落级候选块。刻意不含 div —— div 太容易套住整篇文章。 */
 const BLOCK_SELECTOR = "p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, td, dd, figcaption";
@@ -149,6 +150,8 @@ interface ParagraphState {
   reportedMs: number;
   /** 跨过已读阈值的时刻。播种进来的（上次加载就读过的）段落没有这个值。 */
   readTs: number | null;
+  /** 以前几次打开时的情况（播种进来的）：读过、露过面没停够，或者没有记录。 */
+  earlier: "read" | "glanced" | null;
 }
 
 export interface TrackerOptions {
@@ -157,6 +160,11 @@ export interface TrackerOptions {
   /** 已读阈值 = max(dwellMs, 预计阅读时间 × readFraction)。 */
   readFraction: number;
   now(): number;
+  /**
+   * 顶部阅读情况条要重画的时候：有段落第一次露面或跨过已读阈值、进出视口的段落变了。
+   * 结算每半秒一次，没变化就不叫。
+   */
+  onChange?: () => void;
 }
 
 /** 每 500ms 结算一次停留时长；间隔只在 session 活跃时运行。 */
@@ -209,19 +217,33 @@ export class ParagraphTracker {
   private pendingWords = 0;
   /** 正文最后一段是否进过视口。一旦为 true 不再回退。 */
   private bottomSeen = false;
+  /** 每段之前的字数合计，阅读情况条按字数排。 */
+  private before: number[];
+  private totalWords: number;
 
   constructor(paragraphs: TrackedParagraph[], opts: TrackerOptions) {
     this.opts = opts;
-    this.states = paragraphs.map((p) => ({ p, read: false, dwellMs: 0, reportedMs: 0, readTs: null }));
+    this.states = paragraphs.map((p) => ({ p, read: false, dwellMs: 0, reportedMs: 0, readTs: null, earlier: null }));
     for (const s of this.states) this.byEl.set(s.p.el, s);
+    let sum = 0;
+    this.before = paragraphs.map((p) => (sum += p.words) - p.words);
+    this.totalWords = sum;
   }
 
   /** 用存储中的已读指纹播种，实现跨刷新去重。 */
   seedRead(hashes: Iterable<string>): void {
     const set = new Set(hashes);
     for (const s of this.states) {
-      if (set.has(s.p.hash)) s.read = true;
+      if (!set.has(s.p.hash)) continue;
+      s.read = true;
+      s.earlier = "read";
     }
+  }
+
+  /** 以前露过面、没停够已读阈值的段落。只给阅读情况条用，不影响字数和已读判定。 */
+  seedGlanced(hashes: Iterable<string>): void {
+    const set = new Set(hashes);
+    for (const s of this.states) if (s.earlier === null && set.has(s.p.hash)) s.earlier = "glanced";
   }
 
   start(): void {
@@ -232,6 +254,7 @@ export class ParagraphTracker {
           if (e.isIntersecting) this.candidates.add(e.target);
           else this.candidates.delete(e.target);
         }
+        this.opts.onChange?.();
       },
       { threshold: 0 },
     );
@@ -302,19 +325,59 @@ export class ParagraphTracker {
     if (vh === 0) return;
 
     const last = this.states[this.states.length - 1];
+    let changed = false;
     for (const el of this.candidates) {
       const s = this.byEl.get(el);
       if (!s) continue;
       if (!isInReadingView(el.getBoundingClientRect(), vh)) continue;
       if (last && s === last) this.bottomSeen = true;
 
+      const was = this.markOf(s);
       s.dwellMs += step;
       if (!s.read && s.dwellMs >= this.thresholdOf(s.p)) {
         s.read = true;
         s.readTs = now;
         this.pendingWords += s.p.words;
       }
+      changed ||= this.markOf(s) !== was;
     }
+    if (changed) this.opts.onChange?.();
+  }
+
+  /**
+   * 一段在阅读情况条上算哪一档。这次停够了的算「这次读的」——以前读过、这次又细读了一遍的也算，
+   * 条上要看的是这一次的专注；以前读过而这次没停够的是「以前读的」；露过面没停够的是「扫过」。
+   */
+  private markOf(s: ParagraphState): FocusMark["state"] {
+    if ((s.read && s.earlier !== "read") || s.dwellMs >= this.thresholdOf(s.p)) return "read";
+    if (s.earlier === "read") return "earlier";
+    return s.dwellMs > 0 || s.earlier === "glanced" ? "glanced" : "unseen";
+  }
+
+  /** 按正文顺序每段一格：多少字、算哪一档。 */
+  marks(): FocusMark[] {
+    return this.states.map((s) => ({ words: s.p.words, state: this.markOf(s) }));
+  }
+
+  /**
+   * 屏幕上正显示着的那一截正文，按字数折成 0–1：从视口顶那一段已经滚过的地方，到视口底那一段露出来的地方。
+   * 就是滚动条滑块搬到阅读情况条上。视口里一段正文都没有（滚到评论区了）时为 null。
+   */
+  viewportSpan(): FocusSpan | null {
+    const vh = this.viewportHeight();
+    if (vh === 0 || this.totalWords <= 0) return null;
+    let from: number | null = null;
+    let to = 0;
+    for (let i = 0; i < this.states.length; i++) {
+      const s = this.states[i]!;
+      if (!this.candidates.has(s.p.el)) continue;
+      const r = s.p.el.getBoundingClientRect();
+      if (r.height <= 0 || r.bottom <= 0 || r.top >= vh) continue;
+      const clip = (y: number): number => Math.min(1, Math.max(0, y / r.height));
+      from ??= this.before[i]! + s.p.words * clip(-r.top);
+      to = this.before[i]! + s.p.words * clip(vh - r.top);
+    }
+    return from === null ? null : { from: from / this.totalWords, to: to / this.totalWords };
   }
 
   /** 取走并清零本 session 新读的字数。 */
