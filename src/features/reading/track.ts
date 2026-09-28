@@ -15,6 +15,7 @@ import { clampOffset, planRestore, type RestorePlan } from "../../lib/position.t
 import { estimateReading, formatEstimate } from "../../lib/readingTime.ts";
 import { type ExtractResult, extractArticle, extractFromContainer, ParagraphTracker } from "./paragraphs.ts";
 import { FinishCard } from "./finishCard.ts";
+import { FocusBar } from "./focusBar.ts";
 import { PositionCard } from "./positionCard.ts";
 import { SessionMachine } from "./session.ts";
 
@@ -203,10 +204,30 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     },
   });
 
+  /*
+   * 顶上的阅读情况条（focusBar.ts）。段落换了档、进出视口的段落变了、滚动了，都排到下一帧画一次；
+   * 一帧里来几次都只画一回。没有动画帧（测试环境）就当场画。
+   */
+  const focusBar = new FocusBar();
+  let barFrame: ReturnType<typeof requestAnimationFrame> | null = null;
+  /** 收摊了（finish）。不借用下面的 torn：条第一次画的时候那个变量还没声明。 */
+  let barDone = false;
+  const drawBar = (): void => {
+    barFrame = null;
+    if (barDone || !settings.focusBarEnabled) focusBar.hide();
+    else focusBar.show(tracker.marks(), tracker.viewportSpan());
+  };
+  const scheduleBar = (): void => {
+    if (barFrame !== null) return;
+    if (typeof requestAnimationFrame !== "function") drawBar();
+    else barFrame = requestAnimationFrame(drawBar);
+  };
+
   const tracker = new ParagraphTracker(article.paragraphs, {
     dwellMs: settings.paragraphDwellMs,
     readFraction: settings.readFraction,
     now: () => Date.now(),
+    onChange: scheduleBar,
   });
 
   // 跨刷新去重：已经读过的段落不再计入本次字数。
@@ -223,7 +244,9 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   const wasFinishedOnLoad = priorArticle?.finished === true;
   const speedSummary = (prior["speed"] as SpeedSummary | undefined) ?? null;
   tracker.seedRead(priorRecords.filter((r) => r.firstSeenTs > 0).map((r) => r.hash));
+  tracker.seedGlanced(priorRecords.filter((r) => r.firstSeenTs === 0 && r.dwellMs > 0).map((r) => r.hash));
   tracker.start();
+  scheduleBar();
 
   /**
    * 采一次「读到哪了」。
@@ -492,6 +515,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       lastWindowY = y;
     }
     signal();
+    scheduleBar();
   };
 
   // scroll 事件不冒泡，用捕获阶段才能收到内部容器的滚动
@@ -513,6 +537,8 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
   for (const type of ["wheel", "keydown", "touchmove"]) on(document, type, signal, opts_);
 
   on(document, "visibilitychange", () => machine.setVisible(document.visibilityState === "visible"));
+  // 视口高了矮了，屏幕上那一截跟着变
+  on(window, "resize", scheduleBar, { passive: true });
   if (!assumeFocus) {
     on(window, "focus", () => machine.setFocused(true));
     on(window, "blur", () => machine.setFocused(false));
@@ -526,6 +552,10 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
     torn = true;
     tracker.destroy();
     finishCard.hide();
+    barDone = true;
+    if (barFrame !== null) cancelAnimationFrame(barFrame);
+    barFrame = null;
+    focusBar.hide();
     stopRestore();
     chrome.storage.onChanged.removeListener(onSettingsChanged);
     for (const off of detach) off(); // 页内换文章时紧接着就要另起一轮，漏一个就累积一个
@@ -545,6 +575,7 @@ export async function startTracking(opts: TrackOptions): Promise<TrackController
       maxQuietMs: settings.maxQuietMs,
     });
     tracker.setThresholds({ dwellMs: settings.paragraphDwellMs, readFraction: settings.readFraction });
+    scheduleBar(); // 开关、已读阈值都会改条上的样子
     if (isUrlExcluded(pageUrl, settings.articleExcludedUrls)) {
       finish("unload")();
       excludedNow = "命中文章记录黑名单";

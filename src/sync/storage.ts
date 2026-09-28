@@ -5,7 +5,7 @@ import { summarizeSpeed } from "../lib/readingTime.ts";
 import { mergeEpisodes } from "../lib/stats.ts";
 import { isFinished } from "../lib/finish.ts";
 import { normalizeUrl } from "../lib/url.ts";
-import { compareStamp, mergeRecord, object, recordKey, validateRecord } from "./protocol.ts";
+import { compareStamp, mergeRecord, object, recordKey, SYNCED_SETTINGS, validateRecord } from "./protocol.ts";
 import type { SyncOperation, SyncRecord, RecordType } from "./protocol.ts";
 
 export interface SyncConfig { enabled: boolean; baseUrl: string; token: string; serverId?: string; userId?: string }
@@ -186,9 +186,10 @@ function entries(data: Record<string, any>): Map<string, Entry> {
   }
   for (const [id,v] of Object.entries(object(data.archives))) add("archive",id,v,id);
   for (const [id,v] of Object.entries(object(data.settings))) {
-    // 翻译白名单暂不同步：同步协议的设置项是白名单制，服务器和旧版客户端都认不得这一项——推上去整批 400，
-    // 旧客户端拉到了也会整轮失败。每台设备按自己的阅读记录种一份（见 store.ts 的 seedTranslationAllowlist）。
-    if (id in DEFAULT_SETTINGS && id !== "excludedDomains" && id !== "translationAllowedUrls") add("setting",id,v);
+    // 只推协议白名单里的（SYNCED_SETTINGS）：服务器认不得的设置项推上去整批 400，旧版客户端拉到了也会整轮失败。
+    // 不在里面的就留在本机：翻译白名单每台设备按自己的阅读记录种一份（见 store.ts 的 seedTranslationAllowlist），
+    // 阅读情况条的开关本来就该各台设备各自定。白名单里还挂着旧版的翻译黑名单，那一项早已不是现行设置，不推。
+    if (id in DEFAULT_SETTINGS && (SYNCED_SETTINGS as readonly string[]).includes(id)) add("setting",id,v);
   }
   for (const [k,v] of Object.entries(data)) {
     if (k.startsWith("p:") && Array.isArray(v)) { if (syncable(k.slice(2))) for (const p of v) add("paragraph",JSON.stringify([k.slice(2),p.hash]),p,k.slice(2)); }

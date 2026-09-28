@@ -20,6 +20,7 @@ const fields = {
   translateEnabled: $<HTMLInputElement>("translateEnabled"),
   restorePositionEnabled: $<HTMLInputElement>("restorePositionEnabled"),
   articleReviewEnabled: $<HTMLInputElement>("articleReviewEnabled"),
+  focusBarEnabled: $<HTMLInputElement>("focusBarEnabled"),
   minSel: $<HTMLInputElement>("minSel"),
   maxAuto: $<HTMLInputElement>("maxAuto"),
   ctxChars: $<HTMLInputElement>("ctxChars"),
@@ -49,6 +50,7 @@ function fill(s: Settings): void {
   fields.translateEnabled.checked = s.translateEnabled;
   fields.restorePositionEnabled.checked = s.restorePositionEnabled;
   fields.articleReviewEnabled.checked = s.articleReviewEnabled;
+  fields.focusBarEnabled.checked = s.focusBarEnabled;
   fields.minSel.value = String(s.minSelectionChars);
   fields.maxAuto.value = String(s.maxAutoSelectionWords);
   fields.ctxChars.value = String(s.contextChars);
@@ -80,6 +82,7 @@ function collect(): Settings {
     translateEnabled: fields.translateEnabled.checked,
     restorePositionEnabled: fields.restorePositionEnabled.checked,
     articleReviewEnabled: fields.articleReviewEnabled.checked,
+    focusBarEnabled: fields.focusBarEnabled.checked,
     minSelectionChars: num(fields.minSel, 2, 1, 20),
     maxAutoSelectionWords: num(fields.maxAuto, DEFAULT_SETTINGS.maxAutoSelectionWords, 3, MAX_AUTO_WORDS),
     contextChars: num(fields.ctxChars, 600, 0, 2000),

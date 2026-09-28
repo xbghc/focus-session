@@ -355,3 +355,54 @@ test("锚点不依赖 session 是否在计时", () => {
   t.setActive(false);
   assert.deepEqual(t.anchor(), { index: 0, hash: "h0", offset: 50 });
 });
+
+/* ---------- 阅读情况条 ---------- */
+
+test("阅读情况条的四档：这次读的、以前读的、扫过、没看过；以前读过这次又停够了的算这次", () => {
+  const box = { top: 0, height: 300 };
+  const [p0, p1, p2, p3, p4, p5] = [0, 1, 2, 3, 4, 5].map((i) => para(i, 50, box));
+  const t = makeTracker([p0!, p1!, p2!, p3!, p4!, p5!]);
+  t.seedRead(["h0", "h5"]);
+  t.seedGlanced(["h1", "h0"]); // 读过的不会被降成扫过
+  t.setActive(true);
+  enter(p2!, p5!);
+  dwell(t, 1_000);
+  leave(p2!, p5!);
+  enter(p3!);
+  dwell(t, 500);
+  assert.deepEqual(t.marks().map((m) => m.state), ["earlier", "glanced", "read", "glanced", "unseen", "read"]);
+  assert.deepEqual(t.marks().map((m) => m.words), [50, 50, 50, 50, 50, 50]);
+  assert.equal(t.wordsRead, 150, "扫过的档位不影响字数：以前读的两段 + 这次新读的一段");
+});
+
+test("档位变了、进出视口的段落变了才叫重画，停在同一档上不叫", () => {
+  const a = para(0, 50, { top: 0, height: 300 });
+  let changes = 0;
+  const t = new ParagraphTracker([a.p], { dwellMs: 1_000, readFraction: 0, now: () => clock, onChange: () => { changes++; } });
+  t.start();
+  live.push(t);
+  t.setActive(true);
+  enter(a);
+  assert.equal(changes, 1, "进了视口");
+  dwell(t, 500);
+  assert.equal(changes, 2, "第一次露面：没看过 → 扫过");
+  dwell(t, 250);
+  assert.equal(changes, 2, "还是扫过");
+  dwell(t, 250);
+  assert.equal(changes, 3, "停够了：扫过 → 读过");
+  dwell(t, 2_000);
+  assert.equal(changes, 3);
+});
+
+test("屏幕上那一截按字数折算：视口顶那段滚过的部分之前、视口底那段露出来的部分为止", () => {
+  const a = para(0, 100, { top: -150, height: 300 }); // 滚过一半
+  const b = para(1, 200, { top: 150, height: 600 }); // 整段在屏上
+  const c = para(2, 100, { top: 750, height: 300 }); // 露出上面一半（视口 900）
+  const d = para(3, 400, { top: 1_050, height: 300 });
+  const t = makeTracker([a, b, c, d]);
+  assert.equal(t.viewportSpan(), null, "还没有段落进过视口");
+  enter(a, b, c);
+  assert.deepEqual(t.viewportSpan(), { from: 50 / 800, to: 350 / 800 });
+  leave(a, b, c);
+  assert.equal(t.viewportSpan(), null, "滚到评论区了");
+});

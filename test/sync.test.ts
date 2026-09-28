@@ -373,6 +373,24 @@ test("settings merge by field and LLM keys remain device-local", async () => {
   assert.equal((await b.read()).data.llm.apiKey, "phone-key");
 });
 
+test("settings the protocol does not list stay on the device: one unknown id would get the whole push rejected", async () => {
+  const a = device("computer", { settings: { ...DEFAULT_SETTINGS } });
+  const b = device("phone", { settings: { ...DEFAULT_SETTINGS } });
+  await change(a, data => {
+    data.settings.focusBarEnabled = false;
+    data.settings.translationAllowedUrls = ["example.com"];
+    data.settings.finishRatio = 0.9;
+  });
+  const sent = (await records(a)).filter(r => r.type === "setting").map(r => r.id);
+  assert.ok(sent.includes("finishRatio"));
+  assert.ok(!sent.includes("focusBarEnabled") && !sent.includes("translationAllowedUrls"));
+  for (const r of await records(a)) validateRecord(r); // everything that would be pushed passes the server's check
+  await exchange(a, b);
+  const phone = (await b.read()).data.settings;
+  assert.equal(phone.finishRatio, 0.9);
+  assert.equal(phone.focusBarEnabled, true);
+});
+
 test("a large legacy history cannot make untouched defaults override an explicit setting change", async () => {
   const a = device("computer", { settings: { ...DEFAULT_SETTINGS } });
   const history = Object.fromEntries(Array.from({ length: 30 }, (_, index) => {
